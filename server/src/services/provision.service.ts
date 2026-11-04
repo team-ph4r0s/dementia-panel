@@ -245,6 +245,15 @@ export class ProvisionService {
     return installing.has(serverId);
   }
 
+  /** Image maintenance shares the node queue and pauses polling during container replacement. */
+  static maintainContainer<T>(serverId: number, task: () => Promise<T>): Promise<T> {
+    return runExclusive(serverId, async () => {
+      if (installing.has(serverId)) throw new Error('Установка уже выполняется');
+      installing.add(serverId);
+      try { return await task(); } finally { installing.delete(serverId); }
+    });
+  }
+
   private static container(server: any) {
     const tool = server.awg_tool === 'wg' ? 'wg' : 'awg';
     return {

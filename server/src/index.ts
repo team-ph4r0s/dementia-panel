@@ -29,6 +29,8 @@ import { bridgesRouter } from './routes/bridges.js';
 import { eventsRouter } from './routes/events.js';
 import { telegramRouter } from './routes/telegram.js';
 import { backupsRouter } from './routes/backups.js';
+import { nodeUpdatesRouter } from './routes/node-updates.js';
+import { NodeUpdateService } from './services/node-update.service.js';
 import { BackupService } from './services/backup.service.js';
 import { LiveService } from './services/live.service.js';
 import { REVALIDATE, staticHeaders } from './middleware/static-cache.js';
@@ -132,6 +134,7 @@ app.use('/api/bridges', bridgesRouter);
 app.use('/api/events', eventsRouter);
 app.use('/api/telegram', telegramRouter);
 app.use('/api/backups', backupsRouter);
+app.use('/api/node-updates', nodeUpdatesRouter);
 app.use('/api/version', versionRouter);
 app.use('/api', requireAuth, clientsRouter);
 
@@ -351,6 +354,13 @@ async function backupLoop() {
   }
 }
 setTimeout(backupLoop, 30000);
+
+async function nodeUpdateLoop() {
+  try { await NodeUpdateService.tick(); }
+  catch (err) { console.error('[NODE UPDATE] Ошибка обслуживания образов:', err); }
+  finally { setTimeout(nodeUpdateLoop, 60000); }
+}
+setTimeout(nodeUpdateLoop, 45000);
 
 setInterval(() => {
   cleanupFederationLimits();

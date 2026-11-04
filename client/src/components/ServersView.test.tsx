@@ -6,6 +6,7 @@ import { ServersView } from './ServersView';
 
 vi.mock('../api', () => ({
   api: {
+    getNodeUpdates: vi.fn().mockResolvedValue({ settings: { auto_update: false, hour_utc: 3 }, running: false, active_server: null, nodes: [] }),
     getProbes: vi.fn().mockResolvedValue({
       settings: { enabled: false, countries: [], interval_minutes: 30, show_in_name: false, show_in_description: false },
       status: { running: false, last_run: null, error: null, next_run: null },

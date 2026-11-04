@@ -429,6 +429,7 @@ export const App: React.FC = () => {
         ) : (
           /* Карта сети с инспектором (или список) */
           <ServersView
+            readOnly={isGuest}
             servers={servers}
             bridges={bridges}
             subscribers={subscribers}

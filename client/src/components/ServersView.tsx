@@ -9,6 +9,7 @@ import { BridgeInspector, CountryInspector } from './TopologyInspectors';
 import { ClientList } from './ClientList';
 import { ProbesCard } from './ProbesCard';
 import { ProbeBadges } from './ProbeBadges';
+import { NodeUpdatesCard } from './NodeUpdatesCard';
 
 type ViewMode = 'map' | 'list';
 const VIEW_KEY = 'dementia.servers.view.v1';
@@ -22,6 +23,7 @@ function readMode(): ViewMode {
 }
 
 interface ServersViewProps {
+  readOnly?: boolean;
   servers: Server[];
   bridges: Bridge[];
   subscribers: Subscriber[];
@@ -116,6 +118,7 @@ export const ServersView: React.FC<ServersViewProps> = (props) => {
   if (mode === 'list') {
     return (
       <div className="space-y-4">
+        {!props.readOnly && <NodeUpdatesCard onChanged={props.onServerChanged} />}
         <div className="flex items-center justify-between gap-3 flex-wrap">
           {toggle}
         </div>
@@ -184,6 +187,7 @@ export const ServersView: React.FC<ServersViewProps> = (props) => {
 
   return (
     <div className="space-y-3">
+      {!props.readOnly && <NodeUpdatesCard onChanged={props.onServerChanged} />}
       <div className="flex items-center justify-between gap-3 flex-wrap">{toggle}</div>
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_440px] gap-4 items-start">
         <TopologyMap

@@ -33,6 +33,8 @@ import type {
   BackupSettings,
   RemoteBackup,
   GuestAccess,
+  NodeUpdatesOverview,
+  NodeUpdateSettings,
 } from '../types';
 
 const API_BASE = '/api';
@@ -114,6 +116,15 @@ async function request<T>(url: string, options: RequestInit, fallback: string): 
 const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) });
 
 export const api = {
+  getNodeUpdates(): Promise<NodeUpdatesOverview> {
+    return request(`${API_BASE}/node-updates`, {}, 'Ошибка загрузки обновлений нод');
+  },
+  saveNodeUpdateSettings(settings: NodeUpdateSettings): Promise<NodeUpdateSettings> {
+    return request(`${API_BASE}/node-updates`, { method: 'PUT', ...json(settings) }, 'Ошибка сохранения расписания');
+  },
+  startNodeUpdates(mode: 'check' | 'update', server_ids?: number[]): Promise<{ started: boolean }> {
+    return request(`${API_BASE}/node-updates/${mode}`, { method: 'POST', ...json({ server_ids }) }, 'Не удалось запустить обслуживание нод');
+  },
   // Auth
   async login(username: string, password: string, totp?: string, recoveryCode?: string): Promise<{ token: string; user: AdminUser } | { totp_required: true }> {
     const res = await fetch(`${API_BASE}/auth/login`, {

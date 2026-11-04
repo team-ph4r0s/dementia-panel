@@ -115,3 +115,11 @@ docker run --rm -v "$PWD:/src:ro" node:24-alpine sh -c \
   'mkdir /work && cd /src && tar cf - --exclude=node_modules --exclude=.git --exclude=dist --exclude=data . | tar xf - -C /work \
    && cd /work/server && npm ci && npx vitest run'
 ```
+
+## Обновления контейнеров AmneziaWG
+
+`node-updates.test.ts`: настоящие сервис, БД и API с `stubSsh`; сохранение обычных, импортированных, отключённых и партнёрских клиентов,
+ключей и подписок; очередь с syncconf, расписание UTC, запрет гостю, пауза переноса, ограничение повторов и безопасные ошибки.
+`update-awg-script.test.ts`: настоящий bash-скрипт со stateful-подменой Docker CLI — скачивание до остановки,
+замена по ID, ошибки pull/rename/stop/run, несовпадение пира, откат и отказ при несохранённых ручных изменениях.
+`real-docker-node-updates.test.ts`: реальная нода 2, обновление с сохранением БД/конфига/пиров и откат при потере пира в новом контейнере.

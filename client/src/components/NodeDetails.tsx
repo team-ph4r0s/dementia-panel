@@ -297,7 +297,7 @@ export const NodeDetails: React.FC<NodeDetailsProps> = ({
               </span>
               {server.node_image && (
                 <span title="Образ контейнера AmneziaWG и дата его сборки. Свежий образ ставится при переустановке">
-                  образ <span className="font-mono text-ink">{server.node_image}</span>
+                  образ <span className="font-mono text-ink break-all">{server.node_image}</span>
                   {server.node_image_created && <> от {new Date(server.node_image_created).toLocaleDateString('ru-RU')}</>}
                 </span>
               )}
@@ -306,6 +306,10 @@ export const NodeDetails: React.FC<NodeDetailsProps> = ({
             <span className="text-faint">версии будут получены при следующем опросе ноды</span>
           )}
         </div>
+      )}
+
+      {!partner && server.node_update?.available === 1 && (
+        <p className="text-xs text-warn">Доступно обновление AmneziaWG — запустите его в разделе «Обновления AmneziaWG».</p>
       )}
 
       <div className="bg-paper border border-line rounded-xl p-3 space-y-2 text-xs">

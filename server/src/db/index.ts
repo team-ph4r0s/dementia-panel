@@ -434,6 +434,20 @@ const migrations: Array<() => void> = [
   () => {
     addColumn('sessions', "role TEXT NOT NULL DEFAULT 'admin'");
   },
+  // v13: state of image checks and updates; client records and keys are untouched.
+  () => {
+    db.exec(`CREATE TABLE node_updates (
+      server_id INTEGER PRIMARY KEY REFERENCES servers(id) ON DELETE CASCADE,
+      current_image TEXT,
+      latest_image TEXT,
+      available INTEGER NOT NULL DEFAULT 0,
+      checked_at TEXT,
+      attempted_at TEXT,
+      updated_at TEXT,
+      result TEXT,
+      error TEXT
+    )`);
+  },
 ];
 
 /** Версия схемы, которую умеет эта сборка панели (число миграций) */

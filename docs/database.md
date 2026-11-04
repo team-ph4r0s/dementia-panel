@@ -27,6 +27,7 @@ SQLite (`node:sqlite`, Node ≥ 22.13), файл `data/dementia.db`, режим 
 | v10 | Журнал событий панели: таблица `events` |
 | v11 | 2FA и сессии: `admins.totp_secret`, `totp_enabled`, `recovery_codes`; таблица `sessions` с `id`, `ip`, `user_agent`, `last_activity` |
 | v12 | Гостевой доступ: `sessions.role` (`admin` / `guest`); логин и хэш пароля гостя — в `settings` (`guest_*`) |
+| v13 | Проверка и обновление Docker-образов нод: `node_updates` |
 
 ## Таблицы
 
@@ -99,3 +100,11 @@ SQLite (`node:sqlite`, Node ≥ 22.13), файл `data/dementia.db`, режим 
   `sub_*` (оформление подписки), `probe_*` (проверка из стран), `migration_*` (состояние переноса панели: `migration_state`,
   `migration_key` — **зашифрован**, `migration_auth_hash`, `migration_expires_at`, `migration_exported_at`, `migration_migrated_at`,
   `migration_new_url`; в снимок для переноса не попадают).
+
+## Состояние обновлений контейнеров (v13)
+
+`node_updates`: одна запись на ноду, внешний ключ `server_id` с `ON DELETE CASCADE`.
+Хранит `current_image`/`latest_image` (immutable ID), `available`, `checked_at`, `attempted_at`, `updated_at`,
+`result` (`current`, `available`, `updated`, `rolled_back`, `error`) и безопасный текст `error`.
+Настройки `node_auto_update` (по умолчанию `0`) и `node_update_hour` (по умолчанию `3`, UTC) живут в `settings`.
+Обновление контейнера не меняет записи клиентов, подписчиков или их ключи.

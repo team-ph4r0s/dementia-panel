@@ -1,7 +1,8 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { db, initDatabase } from '../src/db/index.js';
 import { AuthService } from '../src/services/auth.service.js';
 import { EventService } from '../src/services/event.service.js';
+import { PANEL_VERSION, VersionService } from '../src/services/version.service.js';
 import { isGuestAllowed } from '../src/middleware/auth.middleware.js';
 import { createAdminApi, type TestEnv } from './helpers/api.js';
 import { startTestServer } from './test-app.js';
@@ -44,6 +45,11 @@ describe('Гостевой доступ (только просмотр)', () => 
 
   beforeAll(async () => {
     initDatabase();
+    // This suite checks guest permissions, not the live GitHub release service.
+    vi.spyOn(VersionService, 'getInfo').mockResolvedValue({
+      current: PANEL_VERSION, latest: null, latest_url: null, published_at: null, update_available: false,
+      releases_url: 'https://github.com/team-ph4r0s/dementia-panel/releases', checked_at: null, check_enabled: false, error: null,
+    });
     env = await startTestServer();
     admin = createAdminApi(env, 'guest_test_admin', ADMIN_PASSWORD);
 
@@ -60,6 +66,7 @@ describe('Гостевой доступ (только просмотр)', () => 
 
   afterAll(async () => {
     await env.close();
+    vi.restoreAllMocks();
   });
 
   it('пока гостевой доступ не настроен, войти нельзя', async () => {
@@ -211,6 +218,9 @@ describe('Гостевой доступ (только просмотр)', () => 
         ['POST', '/api/security/ssl/toggle', { enabled: true }],
         ['POST', '/api/security/fail2ban/ban', { ip: '203.0.113.9' }],
         ['POST', '/api/version/update', { version: 'v9.9.9' }],
+        ['POST', '/api/node-updates/check'],
+        ['POST', '/api/node-updates/update'],
+        ['PUT', '/api/node-updates', { auto_update: true, hour_utc: 3 }],
         ['PUT', '/api/auth/guest', { enabled: false, current_password: GUEST_PASSWORD }],
         ['POST', '/api/auth/change-password', { oldPassword: GUEST_PASSWORD, newPassword: 'NewPassword789' }],
         ['POST', '/api/auth/totp/setup'],
@@ -228,7 +238,7 @@ describe('Гостевой доступ (только просмотр)', () => 
       for (const path of [
         `/api/clients/${clientId}/config`, `/api/clients/${clientId}/qrcode`, '/api/backups', '/api/backups/settings',
         '/api/telegram', '/api/security/ssl', '/api/security/fail2ban', '/api/migration/status', '/api/auth/sessions',
-        '/api/auth/guest', '/api/version/update', '/api/subscription-settings',
+        '/api/auth/guest', '/api/version/update', '/api/subscription-settings', '/api/node-updates',
       ]) {
         const res = await asGuest(path);
         expect(res.status, path).toBe(403);

@@ -3,6 +3,7 @@ import { db, transaction } from '../db/index.js';
 import { AwgService, AwgParams } from '../services/awg.service.js';
 import { SshService } from '../services/ssh.service.js';
 import { ProvisionService } from '../services/provision.service.js';
+import { NodeUpdateService } from '../services/node-update.service.js';
 import { encryptSecret } from '../services/secrets.service.js';
 import { asyncHandler, HttpError, parseId } from '../utils/http.js';
 import { isValidHost, isValidPort, parseSubnet } from '../utils/net.js';
@@ -38,6 +39,7 @@ export function serializeServer(s: any) {
     needs_sync: Boolean(s.needs_sync),
     needs_apply: Boolean(s.needs_apply),
     installing: ProvisionService.isInstalling(s.id),
+    node_update: s.remote_panel_id ? null : NodeUpdateService.state(s.id),
     // Доступность из выбранных стран (пусто, пока проверка выключена)
     probes: ProbeService.resultsFor(s.id),
   };

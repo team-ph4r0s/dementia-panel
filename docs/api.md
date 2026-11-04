@@ -95,3 +95,12 @@ HTTP-кодом. Тела — JSON.
 ## Безопасность `/api/security`
 `GET /ssl`, `POST /ssl/verify-cf`, `/ssl/cf-zones`, `/ssl/issue-cf`, `/ssl/issue-http`, `/ssl/issue-ip`,
 `/ssl/custom`, `/ssl/toggle`; `GET /fail2ban`, `POST /fail2ban/ban`, `/fail2ban/unban`, `/fail2ban/setup`.
+
+## Обновления контейнеров AmneziaWG (только администратор)
+
+- `GET /api/node-updates` → `{settings: {auto_update, hour_utc}, running, active_server, nodes}`. В `nodes` — имя, ID ноды и состояние из `node_updates`, без SSH-вывода и секретов.
+- `PUT /api/node-updates` — `{auto_update: boolean, hour_utc: 0..23}`. По умолчанию автообновление выключено.
+- `POST /api/node-updates/check` — проверить образы всех подходящих нод; опционально `{server_ids: [id, …]}`.
+- `POST /api/node-updates/update` — обновить все подходящие ноды с доступным образом; опционально `{server_ids: [id, …]}` для явной повторной попытки.
+- POST возвращает `202 {started: true}`; пакет выполняется по одной ноде, прогресс читается GET. Пересечение пакетов — 409. Итоги отдельной ноды — `result`/`error` и журнал событий.
+- `GET /api/servers` и `/api/servers/:id` включают `node_update` с результатом проверки/обновления (null, если проверки не было или это партнёрская нода).

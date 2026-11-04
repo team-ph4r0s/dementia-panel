@@ -100,10 +100,32 @@ export interface Server {
   node_image: string | null;
   node_image_created: string | null;
   node_info_at: string | null;
+  node_update?: NodeImageState | null;
   /** Доступность из выбранных стран (пусто, пока проверка выключена) */
   probes?: ProbeResult[];
   /** Порт заглушки проверки доступности на ноде (null — не установлена) */
   stub_port: number | null;
+}
+
+export interface NodeImageState {
+  server_id: number;
+  name?: string;
+  available: number;
+  current_image: string | null;
+  latest_image: string | null;
+  checked_at: string | null;
+  attempted_at: string | null;
+  updated_at: string | null;
+  result: string | null;
+  error: string | null;
+}
+
+export interface NodeUpdateSettings { auto_update: boolean; hour_utc: number }
+export interface NodeUpdatesOverview {
+  settings: NodeUpdateSettings;
+  running: boolean;
+  active_server: number | null;
+  nodes: NodeImageState[];
 }
 
 /** Версия панели и последний релиз на GitHub (GET /api/version) */
