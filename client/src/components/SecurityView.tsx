@@ -8,6 +8,7 @@ import { BackupsCard } from './BackupsCard';
 import { GuestAccessCard } from './GuestAccessCard';
 import { HttpsCard } from './security/HttpsCard';
 import { Fail2banCard } from './security/Fail2banCard';
+import { CloudflarePanelCard } from './security/CloudflarePanelCard';
 
 export const SecurityView: React.FC<{
   publicUrl: string | null;
@@ -45,6 +46,13 @@ export const SecurityView: React.FC<{
       <TelegramCard />
       <BackupsCard />
       <HttpsCard sslStatus={sslStatus} onStatusChange={setSslStatus} onReload={loadSecurityData} />
+      <CloudflarePanelCard onChanged={() => {
+        void loadSecurityData();
+        void api.getSettings().then((settings) => onSettingsSaved?.(settings)).catch(() => {
+          // Enabling HTTPS can make this tab's old HTTP address unavailable; the new domain link stays visible.
+        });
+        onMigrationChange?.();
+      }} />
       <Fail2banCard f2bStatus={f2bStatus} onReload={loadSecurityData} />
 
       {/* Перенос панели на другой сервер */}

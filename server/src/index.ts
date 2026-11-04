@@ -45,6 +45,9 @@ import { SubscriptionService } from './services/subscription.service.js';
 import { SslService, http01Challenges } from './services/ssl.service.js';
 import { errorHandler } from './middleware/error-handler.js';
 import { securityHeaders } from './middleware/security-headers.js';
+import { cloudflareClientIp } from './middleware/cloudflare.js';
+import { CloudflarePanelService } from './services/cloudflare-panel.service.js';
+import { PanelIngressService } from './services/panel-ingress.service.js';
 import { httpsRedirectLocation } from './utils/net.js';
 
 process.on('unhandledRejection', (reason) => {
@@ -64,6 +67,7 @@ if (process.env.TRUST_PROXY) app.set('trust proxy', process.env.TRUST_PROXY);
 const isEncrypted = (req: Request) => Boolean((req.socket as TLSSocket).encrypted);
 
 app.use(securityHeaders);
+app.use(cloudflareClientIp);
 
 // Let's Encrypt HTTP-01 challenge responder (когда панель сама слушает 80 порт)
 app.get('/.well-known/acme-challenge/:token', (req, res) => {
@@ -187,7 +191,7 @@ function loadTls(): void {
 
 SslService.onCertificateChanged(loadTls);
 
-const mainServer = net.createServer((socket) => {
+const panelConnection = (socket: net.Socket) => {
   socket.on('error', () => socket.destroy());
   // Соединение, не приславшее ни байта, закрывается (дальше таймауты задают HTTP/HTTPS-серверы)
   socket.setTimeout(30000, () => socket.destroy());
@@ -199,7 +203,9 @@ const mainServer = net.createServer((socket) => {
     target.emit('connection', socket);
     process.nextTick(() => socket.resume());
   });
-});
+};
+const mainServer = net.createServer(panelConnection);
+PanelIngressService.configure(() => net.createServer(panelConnection));
 
 // ==============================================================================
 // WebSocket: живые логи установки и сигнал «данные изменились» для интерфейса. Первое сообщение — {type: 'auth', token}.
@@ -383,5 +389,6 @@ loadTls();
 
 const PORT = Number(process.env.PORT) || 3001;
 mainServer.listen(PORT, () => {
+  void CloudflarePanelService.restoreIngress();
   console.log(`🚀 Dementia Panel ${PANEL_VERSION} running on port ${PORT} (${SslService.isActive() ? 'HTTPS + HTTP для подписок' : 'HTTP'})`);
 });

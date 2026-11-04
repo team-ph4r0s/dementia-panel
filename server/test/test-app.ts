@@ -23,10 +23,12 @@ import { migrationGuard, subscriptionFreeze } from '../src/middleware/migration-
 import { requireAuth } from '../src/middleware/auth.middleware.js';
 import { errorHandler } from '../src/middleware/error-handler.js';
 import { securityHeaders } from '../src/middleware/security-headers.js';
+import { cloudflareClientIp } from '../src/middleware/cloudflare.js';
 
 export function createTestApp() {
   const app = express();
   app.use(securityHeaders);
+  app.use(cloudflareClientIp);
   app.use(express.json({ limit: '1mb' }));
 
   // Public subscription

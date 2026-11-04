@@ -14,6 +14,11 @@ export function securityHeaders(req: Request, res: Response, next: NextFunction)
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Content-Security-Policy', CONTENT_SECURITY_POLICY);
+  if (/^\/(api|sub)(\/|$)/i.test(req.path ?? req.originalUrl ?? req.url ?? '')) {
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('Cloudflare-CDN-Cache-Control', 'no-store');
+    res.setHeader('CDN-Cache-Control', 'no-store');
+  }
   if ((req.socket as TLSSocket).encrypted) res.setHeader('Strict-Transport-Security', 'max-age=15552000');
   next();
 }

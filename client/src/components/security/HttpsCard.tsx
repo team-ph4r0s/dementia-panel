@@ -59,6 +59,7 @@ export const HttpsCard: React.FC<{
               <p className="text-xs text-muted">
                 Защита панели шифрованием, автовыпуск Let's Encrypt через Cloudflare DNS или сертификат на IP
               </p>
+              {sslStatus?.cfTokenSaved && <p className="text-xs text-ok mt-1">API токен Cloudflare уже сохранён</p>}
             </div>
           </div>
 

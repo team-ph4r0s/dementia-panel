@@ -242,6 +242,21 @@ export interface SslStatus {
   mode: 'letsencrypt_cf' | 'letsencrypt_http' | 'selfsigned_ip' | 'custom' | null;
   expiresAt: string | null;
   autoRenew: boolean;
+  cfTokenSaved?: boolean;
+  email?: string | null;
+}
+
+export interface CloudflarePanelStatus {
+  enabled: boolean;
+  domain: string;
+  origin_ip: string;
+  port: number;
+  url: string | null;
+  token_saved: boolean;
+  email: string;
+  listener_ready: boolean;
+  error: string | null;
+  https_ports: number[];
 }
 
 export interface Fail2banStatus {

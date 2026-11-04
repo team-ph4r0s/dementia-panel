@@ -35,6 +35,7 @@ import type {
   GuestAccess,
   NodeUpdatesOverview,
   NodeUpdateSettings,
+  CloudflarePanelStatus,
 } from '../types';
 
 const API_BASE = '/api';
@@ -116,6 +117,15 @@ async function request<T>(url: string, options: RequestInit, fallback: string): 
 const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) });
 
 export const api = {
+  getCloudflarePanel(): Promise<CloudflarePanelStatus> {
+    return request(`${API_BASE}/security/cloudflare`, {}, 'Ошибка загрузки домена панели');
+  },
+  configureCloudflarePanel(input: { domain: string; token?: string; origin_ip?: string; email?: string; port: number }): Promise<CloudflarePanelStatus> {
+    return request(`${API_BASE}/security/cloudflare`, { method: 'POST', ...json(input) }, 'Не удалось настроить домен панели');
+  },
+  disableCloudflarePanel(): Promise<CloudflarePanelStatus> {
+    return request(`${API_BASE}/security/cloudflare`, { method: 'DELETE' }, 'Не удалось отключить проксирование');
+  },
   getNodeUpdates(): Promise<NodeUpdatesOverview> {
     return request(`${API_BASE}/node-updates`, {}, 'Ошибка загрузки обновлений нод');
   },

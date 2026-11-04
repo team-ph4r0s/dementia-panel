@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { db, transaction } from '../db/index.js';
+import { db, transaction, getSetting } from '../db/index.js';
 import { AwgService, AwgParams } from '../services/awg.service.js';
 import { SshService } from '../services/ssh.service.js';
 import { ProvisionService } from '../services/provision.service.js';
@@ -103,6 +103,9 @@ function validateSubnet(value: unknown): string {
  * Два сервера с одним адресом и портом AmneziaWG управляли бы одним и тем же контейнером на ноде
  */
 function assertEndpointFree(host: string, awgPort: number, exceptId = 0): void {
+  if (getSetting('cf_panel_enabled') === '1' && host.toLowerCase().replace(/\.$/, '') === getSetting('cf_panel_domain')) {
+    throw new HttpError(409, 'Это проксируемый домен панели. Для AmneziaWG укажите IP или отдельный домен без проксирования Cloudflare.');
+  }
   const duplicate = db.prepare(
     'SELECT id FROM servers WHERE LOWER(host) = LOWER(?) AND awg_port = ? AND remote_panel_id IS NULL AND id != ?'
   ).get(host, awgPort, exceptId);

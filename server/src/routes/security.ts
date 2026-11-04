@@ -4,6 +4,7 @@ import { Fail2banService } from '../services/fail2ban.service.js';
 import { requireAuth } from '../middleware/auth.middleware.js';
 import { asyncHandler, HttpError } from '../utils/http.js';
 import { EventService } from '../services/event.service.js';
+import { CloudflarePanelService } from '../services/cloudflare-panel.service.js';
 
 export const securityRouter = Router();
 
@@ -35,52 +36,61 @@ securityRouter.get('/ssl', (req, res) => {
   res.json(SslService.getStatus());
 });
 
+securityRouter.get('/cloudflare', (_req, res) => res.json(CloudflarePanelService.status()));
+securityRouter.post('/cloudflare', asyncHandler(async (req, res) => {
+  res.json(await wrap(() => CloudflarePanelService.configure(req.body)));
+}));
+securityRouter.delete('/cloudflare', asyncHandler(async (_req, res) => {
+  res.json(await wrap(() => CloudflarePanelService.disable()));
+}));
+
 // Verify Cloudflare Token
 securityRouter.post('/ssl/verify-cf', asyncHandler(async (req, res) => {
-  const token = requireString(req.body?.token, 'Токен Cloudflare обязателен');
+  const token = await wrap(() => SslService.resolveCloudflareToken(req.body?.token));
   res.json(await SslService.verifyCloudflareToken(token));
 }));
 
 // Get Cloudflare Zones
 securityRouter.post('/ssl/cf-zones', asyncHandler(async (req, res) => {
-  const token = requireString(req.body?.token, 'Токен Cloudflare обязателен');
+  const token = await wrap(() => SslService.resolveCloudflareToken(req.body?.token));
   res.json(await wrap(() => SslService.getCloudflareZones(token)));
 }));
 
 // Issue Let's Encrypt via Cloudflare DNS-01
 securityRouter.post('/ssl/issue-cf', asyncHandler(async (req, res) => {
   const { domain, email, token, createARecord = true } = req.body ?? {};
-  if (!domain || !email || !token) {
-    throw new HttpError(400, 'Домен, email и токен Cloudflare обязательны');
+  if (!domain || !email) {
+    throw new HttpError(400, 'Домен и email обязательны');
   }
-  res.json(await wrap(() => SslService.issueLetsEncryptCloudflare(domain, email, String(token), Boolean(createARecord))));
+  res.json(await wrap(() => SslService.exclusive(() => SslService.issueLetsEncryptCloudflare(domain, email, SslService.resolveCloudflareToken(token), Boolean(createARecord)))));
 }));
 
 // Issue Let's Encrypt via HTTP-01
 securityRouter.post('/ssl/issue-http', asyncHandler(async (req, res) => {
   const { domain, email } = req.body ?? {};
   if (!domain || !email) throw new HttpError(400, 'Домен и email обязательны');
-  res.json(await wrap(() => SslService.issueLetsEncryptHttp(domain, email)));
+  res.json(await wrap(() => SslService.exclusive(() => SslService.issueLetsEncryptHttp(domain, email))));
 }));
 
 // Issue Self-Signed IP Certificate
 securityRouter.post('/ssl/issue-ip', asyncHandler(async (req, res) => {
   const ip = requireString(req.body?.ip, 'IP адрес или домен обязателен');
-  res.json(await wrap(() => SslService.generateSelfSignedIpCert(ip)));
+  res.json(await wrap(() => SslService.exclusive(() => SslService.generateSelfSignedIpCert(ip))));
 }));
 
 // Save Custom Certificate
 securityRouter.post('/ssl/custom', asyncHandler(async (req, res) => {
   const { cert, key, domain } = req.body ?? {};
   if (!cert || !key) throw new HttpError(400, 'Сертификат (fullchain) и ключ обязательны');
-  await wrap(() => SslService.saveCustomCertificate(cert, key, typeof domain === 'string' ? domain : undefined));
+  await wrap(() => SslService.exclusive(() => SslService.saveCustomCertificate(cert, key, typeof domain === 'string' ? domain : undefined)));
   res.json({ success: true, message: 'Сертификат успешно сохранен' });
 }));
 
 // Toggle SSL
 securityRouter.post('/ssl/toggle', asyncHandler(async (req, res) => {
   const enabled = Boolean(req.body?.enabled);
-  await wrap(() => SslService.toggleSsl(enabled));
+  if (!enabled && CloudflarePanelService.status().enabled) throw new HttpError(409, 'Сначала отключите проксирование Cloudflare: оно требует HTTPS на сервере');
+  await wrap(() => SslService.exclusive(() => SslService.toggleSsl(enabled)));
   EventService.log('info', 'tls.toggled', enabled ? 'HTTPS включён' : 'HTTPS отключён');
   res.json({ success: true, enabled });
 }));

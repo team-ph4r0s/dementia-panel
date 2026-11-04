@@ -238,7 +238,7 @@ describe('Гостевой доступ (только просмотр)', () => 
       for (const path of [
         `/api/clients/${clientId}/config`, `/api/clients/${clientId}/qrcode`, '/api/backups', '/api/backups/settings',
         '/api/telegram', '/api/security/ssl', '/api/security/fail2ban', '/api/migration/status', '/api/auth/sessions',
-        '/api/auth/guest', '/api/version/update', '/api/subscription-settings', '/api/node-updates',
+        '/api/auth/guest', '/api/version/update', '/api/subscription-settings', '/api/node-updates', '/api/security/cloudflare',
       ]) {
         const res = await asGuest(path);
         expect(res.status, path).toBe(403);

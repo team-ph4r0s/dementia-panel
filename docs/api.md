@@ -1,5 +1,16 @@
 # HTTP API панели
 
+## Домен панели через Cloudflare
+
+- `GET /api/security/cloudflare` → `{enabled, domain, origin_ip, port, url, token_saved, email, listener_ready, error, https_ports}`.
+- `POST /api/security/cloudflare` — `{domain, token?, origin_ip?, email?, port?}`. Пустой токен использует сохранённый; IPv4 определяется автоматически,
+  email обязателен при отсутствии подходящего сертификата и сохранённой почты; порт по умолчанию 443. Создаёт или проксирует только адрес панели,
+  выпускает сертификат при необходимости, сохраняет публичный адрес. При ошибке — откат HTTPS/настроек и подтверждённых изменений DNS.
+- `DELETE /api/security/cloudflare` — DNS only для сохранённой записи, без удаления DNS/сертификата/HTTPS-входа/публичного адреса.
+- Все три маршрута закрыты гостю. Подробности и ограничения — [cloudflare.md](cloudflare.md).
+- `GET /api/security/ssl` дополнительно возвращает `cfTokenSaved` и `email`. `verify-cf`, `cf-zones`, `issue-cf` допускают пустой/отсутствующий токен
+  для использования ранее сохранённого. Сам токен не возвращается. Изменения TLS и настройка домена сериализованы.
+
 Все `/api/*`, кроме отмеченных, требуют `Authorization: Bearer <токен сессии>`. Ошибки — JSON `{error}` с
 HTTP-кодом. Тела — JSON.
 

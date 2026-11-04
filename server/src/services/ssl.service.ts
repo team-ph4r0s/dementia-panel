@@ -25,12 +25,17 @@ export interface SslStatus {
   mode: string | null;
   expiresAt: string | null;
   autoRenew: boolean;
+  cfTokenSaved: boolean;
+  email: string | null;
 }
+
+const TLS_SETTINGS = ['ssl_enabled', 'ssl_mode', 'ssl_domain', 'ssl_expires_at', 'ssl_email', 'cf_token'] as const;
+let tlsQueue: Promise<unknown> = Promise.resolve();
 
 type CertificateListener = () => void;
 const listeners: CertificateListener[] = [];
 
-function validateDomain(domain: unknown): string {
+export function validateDomain(domain: unknown): string {
   const clean = String(domain ?? '').trim().toLowerCase();
   if (!/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(clean)) {
     throw new Error('Укажите корректное доменное имя');
@@ -44,7 +49,7 @@ function validateEmail(email: unknown): string {
   return clean;
 }
 
-async function cfFetch(token: string, url: string, init: RequestInit = {}): Promise<any> {
+export async function cfFetch(token: string, url: string, init: RequestInit = {}): Promise<any> {
   const res = await fetch(`https://api.cloudflare.com/client/v4${url}`, {
     ...init,
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(init.headers || {}) },
@@ -79,6 +84,47 @@ function inspectCertificate(certPem: string, keyPem: string): { validTo: string;
 }
 
 export class SslService {
+  /** Certificate mutations and panel-domain setup share a lock, including automatic renewal. */
+  static exclusive<T>(fn: () => Promise<T> | T): Promise<T> {
+    const next = tlsQueue.catch(() => {}).then(fn);
+    tlsQueue = next.catch(() => {});
+    return next;
+  }
+
+  static resolveCloudflareToken(input?: unknown): string {
+    if (input !== undefined && typeof input !== 'string') throw new Error('Токен Cloudflare должен быть строкой');
+    const token = typeof input === 'string' ? input.trim() : '';
+    const value = token || this.getSavedCloudflareToken();
+    if (!value) throw new Error(getSetting('cf_token') ? 'Не удалось прочитать сохранённый токен Cloudflare. Введите его заново.' : 'Укажите токен Cloudflare');
+    if (/[\r\n]/.test(value) || value.length > 4096) throw new Error('Некорректный токен Cloudflare');
+    return value;
+  }
+
+  /** In-memory rollback only: never returned by an API or logged. */
+  static snapshot() {
+    return {
+      settings: Object.fromEntries(TLS_SETTINGS.map((key) => [key, getSetting(key)])),
+      cert: fs.existsSync(certPath) ? fs.readFileSync(certPath) : null,
+      key: fs.existsSync(keyPath) ? fs.readFileSync(keyPath) : null,
+    };
+  }
+
+  static restore(snapshot: ReturnType<typeof SslService.snapshot>): void {
+    for (const [file, value] of [[certPath, snapshot.cert], [keyPath, snapshot.key]] as const) {
+      if (value) fs.writeFileSync(file, value, { mode: file === keyPath ? 0o600 : 0o644 });
+      else fs.rmSync(file, { force: true });
+    }
+    for (const [key, value] of Object.entries(snapshot.settings)) setSetting(key, value);
+    for (const listener of listeners) listener();
+  }
+
+  static coversDomain(domain: string): boolean {
+    if (!this.isActive() || getSetting('ssl_mode') === 'selfsigned_ip') return false;
+    try {
+      const cert = new crypto.X509Certificate(fs.readFileSync(certPath));
+      return Boolean(cert.checkHost(domain)) && Date.parse(cert.validTo) > Date.now();
+    } catch { return false; }
+  }
   static onCertificateChanged(listener: CertificateListener): void {
     listeners.push(listener);
   }
@@ -128,6 +174,8 @@ export class SslService {
       mode,
       expiresAt: getSetting('ssl_expires_at'),
       autoRenew: mode === 'letsencrypt_cf' || mode === 'letsencrypt_http',
+      cfTokenSaved: Boolean(getSetting('cf_token')),
+      email: getSetting('ssl_email'),
     };
   }
 
@@ -178,7 +226,8 @@ export class SslService {
     domain: string,
     email: string,
     cfToken: string,
-    createARecord = true
+    createARecord = true,
+    persistToken = true
   ): Promise<{ success: boolean; error?: string }> {
     const cleanDomain = validateDomain(domain);
     const cleanEmail = validateEmail(email);
@@ -205,7 +254,10 @@ export class SslService {
             cfToken,
             `/zones/${matchedZone.id}/dns_records?type=A&name=${encodeURIComponent(cleanDomain)}`
           );
-          const record = { type: 'A', name: cleanDomain, content: ip, proxied: false, ttl: 120 };
+          // Reissuing a certificate must never turn off the panel's orange cloud.
+          const proxied = existing.result?.[0]?.proxied === true ||
+            (getSetting('cf_panel_enabled') === '1' && getSetting('cf_panel_domain') === cleanDomain);
+          const record = { type: 'A', name: cleanDomain, content: ip, proxied, ttl: proxied ? 1 : 120 };
           if (existing.result && existing.result.length > 0) {
             await cfFetch(cfToken, `/zones/${matchedZone.id}/dns_records/${existing.result[0].id}`, {
               method: 'PUT',
@@ -258,7 +310,7 @@ export class SslService {
 
     this.saveCertificate(cert, key.toString(), 'letsencrypt_cf', cleanDomain, {
       ssl_email: cleanEmail,
-      cf_token: encryptSecret(cfToken),
+      ...(persistToken ? { cf_token: encryptSecret(cfToken) } : {}),
     });
     return { success: true };
   }
@@ -410,7 +462,11 @@ export class SslService {
   /**
    * Продление сертификата Let's Encrypt за 30 дней до окончания
    */
-  static async renewIfNeeded(): Promise<void> {
+  static renewIfNeeded(): Promise<void> {
+    return this.exclusive(() => this.doRenewIfNeeded());
+  }
+
+  private static async doRenewIfNeeded(): Promise<void> {
     const status = this.getStatus();
     if (!status.autoRenew || !status.hasCert || !status.domain) return;
 

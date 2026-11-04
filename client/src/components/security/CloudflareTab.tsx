@@ -11,19 +11,20 @@ interface TabProps {
   onReload: () => void;
 }
 
-export const CloudflareTab: React.FC<TabProps> = ({ setMessage, onReload }) => {
+export const CloudflareTab: React.FC<TabProps> = ({ sslStatus, setMessage, onReload }) => {
+  const saved = Boolean(sslStatus?.cfTokenSaved);
   const [cfToken, setCfToken] = useState('');
   const [cfValid, setCfValid] = useState<boolean | null>(null);
   const [cfVerifying, setCfVerifying] = useState(false);
   const [cfZones, setCfZones] = useState<CloudflareZone[]>([]);
-  const [cfDomain, setCfDomain] = useState('');
-  const [cfEmail, setCfEmail] = useState('');
+  const [cfDomain, setCfDomain] = useState(sslStatus?.domain || '');
+  const [cfEmail, setCfEmail] = useState(sslStatus?.email || '');
   const [cfCreateARecord, setCfCreateARecord] = useState(true);
   const [cfIssuing, setCfIssuing] = useState(false);
 
   // Cloudflare token check
   const handleVerifyCfToken = async () => {
-    if (!cfToken.trim()) return;
+    if (!cfToken.trim() && !saved) return;
     setCfVerifying(true);
     setCfValid(null);
     try {
@@ -56,6 +57,7 @@ export const CloudflareTab: React.FC<TabProps> = ({ setMessage, onReload }) => {
         token: cfToken.trim(),
         createARecord: cfCreateARecord,
       });
+      setCfToken('');
       setMessage({
         type: 'success',
         text: `🎉 Сертификат Let's Encrypt для ${cfDomain} выпущен, HTTPS включён, автопродление настроено.` + HTTPS_SWITCH_NOTE,
@@ -81,13 +83,15 @@ export const CloudflareTab: React.FC<TabProps> = ({ setMessage, onReload }) => {
           {/* Cloudflare Token Input with Verify button */}
           <div>
             <label className="block text-xs font-medium text-muted mb-1">
-              API Токен Cloudflare (с разрешениями Zone:DNS:Edit)
+              API Токен Cloudflare (Zone:Read и DNS:Edit)
             </label>
             <div className="flex items-center gap-2">
               <input
                 type="password"
-                required
-                placeholder="Вставьте токен из Cloudflare Dashboard..."
+                required={!saved}
+                aria-label="API токен Cloudflare для сертификата"
+                autoComplete="new-password"
+                placeholder={saved ? 'Сохранён — оставьте пустым для повторного использования' : 'Вставьте токен из Cloudflare Dashboard...'}
                 value={cfToken}
                 onChange={(e) => {
                   setCfToken(e.target.value);
@@ -98,13 +102,14 @@ export const CloudflareTab: React.FC<TabProps> = ({ setMessage, onReload }) => {
               <button
                 type="button"
                 onClick={handleVerifyCfToken}
-                disabled={cfVerifying || !cfToken.trim()}
+                disabled={cfVerifying || (!cfToken.trim() && !saved)}
                 className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium bg-soft hover:bg-soft-2 text-ink rounded-xl transition disabled:opacity-50 border border-line"
               >
                 {cfVerifying ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5 text-ok" />}
                 <span>{cfValid ? 'Подтвержден' : 'Проверить'}</span>
               </button>
             </div>
+            {saved && <p role="status" className="text-xs text-ok mt-2">Токен Cloudflare сохранён зашифрованным. Оставьте поле пустым, чтобы использовать его; новый токен заменит прежний после успешной операции.</p>}
           </div>
 
           {cfZones.length > 0 && (
@@ -159,7 +164,7 @@ export const CloudflareTab: React.FC<TabProps> = ({ setMessage, onReload }) => {
           <div className="pt-2">
             <button
               type="submit"
-              disabled={cfIssuing || !cfToken.trim()}
+              disabled={cfIssuing || (!cfToken.trim() && !saved)}
               className="flex items-center gap-2 bg-brand disabled:opacity-50 text-on-accent font-bold text-xs px-5 py-2.5 rounded-full transition btn-press"
             >
               {cfIssuing ? (

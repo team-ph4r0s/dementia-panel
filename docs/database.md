@@ -94,6 +94,10 @@ SQLite (`node:sqlite`, Node ≥ 22.13), файл `data/dementia.db`, режим 
 Связи удаляются каскадно вместе с мостом и нодой.
 
 ### Прочее
+
+Настройки домена панели: `cf_panel_enabled`, `cf_panel_domain`, `cf_panel_zone`, `cf_panel_record`, `cf_panel_ip`, `cf_panel_port`,
+`cf_panel_error`. Это метаданные отдельной DNS-записи и HTTPS-входа; секретный API токен остаётся в зашифрованном `cf_token`.
+Схема БД не меняется. `public_url` обновляется после успешной настройки домена. При отключении сохраняются домен, HTTPS-порт и URL.
 - `admins` — администратор (scrypt), зашифрованный `totp_secret`, `totp_enabled`, SHA-256 кодов восстановления; `sessions` — SHA-256 токенов с `expires_at`, ролью (`admin`/`guest`), IP, User-Agent и активностью, `trusted_login_ips` — IP успешных входов
   администратора (исключение из блокировки по логину, см. [security.md](security.md)).
 - `settings` — ключ/значение: `ssl_*`, `cf_token` (**зашифрован**), `public_url`, `client_dns`, `client_mtu`,
