@@ -10,6 +10,10 @@ PASSWORD='UpgradeAdminPass-123'
 LOCAL=https://127.0.0.1:3001
 STRIP() { sed 's/\x1b\[[0-9;]*m//g'; }
 G() { git -c safe.directory='*' -c user.email=test@example.com -c user.name=test "$@"; }
+# /src смонтирован с хоста (другой владелец). При fetch из локального репозитория git-upload-pack не получает настройки из -c,
+# поэтому исключение нужно в глобальной конфигурации (контейнер одноразовый)
+git config --global --add safe.directory /src
+git config --global --add safe.directory /src/.git
 
 apt-get install -y -qq git curl ca-certificates >/dev/null 2>&1
 if ! git -c safe.directory=/src -C /src rev-parse -q --verify "refs/tags/$FROM_TAG" >/dev/null 2>&1; then
