@@ -98,8 +98,8 @@ npx vitest run --coverage --coverage.provider=v8 --coverage.include='src/**'
 пропускаются, если их нет. Нода — контейнер Docker-in-Docker с `sshd` (root / `rootpass123`, `--privileged`); Dockerfile и
 скрипт — в `server/test/docker`:
 
-Образ DinD уже содержит SSH-клиент. Dockerfile добавляет пакет `openssh-server` с его зависимостями,
-чтобы сборка ноды не зависела от согласования версий клиентских пакетов метапакета `openssh`.
+Dockerfile удаляет унаследованный SSH-клиент DinD из локальной базы apk перед загрузкой пакетов.
+Нода принимает SSH-соединения, поэтому ей достаточно `openssh-server` с его зависимостями.
 
 ```bash
 server/test/docker/nodes.sh up       # собрать образ, запустить dementia-node-1 (SSH 2222) и dementia-node-2 (SSH 2223)

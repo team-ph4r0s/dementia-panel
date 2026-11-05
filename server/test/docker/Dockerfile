@@ -2,8 +2,9 @@
 # Собрать и запустить две ноды: ./nodes.sh up
 FROM docker:dind
 
-# DinD уже содержит SSH-клиент. Для тестовой ноды нужны только sshd и его зависимости.
-RUN apk add --no-cache bash openssh-server shadow coreutils iptables iproute2 procps curl \
+# Убираем унаследованный SSH-клиент до обращения к репозиторию: нода принимает SSH-соединения.
+RUN apk del --no-network openssh-client \
+    && apk add --no-cache bash openssh-server shadow coreutils iptables iproute2 procps curl \
     && ssh-keygen -A \
     && echo 'root:rootpass123' | chpasswd \
     && echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config \
