@@ -57,7 +57,7 @@ export const BackupsCard: React.FC = () => {
       <div className="flex flex-wrap justify-end gap-2">
         <button disabled={busy} onClick={() => action(async () => { const result = await api.testBackups(); setMessage({ ok: result.success, text: result.message }); })} className="px-4 py-2 rounded-full bg-paper text-ink text-sm">Проверить подключение</button>
         <button disabled={busy} onClick={() => action(async () => { const result = await api.runBackup(); if (!result.success) throw new Error(result.error); setMessage({ ok: true, text: 'Копия создана' }); await loadFiles(); })} className="flex items-center gap-2 px-4 py-2 rounded-full bg-paper text-ink text-sm"><Play className="w-4 h-4" />Создать сейчас</button>
-        <button disabled={busy} onClick={save} className="flex items-center gap-2 px-4 py-2 rounded-full bg-brand text-on-accent text-sm font-bold">{busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}Сохранить</button>
+        <button disabled={busy} onClick={save} className="flex items-center gap-2 px-4 py-2 rounded-lg btn-press bg-brand text-on-accent text-sm font-bold">{busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}Сохранить</button>
       </div>
 
       <div className="border-t border-line pt-4 space-y-2">

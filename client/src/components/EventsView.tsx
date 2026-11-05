@@ -23,7 +23,7 @@ export const EventsView: React.FC = () => {
     }
   }, [level, offset]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void Promise.resolve().then(load); }, [load]);
 
   return (
     <section data-guest-ok className="bg-card border border-line rounded-2xl p-6 space-y-5">

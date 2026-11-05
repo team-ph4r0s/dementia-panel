@@ -6,8 +6,19 @@ import { requireAuth, AuthenticatedRequest, getBearerToken } from '../middleware
 import { loginIpLimiter, loginUserLimiter, reauthLimiter } from '../middleware/rate-limit.js';
 import { HttpError } from '../utils/http.js';
 import { EventService } from '../services/event.service.js';
+import { LiveService } from '../services/live.service.js';
 
 export const authRouter = Router();
+
+/** Логин длиннее не может существовать (USERNAME_PATTERN — до 64 символов); запас — для имён старых версий */
+const MAX_LOGIN_LENGTH = 128;
+const MAX_PASSWORD_INPUT = 1024;
+
+// Выход, отзыв сессии, смена пароля или логина завершают сессии — их WebSocket закрываются сразу, а не при следующей рассылке
+authRouter.use((req, res, next) => {
+  if (req.method !== 'GET' && req.method !== 'HEAD') res.on('finish', () => LiveService.dropInvalid());
+  next();
+});
 
 /**
  * Подтверждение паролем для смены учётных данных: неверные попытки ограничены (429 после 5 за 15 минут)
@@ -24,6 +35,10 @@ authRouter.post('/login', (req, res) => {
   const { username, password, totp, recovery_code } = req.body ?? {};
   if (typeof username !== 'string' || typeof password !== 'string' || !username || !password) {
     return res.status(400).json({ error: 'Логин и пароль обязательны' });
+  }
+  // Длинные строки не доходят ни до ограничителей (ключ хранится в памяти), ни до scrypt
+  if (username.length > MAX_LOGIN_LENGTH || password.length > MAX_PASSWORD_INPUT) {
+    return res.status(400).json({ error: 'Слишком длинный логин или пароль' });
   }
 
   const ipKey = req.ip || 'unknown';
@@ -68,7 +83,9 @@ authRouter.post('/login', (req, res) => {
     return res.status(401).json({ error: 'Неверное имя пользователя или пароль' });
   }
 
-  loginIpLimiter.reset(ipKey);
+  // Счётчик IP сбрасывает только вход администратора: иначе гость с того же адреса (общий NAT) обнулял бы его
+  // между сериями попыток подобрать пароль администратора
+  if (result.user.role === 'admin') loginIpLimiter.reset(ipKey);
   loginUserLimiter.reset(userKey);
   reauthLimiter.reset(codeKey);
   // Адрес гостя в доверенные не попадает: исключение из блокировки по логину — только для администратора

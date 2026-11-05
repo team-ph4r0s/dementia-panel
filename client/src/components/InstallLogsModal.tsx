@@ -30,9 +30,11 @@ export const InstallLogsModal: React.FC<InstallLogsModalProps> = ({
   useEffect(() => {
     if (!isOpen || !server) return;
 
-    setLogs([]);
-    setStatus('connecting');
-    setErrorMessage(null);
+    void Promise.resolve().then(() => {
+      setLogs([]);
+      setStatus('connecting');
+      setErrorMessage(null);
+    });
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws`;

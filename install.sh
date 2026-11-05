@@ -93,7 +93,7 @@ ask_secret() { # ask_secret VAR "Вопрос" — ввод не отображ�
 CREDS_PENDING=false
 print_pending_credentials() { # при обрыве установки после создания администратора пароль всё равно показывается
   if [ "$CREDS_PENDING" = true ]; then
-    echo -e "\n${YELLOW}Установка прервана, но учётные данные администратора уже созданы:${NC}"
+    echo -e "\n${YELLOW}Установка прервана. Учётные данные, переданные для настройки администратора:${NC}"
     echo "  Логин:  $PANEL_USER"
     if [ -n "${GENERATED_PASSWORD_VALUE:-}" ]; then echo "  Пароль: $GENERATED_PASSWORD_VALUE"; fi
     echo "  Новый пароль при необходимости: cd ${INSTALL_DIR} && node server/dist/cli/reset-admin.js"
@@ -320,7 +320,7 @@ fi
 # 4. Clone or Update Repository
 echo -e "\n${CYAN}[3/7] Развертывание кодовой базы в ${INSTALL_DIR}...${NC}"
 # Новый код скачивается, пока панель ещё работает: при ошибке (нет сети, локальные правки) она остаётся запущенной
-if [ -d "$INSTALL_DIR/.git" ]; then
+if [ -d "$CODE_DIR/.git" ]; then
   echo "Обновление существующей установки..."
   # Репозиторий переименован и перенесён в организацию (ghostoftheeleven/demension-panel → team-ph4r0s/dementia-panel):
   # GitHub перенаправляет старые адреса, но храним новый
@@ -363,11 +363,36 @@ if [ "$UPDATE" = true ]; then
     BACKUP_DIR="$INSTALL_DIR/data/backups"
     mkdir -p "$BACKUP_DIR"
     STAMP=$(date +%Y%m%d-%H%M%S)
-    for f in "$INSTALL_DIR"/data/dementia.db* "$INSTALL_DIR"/data/demension.db*; do
-      [ -f "$f" ] || continue
-      cp -a "$f" "$BACKUP_DIR/$(basename "$f").$STAMP"
+    # Не перезаписываем предыдущий снимок и его WAL/SHM при двух обновлениях за одну секунду.
+    while compgen -G "$BACKUP_DIR/dementia.db*.$STAMP" >/dev/null ||
+          compgen -G "$BACKUP_DIR/demension.db*.$STAMP" >/dev/null; do
+      sleep 1
+      STAMP=$(date +%Y%m%d-%H%M%S)
+    done
+    for db_name in dementia.db demension.db; do
+      [ -f "$INSTALL_DIR/data/$db_name" ] || continue
+      for suffix in "" "-wal" "-shm"; do
+        f="$INSTALL_DIR/data/$db_name$suffix"
+        [ -f "$f" ] || continue
+        cp -a "$f" "$BACKUP_DIR/$db_name$suffix.$STAMP"
+      done
     done
     chmod -R go-rwx "$BACKUP_DIR"
+    # Считаем только основные файлы копий обоих имён БД, WAL и SHM удаляем вместе с ними.
+    # Каталоги резервных копий переноса и файлы других форматов остаются нетронутыми.
+    mapfile -t db_backups < <(
+      for f in "$BACKUP_DIR"/{dementia,demension}.db.*; do
+        [ -f "$f" ] || continue
+        name="${f##*/}"
+        if [[ "$name" =~ ^(dementia|demension)\.db\.([0-9]{8}-[0-9]{6})$ ]]; then
+          printf '%s %s\n' "${BASH_REMATCH[2]}" "${name%%.*}"
+        fi
+      done | LC_ALL=C sort -r
+    )
+    for entry in "${db_backups[@]:5}"; do
+      read -r stamp db_prefix <<< "$entry"
+      rm -f -- "$BACKUP_DIR/$db_prefix.db.$stamp" "$BACKUP_DIR/$db_prefix.db-wal.$stamp" "$BACKUP_DIR/$db_prefix.db-shm.$stamp"
+    done
     echo -e "${GREEN}✓ Резервная копия БД: ${BACKUP_DIR}/dementia.db.${STAMP}${NC}"
   fi
 fi
@@ -592,12 +617,12 @@ if [ "$MIGRATE_MODE" = true ]; then
   fi
 fi
 
-if [ "$SET_CREDENTIALS" = true ]; then
-  PANEL_USER="$PANEL_USER" PANEL_PASSWORD="$PANEL_PASSWORD" node "$INSTALL_DIR/server/dist/cli/reset-admin.js"
-fi
 GENERATED_PASSWORD_VALUE=""
 if [ "$GENERATED_PASSWORD" = true ]; then GENERATED_PASSWORD_VALUE="$PANEL_PASSWORD"; fi
-if [ "$SET_CREDENTIALS" = true ]; then CREDS_PENDING=true; fi
+if [ "$SET_CREDENTIALS" = true ]; then
+  CREDS_PENDING=true
+  PANEL_USER="$PANEL_USER" PANEL_PASSWORD="$PANEL_PASSWORD" node "$INSTALL_DIR/server/dist/cli/reset-admin.js"
+fi
 unset PANEL_PASSWORD
 
 # 6. Setup Systemd Service
@@ -627,6 +652,8 @@ RestartSec=5
 UMask=0077
 PrivateTmp=true
 ProtectHome=read-only
+LockPersonality=true
+RestrictRealtime=true
 
 [Install]
 WantedBy=multi-user.target

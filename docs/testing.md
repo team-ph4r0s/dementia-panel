@@ -35,7 +35,7 @@ npx vitest run --coverage --coverage.provider=v8 --coverage.include='src/**'
 | Файл | Что покрывает |
 |---|---|
 | `awg*.test.ts`, `net.test.ts`, `amnezia-key.test.ts`, `names.test.ts` | Чистые функции: параметры AWG и их проверка, подсети и IP, ключи AmneziaVPN, имена пиров, адрес редиректа |
-| `auth.test.ts`, `admin-auth-settings.test.ts`, `login-lockout.test.ts` | Вход, сессии, смена пароля, блокировки, настройки панели и подписки |
+| `auth.test.ts`, `admin-auth-settings.test.ts`, `login-lockout.test.ts`, `auth-login-limits.test.ts` | Вход, сессии, смена пароля, блокировки, настройки панели и подписки |
 | `admin-servers.test.ts` | Админ-API серверов и клиентов: валидация, отсутствие секретов, удаление, конфиги/QR, импорт ключей Amnezia |
 | `provision-service.test.ts` | `ProvisionService` с подменой SSH: синхронизация, применение, установка, опрос, TOFU, разбор вывода сканирования, подключение установленного AWG |
 | `federation-owner.test.ts`, `api-federation.test.ts`, `federation.test.ts` | Сторона владельца нод: изоляция партнёров, лимиты, приостановка, журнал, ограничения частоты |

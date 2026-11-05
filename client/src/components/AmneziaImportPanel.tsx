@@ -101,7 +101,7 @@ export const AmneziaImportPanel: React.FC<{ onImported: () => void; onClose: () 
         <button
           type="submit"
           disabled={loading}
-          className="flex items-center gap-2 bg-brand hover:bg-brand disabled:opacity-50 text-on-accent font-bold text-sm px-5 py-2 rounded-full transition btn-press hover:text-on-accent"
+          className="flex items-center gap-2 bg-brand hover:bg-brand disabled:opacity-50 text-on-accent font-bold text-sm px-5 py-2 rounded-lg transition btn-press hover:text-on-accent"
         >
           {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
           <span>{loading ? 'Подключение к серверам...' : 'Импортировать'}</span>

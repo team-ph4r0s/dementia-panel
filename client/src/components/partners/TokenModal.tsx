@@ -33,7 +33,7 @@ export const TokenModal: React.FC<{ connectString: string; onClose: () => void }
                 setTimeout(() => setCopied(false), 2000);
               }
             }}
-            className="flex items-center gap-2 bg-brand hover:bg-brand text-on-accent text-sm font-bold px-4 py-2 rounded-full btn-press hover:text-on-accent"
+            className="flex items-center gap-2 bg-brand hover:bg-brand text-on-accent text-sm font-bold px-4 py-2 rounded-lg btn-press hover:text-on-accent"
           >
             <Copy className="w-4 h-4" />
             <span>{copied ? 'Скопировано' : 'Копировать'}</span>

@@ -9,7 +9,11 @@ interface Bucket {
 export class FailureLimiter {
   private buckets = new Map<string, Bucket>();
 
-  constructor(private maxFailures: number, private windowMs: number) {}
+  constructor(private maxFailures: number, private windowMs: number, private maxKeys = 50_000) {}
+
+  get size(): number {
+    return this.buckets.size;
+  }
 
   /** Сколько миллисекунд осталось до разблокировки (0 — не заблокирован) */
   blockedFor(key: string): number {
@@ -27,6 +31,15 @@ export class FailureLimiter {
     const now = Date.now();
     const bucket = this.buckets.get(key);
     if (!bucket || bucket.resetAt <= now) {
+      // Память не растёт без предела при переборе с множества адресов/логинов: сначала истёкшие, затем самые старые записи
+      if (!bucket && this.buckets.size >= this.maxKeys) {
+        this.cleanup();
+        for (const oldest of this.buckets.keys()) {
+          if (this.buckets.size < this.maxKeys) break;
+          this.buckets.delete(oldest);
+        }
+      }
+      this.buckets.delete(key);
       this.buckets.set(key, { failures: 1, resetAt: now + this.windowMs });
     } else {
       bucket.failures++;

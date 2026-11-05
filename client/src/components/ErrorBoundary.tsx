@@ -27,7 +27,7 @@ export class ErrorBoundary extends React.Component<{ children: React.ReactNode }
           <p className="text-sm text-muted break-words">{this.state.error.message}</p>
           <button
             onClick={() => window.location.reload()}
-            className="bg-brand hover:bg-brand text-on-accent text-sm font-bold px-5 py-2 rounded-full transition btn-press hover:text-on-accent"
+            className="bg-brand hover:bg-brand text-on-accent text-sm font-bold px-5 py-2 rounded-lg transition btn-press hover:text-on-accent"
           >
             Перезагрузить страницу
           </button>

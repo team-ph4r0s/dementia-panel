@@ -280,6 +280,13 @@ describe('настройки панели', () => {
     }
   });
 
+  it('отклонённый запрос не сохраняет ни одного поля (#61)', async () => {
+    const before = (await admin.api('/api/settings')).body;
+    const res = await admin.api('/api/settings', 'PUT', { public_url: 'https://other.example.com', client_dns: '4.4.4.4', client_mtu: 100 });
+    expect(res.status).toBe(400);
+    expect((await admin.api('/api/settings')).body).toEqual(before);
+  });
+
   it('DNS и MTU попадают в конфигурацию клиента', async () => {
     await admin.api('/api/settings', 'PUT', { client_dns: '9.9.9.9', client_mtu: 1380 });
     const serverId = insertServer();

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { X, Server, Key, Lock, Shield } from 'lucide-react';
 import { api } from '../api';
 import { AmneziaImportPanel } from './AmneziaImportPanel';
@@ -43,22 +43,28 @@ export const AddServerModal: React.FC<AddServerModalProps> = ({
   const editing = Boolean(editingServer);
   const hasClients = (editingServer?.client_count || 0) > 0;
 
-  // Заполнение формы при каждом открытии (без устаревших значений от прошлого раза)
-  useEffect(() => {
-    if (!isOpen) return;
-    setName(editingServer?.name ?? '');
-    setHost(editingServer?.host ?? '');
-    setSshPort(String(editingServer?.ssh_port ?? 22));
-    setSshUser(editingServer?.ssh_user ?? 'root');
-    setAuthType(editingServer?.has_ssh_key ? 'key' : 'password');
-    setSshPassword('');
-    setSshKey('');
-    setAwgPort(String(editingServer?.awg_port ?? 51820));
-    setSubnet(editingServer?.subnet ?? '10.8.0.1/24');
-    setResetHostKey(false);
-    setError(null);
-    setMode('manual');
-  }, [isOpen, editingServer]);
+  // Заполнение формы при каждом открытии (без устаревших значений от прошлого раза). Сброс — во время рендера при смене
+  // «ключа открытия», а не в эффекте: форма не мигает прежними значениями, а фоновое обновление списка серверов (новый объект
+  // editingServer с тем же id) не затирает ввод пользователя
+  const openKey = isOpen ? `open:${editingServer?.id ?? 'new'}` : 'closed';
+  const [filledFor, setFilledFor] = useState('closed');
+  if (filledFor !== openKey) {
+    setFilledFor(openKey);
+    if (isOpen) {
+      setName(editingServer?.name ?? '');
+      setHost(editingServer?.host ?? '');
+      setSshPort(String(editingServer?.ssh_port ?? 22));
+      setSshUser(editingServer?.ssh_user ?? 'root');
+      setAuthType(editingServer?.has_ssh_key ? 'key' : 'password');
+      setSshPassword('');
+      setSshKey('');
+      setAwgPort(String(editingServer?.awg_port ?? 51820));
+      setSubnet(editingServer?.subnet ?? '10.8.0.1/24');
+      setResetHostKey(false);
+      setError(null);
+      setMode('manual');
+    }
+  }
 
   if (!isOpen) return null;
 
@@ -339,7 +345,7 @@ export const AddServerModal: React.FC<AddServerModalProps> = ({
             <button
               type="submit"
               disabled={loading}
-              className="bg-brand hover:bg-brand disabled:opacity-50 text-on-accent font-bold text-sm px-5 py-2 rounded-full transition btn-press hover:text-on-accent"
+              className="bg-brand hover:bg-brand disabled:opacity-50 text-on-accent font-bold text-sm px-5 py-2 rounded-lg transition btn-press hover:text-on-accent"
             >
               {loading ? 'Сохранение...' : 'Сохранить сервер'}
             </button>

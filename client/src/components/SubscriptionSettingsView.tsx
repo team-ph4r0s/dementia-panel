@@ -121,7 +121,7 @@ export const SubscriptionSettingsView: React.FC<{ subscribers: Subscriber[]; pub
         <button
           type="submit"
           disabled={saving}
-          className="flex items-center justify-center gap-2 bg-brand hover:bg-brand disabled:opacity-50 text-on-accent font-bold text-sm px-5 py-2.5 rounded-full transition btn-press hover:text-on-accent"
+          className="flex items-center justify-center gap-2 bg-brand hover:bg-brand disabled:opacity-50 text-on-accent font-bold text-sm px-5 py-2.5 rounded-lg transition btn-press hover:text-on-accent"
         >
           {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
           <span>Сохранить</span>

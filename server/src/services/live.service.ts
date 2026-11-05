@@ -80,6 +80,15 @@ export class LiveService {
     timer.unref();
   }
 
+  /** Сразу закрывает сокеты, чья сессия больше не действительна (выход, отзыв сессии, смена пароля или логина) */
+  static dropInvalid(): void {
+    for (const client of [...clients]) {
+      if (client.ws.readyState === WebSocket.OPEN && client.valid()) continue;
+      if (client.ws.readyState === WebSocket.OPEN) client.ws.close(4401, 'session expired');
+      clients.delete(client);
+    }
+  }
+
   static get subscribers(): number {
     return clients.size;
   }

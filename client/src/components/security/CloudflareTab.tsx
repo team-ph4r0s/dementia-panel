@@ -165,7 +165,7 @@ export const CloudflareTab: React.FC<TabProps> = ({ sslStatus, setMessage, onRel
             <button
               type="submit"
               disabled={cfIssuing || (!cfToken.trim() && !saved)}
-              className="flex items-center gap-2 bg-brand disabled:opacity-50 text-on-accent font-bold text-xs px-5 py-2.5 rounded-full transition btn-press"
+              className="flex items-center gap-2 bg-brand disabled:opacity-50 text-on-accent font-bold text-xs px-5 py-2.5 rounded-lg transition btn-press"
             >
               {cfIssuing ? (
                 <>

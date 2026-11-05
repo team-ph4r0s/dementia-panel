@@ -30,7 +30,7 @@ export const TwoFactorCard: React.FC = () => {
         </div>
       )}
       {!setup ? (
-        <button type="button" disabled={loading} onClick={() => run(async () => setSetup(await api.setupTotp()))} className="bg-brand text-on-accent px-4 py-2 rounded-full text-sm font-bold btn-press disabled:opacity-50">Настроить 2FA</button>
+        <button type="button" disabled={loading} onClick={() => run(async () => setSetup(await api.setupTotp()))} className="bg-brand text-on-accent px-4 py-2 rounded-lg text-sm font-bold btn-press disabled:opacity-50">Настроить 2FA</button>
       ) : (
         <form onSubmit={(e) => { e.preventDefault(); void run(async () => { const result = await api.enableTotp(setup.secret, code, password); setRecoveryCodes(result.recovery_codes); setSetup(null); setCode(''); }); }} className="space-y-3">
           <div className="p-3 bg-paper border border-line rounded-xl break-all">
@@ -40,7 +40,7 @@ export const TwoFactorCard: React.FC = () => {
           </div>
           <input aria-label="Код из приложения" required inputMode="numeric" maxLength={6} value={code} onChange={(e) => setCode(e.target.value)} className={inputClass} placeholder="Код из приложения" />
           <input aria-label="Пароль для включения 2FA" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} className={inputClass} placeholder="Текущий пароль" />
-          <button disabled={loading} className="bg-brand text-on-accent px-4 py-2 rounded-full text-sm font-bold btn-press disabled:opacity-50">Включить 2FA</button>
+          <button disabled={loading} className="bg-brand text-on-accent px-4 py-2 rounded-lg text-sm font-bold btn-press disabled:opacity-50">Включить 2FA</button>
         </form>
       )}
       <form onSubmit={(e) => { e.preventDefault(); void run(async () => { await api.disableTotp(password); setPassword(''); setRecoveryCodes([]); }); }} className="pt-3 border-t border-line space-y-2">

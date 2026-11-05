@@ -115,4 +115,36 @@ describe('reset-admin CLI', () => {
     // Подключение к файлу БД открывает пустой файл, но схема не создаётся и администратора нет
     expect(() => readAdmins(result.dataDir)).toThrow(/no such table/);
   }, 60000);
+
+  it('2FA: без флага остаётся включённой с подсказкой, PANEL_RESET_2FA=1 отключает её (#68)', () => {
+    const first = runCli({ PANEL_USER: 'totp_admin', PANEL_PASSWORD: 'LongEnough-Pass1' });
+    expect(first.status).toBe(0);
+    const enableTotp = () => {
+      const db = new DatabaseSync(path.join(first.dataDir, 'dementia.db'));
+      try {
+        db.prepare("UPDATE admins SET totp_secret = 'enc:secret', totp_enabled = 1, recovery_codes = '[\"hash\"]'").run();
+      } finally {
+        db.close();
+      }
+    };
+    const totpState = () => {
+      const db = new DatabaseSync(path.join(first.dataDir, 'dementia.db'));
+      try {
+        return db.prepare('SELECT totp_secret, totp_enabled, recovery_codes FROM admins').get();
+      } finally {
+        db.close();
+      }
+    };
+
+    enableTotp();
+    const keep = runCli({ PANEL_PASSWORD: 'LongEnough-Pass2' }, first.dataDir);
+    expect(keep.status).toBe(0);
+    expect(keep.stdout).toContain('PANEL_RESET_2FA=1');
+    expect(totpState()).toMatchObject({ totp_enabled: 1 });
+
+    const reset = runCli({ PANEL_PASSWORD: 'LongEnough-Pass3', PANEL_RESET_2FA: '1' }, first.dataDir);
+    expect(reset.status).toBe(0);
+    expect(reset.stdout).toContain('Двухфакторная аутентификация отключена');
+    expect(totpState()).toEqual({ totp_secret: null, totp_enabled: 0, recovery_codes: null });
+  }, 120000);
 });

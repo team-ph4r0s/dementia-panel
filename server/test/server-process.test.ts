@@ -127,6 +127,22 @@ describe('WebSocket /ws: авторизация первым сообщение�
     ws.close();
   });
 
+  it('после выхода сокет этой сессии закрывается и не может запустить установку', async () => {
+    const loginReply = await request({ path: '/api/auth/login', method: 'POST', body: { username: USER, password: PASSWORD } });
+    const sessionToken = json(loginReply).token as string;
+    const { ws, messages } = await open();
+    ws.send(JSON.stringify({ type: 'auth', token: sessionToken }));
+    await waitFor(messages, (m) => m.type === 'auth_ok');
+
+    const close = closed(ws);
+    const logout = await request({ path: '/api/auth/logout', method: 'POST', headers: { Authorization: `Bearer ${sessionToken}` } });
+    expect(logout.status).toBe(200);
+    // Команда сразу после выхода — раньше она ещё проходила по сохранённой при входе сессии
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'start_install', serverId: 999999 }));
+    expect(await close).toBe(4401);
+    expect(messages.some((m) => m.type === 'log' || (m.type === 'error' && String(m.message).includes('не найден')))).toBe(false);
+  });
+
   it('другой путь, слишком большое сообщение и битый фрейм не роняют процесс', async () => {
     await expect(open(`ws://127.0.0.1:${port}/socket`)).rejects.toThrow();
 

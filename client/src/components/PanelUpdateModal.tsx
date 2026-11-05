@@ -163,7 +163,7 @@ export const PanelUpdateModal: React.FC<PanelUpdateModalProps> = ({ info, onClos
                 <div>Данные, ноды, клиенты и подписки сохранены. Страница перезагрузится, чтобы загрузить новый интерфейс.</div>
                 <button
                   onClick={() => window.location.reload()}
-                  className="px-3 py-1.5 rounded-full bg-brand text-on-accent font-semibold hover:bg-brand transition btn-press hover:text-on-accent"
+                  className="px-3 py-1.5 rounded-lg bg-brand text-on-accent font-semibold hover:bg-brand transition btn-press hover:text-on-accent"
                 >
                   Перезагрузить страницу
                 </button>
@@ -207,7 +207,7 @@ export const PanelUpdateModal: React.FC<PanelUpdateModalProps> = ({ info, onClos
               <summary className="cursor-pointer text-xs text-muted hover:text-ink select-none">Журнал обновления</summary>
               <pre
                 ref={logRef}
-                className="mt-2 max-h-64 overflow-auto p-3 rounded-xl bg-black/70 border border-line text-[10.5px] leading-4 text-muted whitespace-pre-wrap break-all"
+                className="mt-2 max-h-64 overflow-auto p-3 rounded-xl bg-black/70 border border-line text-xs leading-4 text-muted whitespace-pre-wrap break-all"
               >
                 {status.log}
               </pre>
@@ -234,7 +234,7 @@ export const PanelUpdateModal: React.FC<PanelUpdateModalProps> = ({ info, onClos
                   <button
                     onClick={start}
                     disabled={starting}
-                    className="flex items-center gap-2 px-4 py-2 rounded-full text-xs font-semibold bg-brand text-on-accent hover:bg-brand transition disabled:opacity-60 btn-press hover:text-on-accent"
+                    className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold bg-brand text-on-accent hover:bg-brand transition disabled:opacity-60 btn-press hover:text-on-accent"
                   >
                     {starting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                     Обновить сейчас
@@ -245,7 +245,7 @@ export const PanelUpdateModal: React.FC<PanelUpdateModalProps> = ({ info, onClos
               <div className="flex justify-end">
                 <button
                   onClick={() => setConfirm(true)}
-                  className="flex items-center gap-2 px-4 py-2 rounded-full text-xs font-semibold bg-brand text-on-accent hover:bg-brand transition btn-press hover:text-on-accent"
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold bg-brand text-on-accent hover:bg-brand transition btn-press hover:text-on-accent"
                 >
                   <ArrowUpCircle className="w-4 h-4" />
                   Обновить до {info.latest}

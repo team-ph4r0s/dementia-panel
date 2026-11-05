@@ -231,6 +231,9 @@ const send = (ws: WebSocket, payload: unknown) => {
 
 wss.on('connection', (ws: WebSocket) => {
   let user: SessionUser | null = null;
+  let sessionToken = '';
+  /** Сессия по-прежнему действительна и принадлежит администратору (выход, отзыв, смена пароля — закрывают сокет) */
+  const sessionValid = () => AuthService.validateSession(sessionToken)?.role === 'admin';
   // Некорректный фрейм не должен ронять процесс
   ws.on('error', () => ws.terminate());
   const authTimer = setTimeout(() => {
@@ -257,9 +260,16 @@ wss.on('connection', (ws: WebSocket) => {
         return ws.close(4401, 'unauthorized');
       }
       clearTimeout(authTimer);
-      const token: string = msg.token;
-      LiveService.add(ws, () => AuthService.validateSession(token) !== null);
+      sessionToken = msg.token;
+      LiveService.add(ws, sessionValid);
       return send(ws, { type: 'auth_ok' });
+    }
+
+    // Сессию проверяем перед каждой командой, а не только при входе: отозванный токен не должен запускать установку
+    if (!sessionValid()) {
+      user = null;
+      send(ws, { type: 'error', message: 'Сессия истекла или недействительна' });
+      return ws.close(4401, 'session expired');
     }
 
     try {

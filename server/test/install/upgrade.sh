@@ -9,6 +9,7 @@ FROM_TAG="${UPGRADE_FROM_TAG:-v0.1.0}"
 PASSWORD='UpgradeAdminPass-123'
 LOCAL=https://127.0.0.1:3001
 STRIP() { sed 's/\x1b\[[0-9;]*m//g'; }
+G() { git -c safe.directory='*' -c user.email=test@example.com -c user.name=test "$@"; }
 
 apt-get install -y -qq git curl ca-certificates >/dev/null 2>&1
 if ! git -c safe.directory=/src -C /src rev-parse -q --verify "refs/tags/$FROM_TAG" >/dev/null 2>&1; then
@@ -56,11 +57,36 @@ CERT_BEFORE=$(sha256sum /opt/demension-panel/data/ssl/privkey.pem | cut -d' ' -f
 KEY_BEFORE=$(cat /opt/demension-panel/data/secret.key)
 
 section "U3. Обновление до текущей версии (install.sh поверх работающей панели с HTTPS, без вопросов)"
+# Имитируем старую установку из Git. Новый код доступен через локальный origin.
+LEGACY=/opt/demension-panel
+G -C "$LEGACY" init -q -b main &&
+  G -C "$LEGACY" fetch -q /src "refs/tags/$FROM_TAG" &&
+  G -C "$LEGACY" reset -q --mixed FETCH_HEAD &&
+  G -C /work init -q -b main &&
+  G -C /work fetch -q "$LEGACY" main &&
+  G -C /work reset -q --mixed FETCH_HEAD &&
+  G -C /work add -A &&
+  G -C /work commit -q -m 'Текущий код для проверки обновления' &&
+  G init -q --bare -b main /origin.git &&
+  G -C /work push -q /origin.git main &&
+  G -C "$LEGACY" remote add origin /origin.git || exit 1
+EXPECTED_HEAD=$(G -C /work rev-parse HEAD)
+
+# Шесть старых копий под обоими именами БД и отдельная копия переноса.
+BACKUPS="$LEGACY/data/backups"
+mkdir -p "$BACKUPS/pre-migration-fixture"
+for i in 1 2 3; do
+  touch "$BACKUPS/demension.db.20000101-00000$i" "$BACKUPS/demension.db-wal.20000101-00000$i" "$BACKUPS/demension.db-shm.20000101-00000$i"
+  touch "$BACKUPS/dementia.db.20000102-00000$i"
+done
+touch "$BACKUPS/pre-migration-fixture/dementia.db"
+
 cd /work
 bash install.sh > /tmp/update.out 2>&1
 CODE=$?
 STRIP < /tmp/update.out | tail -22
 [ "$CODE" -eq 0 ] || fail "обновление завершилось с ошибкой ($CODE)"
+[ "$(G -C /opt/dementia-panel rev-parse HEAD)" = "$EXPECTED_HEAD" ] || fail "Git-код старой установки не обновился до ожидаемого коммита"
 STRIP < /tmp/update.out | grep_q "не менялись" || fail "установщик не сообщил, что логин и пароль не менялись"
 NEW_VERSION=$(node -p "require('/work/package.json').version")
 
@@ -76,7 +102,18 @@ if (!after.servers[0] || after.servers[0].probe_port !== null) { console.error('
 " || fail "схема БД не обновлена"
 [ "$(sha256sum /opt/dementia-panel/data/ssl/privkey.pem | cut -d' ' -f1)" = "$CERT_BEFORE" ] || fail "сертификат TLS изменился"
 [ "$(cat /opt/dementia-panel/data/secret.key)" = "$KEY_BEFORE" ] || fail "ключ шифрования изменился"
-ls /opt/dementia-panel/data/backups/demension.db.* > /dev/null 2>&1 || fail "резервная копия БД перед обновлением не создана"
+BACKUPS=/opt/dementia-panel/data/backups
+copies=("$BACKUPS"/{dementia,demension}.db.[0-9]*)
+[ "${#copies[@]}" -eq 5 ] || fail "после обновления должно остаться пять копий БД"
+find "$BACKUPS" -maxdepth 1 -name 'demension.db.*' ! -name '*.20000101-*' | grep_q . || fail "резервная копия БД перед обновлением не создана"
+[ -f "$BACKUPS/demension.db.20000101-000003" ] && [ -f "$BACKUPS/demension.db-wal.20000101-000003" ] &&
+  [ -f "$BACKUPS/demension.db-shm.20000101-000003" ] || fail "не сохранена последняя старая копия с WAL и SHM"
+for i in 1 2; do
+  for suffix in "" "-wal" "-shm"; do
+    [ ! -e "$BACKUPS/demension.db$suffix.20000101-00000$i" ] || fail "устаревшая копия или её WAL/SHM не удалены"
+  done
+done
+[ -f "$BACKUPS/pre-migration-fixture/dementia.db" ] || fail "удалена резервная копия переноса"
 # Переименование проекта: каталог, служба, файл БД и переменные .env переехали, старые имена остались ссылками
 [ -d /opt/dementia-panel ] && [ ! -L /opt/dementia-panel ] || fail "панель не перенесена в /opt/dementia-panel"
 [ "$(readlink /opt/demension-panel)" = /opt/dementia-panel ] || fail "/opt/demension-panel не стал ссылкой на новый каталог"
@@ -111,15 +148,11 @@ SUBLINK=$(curl -s "http://127.0.0.1:3001/sub/$SUB_TOKEN" | base64 -d 2>/dev/null
 echo "подписка без нод пуста: [$SUBLINK]"
 
 section "U6. Обновление из панели (update-panel.sh + настоящий install.sh) до тега релиза и откат неудачного релиза"
-# Установка из /work — без .git; для обновления из панели нужен клон: локальный «GitHub» (/origin.git) с релизами новее текущего
-G() { git -c safe.directory='*' -c user.email=test@example.com -c user.name=test "$@"; }
+# Добавляем релизы новее текущего в локальный origin, созданный в U3.
 PANEL=/opt/dementia-panel
 CUR="v$NEW_VERSION"
 NEXT="v$(node -p "const v=require('$PANEL/package.json').version.split('.'); v[2]=+v[2]+1; v.join('.')")"
 BROKEN="v$(node -p "const v=require('$PANEL/package.json').version.split('.'); v[2]=+v[2]+2; v.join('.')")"
-G -C "$PANEL" init -q -b main && G -C "$PANEL" add -A && G -C "$PANEL" commit -q -m "release $CUR"
-G init -q --bare -b main /origin.git
-G -C "$PANEL" remote add origin /origin.git && G -C "$PANEL" push -q origin main
 G clone -q /origin.git /next
 sed -i "s/\"version\": \"$NEW_VERSION\"/\"version\": \"${NEXT#v}\"/" /next/package.json
 G -C /next commit -qam "release $NEXT" && G -C /next tag "$NEXT"

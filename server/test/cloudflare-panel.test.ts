@@ -223,7 +223,9 @@ describe('дополнительный вход панели', () => {
     const primary = http.createServer((_req, res) => res.end('panel'));
     PanelIngressService.configure(() => primary);
     const probe = net.createServer();
-    await new Promise<void>((r) => probe.listen(0, '127.0.0.1', r));
+    // Порт занимается на всех адресах, как его слушает сама панель: в Windows занятый 127.0.0.1 не мешает
+    // слушать «::», и ошибка не возникла бы (#65)
+    await new Promise<void>((r) => probe.listen(0, r));
     const port = (probe.address() as net.AddressInfo).port;
     await expect(PanelIngressService.open(port)).rejects.toThrow('Не удалось открыть');
     await new Promise<void>((r) => probe.close(() => r()));

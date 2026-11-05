@@ -34,7 +34,7 @@ const BridgeLinks: React.FC<{ bridge: Bridge; servers: Server[]; onChanged: () =
 
   // Фоновое обновление не затирает несохранённую правку
   useEffect(() => {
-    if (!dirty) setModes(initial());
+    if (!dirty) void Promise.resolve().then(() => setModes(initial()));
   }, [initial, dirty]);
 
   const linkable = servers.filter((s) => !s.host.includes(':') || modes[s.id]);
@@ -134,7 +134,7 @@ const BridgeLinks: React.FC<{ bridge: Bridge; servers: Server[]; onChanged: () =
             type="button"
             onClick={save}
             disabled={saving}
-            className="flex items-center gap-2 bg-brand disabled:opacity-50 text-on-accent font-bold text-xs px-4 py-2 rounded-full btn-press"
+            className="flex items-center gap-2 bg-brand disabled:opacity-50 text-on-accent font-bold text-xs px-4 py-2 rounded-lg btn-press"
           >
             {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
             Применить на мосту
@@ -199,7 +199,7 @@ export const BridgesView: React.FC<{ servers: Server[] }> = ({ servers }) => {
   }, []);
 
   useEffect(() => {
-    load();
+    void Promise.resolve().then(load);
     const timer = setInterval(load, 15000);
     return () => clearInterval(timer);
   }, [load]);
@@ -256,7 +256,7 @@ export const BridgesView: React.FC<{ servers: Server[] }> = ({ servers }) => {
         </div>
         <button
           onClick={() => setModal({ open: true, bridge: null })}
-          className="flex items-center gap-1.5 bg-brand text-on-accent font-bold text-sm px-4 py-2 rounded-full btn-press"
+          className="flex items-center gap-1.5 bg-brand text-on-accent font-bold text-sm px-4 py-2 rounded-lg btn-press"
         >
           <Plus className="w-4 h-4" /> Мост
         </button>

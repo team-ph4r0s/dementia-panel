@@ -125,12 +125,16 @@ async function applyOrRollback(id: number, previous: Record<string, unknown>, wr
   if (result.success) return null;
 
   const keys = Object.keys(written);
+  // Откат — к параметрам, которые работают на ноде; previous запроса — только если они неизвестны. Иначе при двух правках
+  // A→B и B→C, применённых одним разом, вторая вернула бы B, которого на ноде нет (#58)
+  const baseline = ProvisionService.appliedBaselineOf(id);
+  const restore = (k: string) => (baseline && k in baseline ? baseline[k] : previous[k]) ?? null;
   const rolledBack = transaction(() => {
     const row = db.prepare('SELECT * FROM servers WHERE id = ?').get(id) as any;
     // Значения успели изменить ещё раз — откатывать чужую правку нельзя
     if (!row || keys.some((k) => !sameValue(row[k], written[k]))) return false;
     db.prepare(`UPDATE servers SET ${keys.map((k) => `${k} = ?`).join(', ')}, needs_apply = 1 WHERE id = ?`).run(
-      ...(keys.map((k) => previous[k] ?? null) as any[]),
+      ...(keys.map(restore) as any[]),
       id
     );
     return true;
@@ -391,6 +395,7 @@ serversRouter.put('/:id', asyncHandler(async (req, res) => {
   }
 
   const keys = Object.keys(updates);
+  if (interfaceChanged) ProvisionService.noteAppliedBaseline(server);
   if (keys.length > 0) {
     db.prepare(`UPDATE servers SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(
       ...(keys.map((k) => updates[k]) as any[]),
@@ -455,6 +460,7 @@ serversRouter.post('/:id/randomize-params', asyncHandler(async (req, res) => {
     extra_params: current.extra_params,
   };
   const columns = paramsToColumns(params);
+  ProvisionService.noteAppliedBaseline(server);
   db.prepare(`UPDATE servers SET ${Object.keys(columns).map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(
     ...(Object.values(columns) as any[]),
     id
@@ -496,6 +502,7 @@ serversRouter.post('/:id/scan', asyncHandler(async (req, res) => {
     const result = await ProvisionService.scanAndAdopt(id);
     res.json({ ...result, server: serializeServer(selectServerWithCounts(id)) });
   } catch (err: any) {
+    if (err instanceof HttpError) throw err;
     throw new HttpError(502, err.message);
   }
 }));
@@ -513,6 +520,7 @@ serversRouter.post('/:id/upgrade-protocol', asyncHandler(async (req, res) => {
     extra_params: current.extra_params,
   };
   const columns = paramsToColumns(params);
+  ProvisionService.noteAppliedBaseline(server);
   db.prepare(`UPDATE servers SET ${Object.keys(columns).map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(
     ...(Object.values(columns) as any[]),
     id

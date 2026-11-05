@@ -9,6 +9,8 @@ import { shellQuote, parseSubnet } from '../utils/net.js';
 import { parseServerConfig, paramsToColumns, ParsedServerConfig } from '../utils/awg-params.js';
 import { FederationClient } from './federation-client.service.js';
 import { EventService } from './event.service.js';
+import { MigrationService } from './migration.service.js';
+import { HttpError } from '../utils/http.js';
 import {
   newStubToken,
   parseStubHits,
@@ -75,6 +77,12 @@ const pendingSync = new Map<number, Promise<OperationResult>>();
 // То же для применения параметров: каждое применение перезапускает контейнер и рвёт туннели всех клиентов
 const pendingApply = new Map<number, Promise<OperationResult>>();
 const installing = new Set<number>();
+/**
+ * Строка сервера, параметры которой заведомо работают на ноде (последнее успешное применение или состояние без needs_apply
+ * перед первой правкой). По ней откатываются неудачные правки: несколько правок до применения объединяются в одно, и откат
+ * к «прежнему» значению отдельного запроса вернул бы в БД значение, которого на ноде никогда не было (инвариант 28).
+ */
+const appliedBaseline = new Map<number, Record<string, unknown>>();
 
 export function runExclusive<T>(serverId: number | string, fn: () => Promise<T>): Promise<T> {
   const previous = chains.get(serverId) || Promise.resolve();
@@ -305,7 +313,10 @@ export class ProvisionService {
       '  done',
       '  if docker exec "$c" sh -c "command -v awg" >/dev/null 2>&1; then echo "---TOOL awg"; else echo "---TOOL wg"; fi',
       `  if docker exec "$c" test -f ${AWG_DIR}/clientsTable; then echo "---CLIENTS"; docker exec "$c" cat ${AWG_DIR}/clientsTable; echo; echo "---ENDCLIENTS"; fi`,
-      `  if [ "$c" = "${PANEL_CONTAINER}" ] && [ -f ${AWG_DIR}/demension.env ] && docker inspect -f "{{range .Mounts}}{{.Destination}} {{end}}" "$c" 2>/dev/null | grep -q "${AWG_DIR}"; then echo "---DEMENTIA"; fi`,
+      // Свой контейнер — только если каталог хоста смонтирован ровно в ${AWG_DIR} (источник и назначение совпадают), как в
+      // update-awg.sh: подстрока пути (/opt/amnezia/awg-extra) чужой контейнер своим не делает (инвариант 26)
+      `  mnt=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "${AWG_DIR}"}}{{.Source}}{{end}}{{end}}' "$c" 2>/dev/null)`,
+      `  if [ "$c" = "${PANEL_CONTAINER}" ] && [ -f ${AWG_DIR}/demension.env ] && [ "$mnt" = "${AWG_DIR}" ]; then echo "---DEMENTIA"; fi`,
       'done',
     ].join('\n');
 
@@ -371,7 +382,13 @@ export class ProvisionService {
     const iface = path.basename(target.confPath as string, '.conf');
     const publicKey = AwgService.derivePublicKey(parsed.privateKey);
     const serverPsk = parsed.peers.find((p) => p.presharedKey)?.presharedKey || server.preshared_key;
+    // Сканирование долго ждёт SSH: за это время могли выдать архив переноса. Запись после снимка потерялась бы (инвариант 30)
+    if (MigrationService.isBackgroundPaused()) {
+      throw new HttpError(423, 'Идёт перенос панели на другой сервер: результат сканирования не сохранён. Завершите или отмените перенос.');
+    }
     const columns = paramsToColumns(parsed.params);
+    // Параметры берутся с ноды: прежняя база отката больше не соответствует ей
+    appliedBaseline.delete(server.id);
 
     let imported = 0;
     let skipped = 0;
@@ -554,6 +571,8 @@ export class ProvisionService {
         WHERE id = ?
       `).run(pubKey, privKey, psk, PANEL_CONTAINER, PANEL_CONF, serverId);
 
+      // После установки на ноде ровно то, что в БД: это новая база для отката неудачных правок
+      appliedBaseline.set(serverId, { ...(db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as any) });
       log('\r\n=== AmneziaWG успешно установлен и готов к работе! ===\r\n');
       EventService.log('info', 'server.installed', `AmneziaWG установлен на ноде «${server.name}»`, { kind: 'server', id: serverId });
       return { success: true };
@@ -699,11 +718,22 @@ export class ProvisionService {
         throw new Error(`Ошибка применения параметров: ${result.stderr.trim() || `код ${result.code}`}`);
       }
       db.prepare('UPDATE servers SET needs_apply = 0, needs_sync = 0, last_error = NULL WHERE id = ?').run(serverId);
+      appliedBaseline.set(serverId, { ...server });
       return { success: true };
     } catch (err: any) {
       db.prepare('UPDATE servers SET last_error = ? WHERE id = ?').run(err.message, serverId);
       return { success: false, error: err.message };
     }
+  }
+
+  /** Запоминает работающие на ноде параметры перед первой правкой (если неприменённых изменений нет) */
+  static noteAppliedBaseline(server: any): void {
+    if (!appliedBaseline.has(server.id) && !server.needs_apply) appliedBaseline.set(server.id, { ...server });
+  }
+
+  /** Значения, к которым откатывать неудачное применение; undefined — неизвестно (тогда откат к значению запроса) */
+  static appliedBaselineOf(serverId: number): Record<string, unknown> | undefined {
+    return appliedBaseline.get(serverId);
   }
 
   /**

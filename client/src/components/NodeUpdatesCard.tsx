@@ -18,7 +18,7 @@ export function NodeUpdatesCard({ onChanged }: { onChanged: () => void }) {
     } catch (err: any) { setError(err.message); }
   }, []);
   useEffect(() => {
-    void load();
+    void Promise.resolve().then(load);
     const timer = setInterval(() => { void load(); }, 5000);
     return () => clearInterval(timer);
   }, [load]);

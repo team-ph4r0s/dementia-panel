@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { db, initDatabase } from '../src/db/index.js';
 import { AwgService } from '../src/services/awg.service.js';
+import { ProvisionService } from '../src/services/provision.service.js';
 import { SshService } from '../src/services/ssh.service.js';
 import { encodeAmneziaKey } from '../src/utils/amnezia-key.js';
 import { createAdminApi } from './helpers/api.js';
@@ -258,6 +259,42 @@ describe('действия над сервером', () => {
       for (const key of ['jc', 'jmin', 'jmax', 's1', 's2', 's3', 's4', 'h1', 'h2', 'h3', 'h4', 'header_protection_key']) {
         expect(after[key], key).toEqual(before[key]);
       }
+    });
+
+    it('две правки до применения: при неудаче в БД возвращается значение с ноды, а не промежуточное (#58)', async () => {
+      const id = await installedServer();
+      const original = getServer(id).jc;
+      const [first, second] = [3, 4, 5, 6].filter((v) => v !== original);
+      // Очередь ноды занята синхронизацией, пока не откроем «ворота»; затем все команды падают
+      let open!: () => void;
+      const gate = new Promise<void>((resolve) => (open = resolve));
+      let held = false;
+      stubSsh(async () => {
+        if (!held) {
+          held = true;
+          await gate;
+          return {};
+        }
+        return { code: 1, stderr: 'docker restart failed' };
+      });
+      const busy = ProvisionService.syncPeers(id);
+      const waitJc = async (value: number) => {
+        for (let i = 0; i < 200 && getServer(id).jc !== value; i++) await new Promise((r) => setTimeout(r, 10));
+        expect(getServer(id).jc).toBe(value);
+      };
+
+      const p1 = admin.api(`/api/servers/${id}`, 'PUT', { jc: first });
+      await waitJc(first);
+      const p2 = admin.api(`/api/servers/${id}`, 'PUT', { jc: second });
+      await waitJc(second);
+      open();
+      await busy;
+      const [r1, r2] = await Promise.all([p1, p2]);
+
+      expect(r1.status).toBe(502);
+      expect(r2.status).toBe(502);
+      // На ноде всё ещё исходное значение — в БД и подписках должно быть оно же
+      expect(getServer(id)).toMatchObject({ jc: original, needs_apply: 1 });
     });
 
     it('не откатывает значения, изменённые ещё раз, пока шло применение', async () => {

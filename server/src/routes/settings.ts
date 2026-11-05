@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import net from 'node:net';
-import { getSetting, setSetting } from '../db/index.js';
+import { getSetting, setSetting, transaction } from '../db/index.js';
 import { requireAuth } from '../middleware/auth.middleware.js';
 import { HttpError } from '../utils/http.js';
 
@@ -28,6 +28,8 @@ settingsRouter.get('/', (req, res) => {
 
 settingsRouter.put('/', (req, res) => {
   const body = req.body ?? {};
+  // Сначала проверяются все поля, затем записываются вместе: отклонённый запрос ничего не меняет
+  const updates: [string, string | null][] = [];
 
   if (body.public_url !== undefined) {
     const value = String(body.public_url).trim().replace(/\/+$/, '');
@@ -40,7 +42,7 @@ settingsRouter.put('/', (req, res) => {
       }
       if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new HttpError(400, 'Допустимы только http:// и https://');
     }
-    setSetting('public_url', value || null);
+    updates.push(['public_url', value || null]);
   }
 
   if (body.client_dns !== undefined) {
@@ -48,14 +50,17 @@ settingsRouter.put('/', (req, res) => {
     if (servers.length === 0 || servers.length > 4 || servers.some((s) => !net.isIP(s))) {
       throw new HttpError(400, 'DNS: от 1 до 4 IP-адресов через запятую');
     }
-    setSetting('client_dns', servers.join(', '));
+    updates.push(['client_dns', servers.join(', ')]);
   }
 
   if (body.client_mtu !== undefined) {
     const mtu = Number(body.client_mtu);
     if (!Number.isInteger(mtu) || mtu < 576 || mtu > 1500) throw new HttpError(400, 'MTU должен быть от 576 до 1500');
-    setSetting('client_mtu', String(mtu));
+    updates.push(['client_mtu', String(mtu)]);
   }
 
+  transaction(() => {
+    for (const [key, value] of updates) setSetting(key, value);
+  });
   res.json(readSettings());
 });

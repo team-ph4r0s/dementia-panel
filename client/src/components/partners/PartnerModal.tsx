@@ -103,7 +103,7 @@ export const PartnerModal: React.FC<{
           <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-muted hover:text-ink">
             Отмена
           </button>
-          <button type="submit" disabled={saving} className="flex items-center gap-2 bg-brand hover:bg-brand disabled:opacity-50 text-on-accent text-sm font-bold px-5 py-2 rounded-full btn-press hover:text-on-accent">
+          <button type="submit" disabled={saving} className="flex items-center gap-2 bg-brand hover:bg-brand disabled:opacity-50 text-on-accent text-sm font-bold px-5 py-2 rounded-lg btn-press hover:text-on-accent">
             {saving && <Loader2 className="w-4 h-4 animate-spin" />}
             <span>{partner ? 'Сохранить' : 'Создать доступ'}</span>
           </button>

@@ -102,7 +102,7 @@ export const SubscribersList: React.FC<SubscribersListProps> = ({
 
           <button
             onClick={onAddSubscriber}
-            className="flex items-center gap-1.5 bg-brand text-on-accent font-bold text-xs px-3.5 py-1.5 rounded-full transition btn-press"
+            className="flex items-center gap-1.5 bg-brand text-on-accent font-bold text-xs px-3.5 py-1.5 rounded-lg transition btn-press"
           >
             <Plus className="w-4 h-4" />
             <span>Новый пользователь</span>

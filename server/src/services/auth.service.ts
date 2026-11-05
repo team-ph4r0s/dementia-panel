@@ -89,12 +89,24 @@ export class AuthService {
   /**
    * Set credentials of the (first) admin, creating it if needed; drops all sessions
    */
-  static resetAdmin(username: string, password: string): void {
+  /**
+   * Аварийная установка логина и пароля (CLI reset-admin). resetTotp — ещё и отключить 2FA: иначе при потере аутентификатора
+   * и кодов восстановления новый пароль не помог бы войти. Доступ к CLI уже требует root на сервере панели.
+   */
+  static isTotpEnabled(): boolean {
+    const row = db.prepare('SELECT totp_enabled FROM admins ORDER BY id LIMIT 1').get() as { totp_enabled: number } | undefined;
+    return Boolean(row?.totp_enabled);
+  }
+
+  static resetAdmin(username: string, password: string, options: { resetTotp?: boolean } = {}): void {
     const { hash, salt } = this.hashPassword(password);
     transaction(() => {
       const admin = db.prepare('SELECT id FROM admins ORDER BY id LIMIT 1').get() as { id: number } | undefined;
       if (admin) {
         db.prepare('UPDATE admins SET username = ?, password_hash = ?, salt = ? WHERE id = ?').run(username, hash, salt, admin.id);
+        if (options.resetTotp) {
+          db.prepare('UPDATE admins SET totp_secret = NULL, totp_enabled = 0, recovery_codes = NULL WHERE id = ?').run(admin.id);
+        }
       } else {
         db.prepare('INSERT INTO admins (username, password_hash, salt) VALUES (?, ?, ?)').run(username, hash, salt);
       }

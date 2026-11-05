@@ -12,7 +12,7 @@ export const SessionsCard: React.FC = () => {
     try { setSessions(await api.getSessions()); setError(''); } catch (err: any) { setError(err.message); }
   };
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => { void Promise.resolve().then(load); }, []);
 
   const revoke = async (id: number) => {
     try { await api.revokeSession(id); await load(); } catch (err: any) { setError(err.message); }

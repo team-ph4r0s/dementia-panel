@@ -196,7 +196,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({ isOpen, user, onClos
               <button
                 type="submit"
                 disabled={loading || !!success}
-                className="bg-brand hover:bg-brand disabled:opacity-50 text-on-accent font-bold text-sm px-5 py-2 rounded-full transition btn-press hover:text-on-accent"
+                className="bg-brand hover:bg-brand disabled:opacity-50 text-on-accent font-bold text-sm px-5 py-2 rounded-lg transition btn-press hover:text-on-accent"
               >
                 {loading ? 'Сохранение...' : 'Обновить пароль'}
               </button>
@@ -245,7 +245,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({ isOpen, user, onClos
               <button
                 type="submit"
                 disabled={loading || !!success}
-                className="bg-brand hover:bg-brand disabled:opacity-50 text-on-accent font-bold text-sm px-5 py-2 rounded-full transition btn-press hover:text-on-accent"
+                className="bg-brand hover:bg-brand disabled:opacity-50 text-on-accent font-bold text-sm px-5 py-2 rounded-lg transition btn-press hover:text-on-accent"
               >
                 {loading ? 'Сохранение...' : 'Сменить логин'}
               </button>

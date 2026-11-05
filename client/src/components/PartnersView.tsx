@@ -38,7 +38,7 @@ export const PartnersView: React.FC<{ servers: Server[]; publicUrl: string | nul
   }, [toast]);
 
   useEffect(() => {
-    load();
+    void Promise.resolve().then(load);
   }, [load]);
 
   const serverName = (id: number) => servers.find((s) => s.id === id)?.name || `#${id}`;
@@ -138,7 +138,7 @@ export const PartnersView: React.FC<{ servers: Server[]; publicUrl: string | nul
           </div>
           <button
             onClick={() => setModalPartner(null)}
-            className="flex items-center gap-1.5 bg-brand hover:bg-brand text-on-accent text-xs font-bold px-3.5 py-2 rounded-full btn-press hover:text-on-accent"
+            className="flex items-center gap-1.5 bg-brand hover:bg-brand text-on-accent text-xs font-bold px-3.5 py-2 rounded-lg btn-press hover:text-on-accent"
           >
             <Plus className="w-4 h-4" />
             <span>Выдать доступ</span>
@@ -232,7 +232,7 @@ export const PartnersView: React.FC<{ servers: Server[]; publicUrl: string | nul
           <button
             type="submit"
             disabled={connecting}
-            className="flex items-center justify-center gap-1.5 bg-brand hover:bg-brand disabled:opacity-50 text-on-accent text-xs font-bold px-4 py-2 rounded-full btn-press hover:text-on-accent"
+            className="flex items-center justify-center gap-1.5 bg-brand hover:bg-brand disabled:opacity-50 text-on-accent text-xs font-bold px-4 py-2 rounded-lg btn-press hover:text-on-accent"
           >
             {connecting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Link2 className="w-4 h-4" />}
             <span>Подключить</span>

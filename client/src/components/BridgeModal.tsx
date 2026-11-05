@@ -208,7 +208,7 @@ export const BridgeModal: React.FC<BridgeModalProps> = ({ isOpen, bridge, server
             <button
               type="submit"
               disabled={loading}
-              className="flex items-center gap-2 bg-brand disabled:opacity-50 text-on-accent font-bold text-sm px-5 py-2 rounded-full transition btn-press"
+              className="flex items-center gap-2 bg-brand disabled:opacity-50 text-on-accent font-bold text-sm px-5 py-2 rounded-lg transition btn-press"
             >
               {loading && <Loader2 className="w-4 h-4 animate-spin" />}
               {loading ? (bridge ? 'Сохранение...' : 'Установка...') : bridge ? 'Сохранить' : 'Добавить и установить'}

@@ -295,7 +295,7 @@ export const AddSubscriberModal: React.FC<AddSubscriberModalProps> = ({
             <button
               type="submit"
               disabled={loading}
-              className="bg-brand hover:bg-brand disabled:opacity-50 text-on-accent font-bold text-sm px-5 py-2.5 rounded-full transition btn-press hover:text-on-accent"
+              className="bg-brand hover:bg-brand disabled:opacity-50 text-on-accent font-bold text-sm px-5 py-2.5 rounded-lg transition btn-press hover:text-on-accent"
             >
               {loading ? 'Сохранение...' : editingSubscriber ? 'Обновить доступ' : 'Создать подписку'}
             </button>

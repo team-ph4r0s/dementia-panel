@@ -164,7 +164,7 @@ export const TelegramCard: React.FC = () => {
           type="button"
           disabled={busy}
           onClick={() => void save()}
-          className="flex items-center gap-2 px-4 py-2 rounded-full bg-brand text-on-accent text-sm font-bold btn-press disabled:opacity-50 cursor-pointer"
+          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-brand text-on-accent text-sm font-bold btn-press disabled:opacity-50 cursor-pointer"
         >
           {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
           Сохранить

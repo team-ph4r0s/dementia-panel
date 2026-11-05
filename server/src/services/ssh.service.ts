@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { StringDecoder } from 'node:string_decoder';
 import { Client, ConnectConfig } from 'ssh2';
 
 export interface SshCredentials {
@@ -18,7 +19,12 @@ export interface CommandOptions {
   input?: string;
   onData?: (chunk: string) => void;
   timeoutMs?: number;
+  /** Предел накопленного stdout+stderr в байтах (по умолчанию MAX_COMMAND_OUTPUT): нода — недоверенная сторона */
+  maxOutputBytes?: number;
 }
+
+/** Вывод команд панели — конфиги, дампы, журналы установки — намного меньше; больше — признак сбоя или атаки с ноды */
+export const MAX_COMMAND_OUTPUT = 16 * 1024 * 1024;
 
 export class HostKeyMismatchError extends Error {
   constructor(public expected: string, public actual: string) {
@@ -144,23 +150,43 @@ export class SshService {
         stream.on('error', failChannel);
         stream.stderr.on('error', failChannel);
 
+        // Декодер на поток: многобайтовый символ (кириллица), разрезанный границей чанка, не превращается в «�»
+        const outDecoder = new StringDecoder('utf8');
+        const errDecoder = new StringDecoder('utf8');
+        const limit = opts.maxOutputBytes ?? MAX_COMMAND_OUTPUT;
+        let received = 0;
+        const accept = (data: Buffer): boolean => {
+          if (settled) return false;
+          received += data.length;
+          if (received <= limit) return true;
+          failChannel(new Error(`Вывод команды превысил ${Math.round(limit / 1024 / 1024)} МБ — команда прервана`));
+          return false;
+        };
+
         stream
           .on('close', (code: number | null) => {
             if (timer) clearTimeout(timer);
             conn.end();
             if (settled) return;
             settled = true;
+            const outTail = outDecoder.end();
+            const errTail = errDecoder.end();
+            stdout += outTail;
+            stderr += errTail;
+            if (opts.onData && outTail + errTail) opts.onData(outTail + errTail);
             resolve({ code: code ?? -1, stdout, stderr });
           })
           .on('data', (data: Buffer) => {
-            const text = data.toString('utf-8');
+            if (!accept(data)) return;
+            const text = outDecoder.write(data);
             stdout += text;
-            if (opts.onData) opts.onData(text);
+            if (opts.onData && text) opts.onData(text);
           })
           .stderr.on('data', (data: Buffer) => {
-            const text = data.toString('utf-8');
+            if (!accept(data)) return;
+            const text = errDecoder.write(data);
             stderr += text;
-            if (opts.onData) opts.onData(text);
+            if (opts.onData && text) opts.onData(text);
           });
 
         if (opts.input !== undefined) {

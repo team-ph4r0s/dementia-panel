@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { db, initDatabase } from '../src/db/index.js';
+import { db, initDatabase, setSetting } from '../src/db/index.js';
 import { AwgService } from '../src/services/awg.service.js';
 import { parseNodeInfo, parseScanOutput, ProvisionService } from '../src/services/provision.service.js';
 import { HostKeyMismatchError } from '../src/services/ssh.service.js';
@@ -506,6 +506,26 @@ describe('подключение установленного AmneziaWG (scanAnd
     expect((db.prepare('SELECT COUNT(*) AS c FROM clients WHERE server_id = ?').get(serverId) as any).c).toBe(2);
   });
 
+  it('если за время сканирования выдан архив переноса, результат не записывается (#59)', async () => {
+    const serverId = insertServer({ status: 'uninstalled', deployedPort: null });
+    const before = getServer(serverId);
+    const key = AwgService.generateKeyPair().privateKey;
+    stubSsh(() => {
+      // Пока ждали ответа SSH, панель перешла в exporting (архив уже собран)
+      setSetting('migration_state', 'exporting');
+      setSetting('migration_expires_at', new Date(Date.now() + 3600_000).toISOString());
+      return { stdout: buildScan(key, '[Peer]\nPublicKey = PEERKEY9=\nAllowedIPs = 10.8.1.9/32') };
+    });
+    try {
+      await expect(ProvisionService.scanAndAdopt(serverId)).rejects.toThrow('Идёт перенос панели');
+      expect(getServer(serverId)).toMatchObject({ status: before.status, awg_port: before.awg_port, container_name: before.container_name });
+      expect((db.prepare('SELECT COUNT(*) AS c FROM clients WHERE server_id = ?').get(serverId) as any).c).toBe(0);
+    } finally {
+      setSetting('migration_state', null);
+      setSetting('migration_expires_at', null);
+    }
+  });
+
   it('сохраняет параметры AWG 3.x и дополнительные параметры как есть', async () => {
     const serverId = insertServer({ status: 'uninstalled', deployedPort: null });
     const key = AwgService.generateKeyPair().privateKey;
@@ -601,6 +621,17 @@ describe('защита чужого контейнера при установк
     expect((await ProvisionService.requestReinstall(serverId)).success).toBe(true);
     expect(deployed(ssh.calls)).toHaveLength(1);
     expect(getServer(serverId)).toMatchObject({ managed_by: 'demension', container_name: 'amnezia-awg' });
+  });
+
+  it('контейнер панели опознаётся по точному монтированию /opt/amnezia/awg, а не по подстроке пути (#60)', async () => {
+    const serverId = insertServer({ status: 'uninstalled', deployedPort: null });
+    const ssh = node('');
+    await ProvisionService.installServer(serverId);
+    const scan = ssh.calls.find((call) => isScan(call.command))!.command.replace(/'\\''/g, "'");
+    // Сравнивается источник монтирования с назначением ровно /opt/amnezia/awg — путь /opt/amnezia/awg-extra не подходит
+    expect(scan).toContain('{{if eq .Destination "/opt/amnezia/awg"}}{{.Source}}{{end}}');
+    expect(scan).toContain('[ "$mnt" = "/opt/amnezia/awg" ]');
+    expect(scan).not.toMatch(/Mounts[^\n]*\|\s*grep -q/);
   });
 
   it('собственный контейнер панели переустанавливается без препятствий', async () => {

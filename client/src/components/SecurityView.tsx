@@ -32,7 +32,7 @@ export const SecurityView: React.FC<{
   };
 
   useEffect(() => {
-    loadSecurityData();
+    void Promise.resolve().then(loadSecurityData);
   }, []);
 
   if (loading) {

@@ -89,7 +89,7 @@ export const Fail2banCard: React.FC<{ f2bStatus: Fail2banStatus | null; onReload
               <button
                 onClick={handleSetupFail2ban}
                 disabled={f2bSettingUp}
-                className="flex items-center gap-1.5 bg-brand hover:bg-brand text-on-accent font-bold text-xs px-3.5 py-1.5 rounded-full transition btn-press hover:text-on-accent"
+                className="flex items-center gap-1.5 bg-brand hover:bg-brand text-on-accent font-bold text-xs px-3.5 py-1.5 rounded-lg transition btn-press hover:text-on-accent"
               >
                 {f2bSettingUp ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
                 <span>Установить Fail2ban</span>

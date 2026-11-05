@@ -344,7 +344,7 @@ export const ProbesCard: React.FC<{ onChanged?: () => void }> = ({ onChanged }) 
               <button
                 type="submit"
                 disabled={saving}
-                className="flex items-center gap-2 bg-brand hover:bg-brand disabled:opacity-50 text-on-accent font-bold text-xs px-5 py-2 rounded-full transition btn-press hover:text-on-accent"
+                className="flex items-center gap-2 bg-brand hover:bg-brand disabled:opacity-50 text-on-accent font-bold text-xs px-5 py-2 rounded-lg transition btn-press hover:text-on-accent"
               >
                 {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
                 <span>Сохранить</span>

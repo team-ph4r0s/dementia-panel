@@ -76,7 +76,7 @@ export const HttpIssueTab: React.FC<TabProps> = ({ setMessage, onReload }) => {
           <button
             type="submit"
             disabled={httpIssuing || !httpDomain.trim()}
-            className="flex items-center gap-2 bg-brand hover:bg-brand disabled:opacity-50 text-on-accent font-bold text-xs px-5 py-2.5 rounded-full transition btn-press hover:text-on-accent"
+            className="flex items-center gap-2 bg-brand hover:bg-brand disabled:opacity-50 text-on-accent font-bold text-xs px-5 py-2.5 rounded-lg transition btn-press hover:text-on-accent"
           >
             {httpIssuing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Lock className="w-3.5 h-3.5" />}
             <span>Выпустить сертификат (HTTP-01)</span>

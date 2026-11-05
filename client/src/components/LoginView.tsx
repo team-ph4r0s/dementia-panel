@@ -124,7 +124,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
           <button
             type="submit"
             disabled={loading}
-            className="w-full mt-2 flex items-center justify-center gap-2 bg-brand disabled:opacity-50 text-on-accent font-bold text-sm py-2.5 rounded-full transition btn-press"
+            className="w-full mt-2 flex items-center justify-center gap-2 bg-brand disabled:opacity-50 text-on-accent font-bold text-sm py-2.5 rounded-lg transition btn-press"
           >
             {loading ? (
               <Loader2 className="w-4 h-4 animate-spin" />

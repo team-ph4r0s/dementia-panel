@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# Токену CI нужно только чтение; запись (тег и релиз) — у release.yml
+permissions:
+  contents: read
+
 jobs:
   server:
     runs-on: ubuntu-latest
@@ -12,13 +16,15 @@ jobs:
       run:
         working-directory: server
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: server/package-lock.json
       - run: npm ci
+      # Известные уязвимости в зависимостях, попадающих на сервер панели, блокируют CI
+      - run: npm audit --omit=dev --audit-level=high
       - run: npx tsc --noEmit
       - run: npm test
       - run: npm run build
@@ -29,13 +35,15 @@ jobs:
       run:
         working-directory: client
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: client/package-lock.json
       - run: npm ci
+      # Известные уязвимости в зависимостях, попадающих на сервер панели, блокируют CI
+      - run: npm audit --omit=dev --audit-level=high
       - run: npm run lint
       - run: npm test
       - run: npm run build
@@ -46,7 +54,7 @@ jobs:
   scripts:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: bash -n install.sh && bash -n server/src/scripts/update-awg.sh && bash -n server/src/scripts/deploy-awg.sh && bash -n server/src/scripts/deploy-bridge.sh && bash -n server/src/scripts/update-panel.sh && bash -n server/test/docker/nodes.sh && bash -n server/test/docker/entrypoint.sh && bash -n server/test/install/run.sh && bash -n server/test/install/in-container.sh && bash -n server/test/install/common.sh && bash -n server/test/install/migration-old.sh && bash -n server/test/install/migration-new.sh && bash -n server/test/install/upgrade.sh && bash -n .github/scripts/release.sh
       - run: shellcheck -S error server/src/scripts/update-awg.sh install.sh server/src/scripts/deploy-awg.sh server/src/scripts/deploy-bridge.sh server/src/scripts/update-panel.sh server/test/docker/nodes.sh server/test/docker/entrypoint.sh server/test/install/run.sh server/test/install/in-container.sh server/test/install/common.sh server/test/install/migration-old.sh server/test/install/migration-new.sh server/test/install/upgrade.sh .github/scripts/release.sh
 
@@ -56,7 +64,7 @@ jobs:
   install:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       - run: bash server/test/install/run.sh
@@ -69,8 +77,8 @@ jobs:
       run:
         working-directory: server
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm

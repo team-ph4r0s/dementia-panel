@@ -143,7 +143,7 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
               />
               <button
                 onClick={handleCopy}
-                className="flex items-center gap-1.5 bg-brand hover:bg-brand text-on-accent font-bold text-xs px-4 py-2.5 rounded-full transition flex-shrink-0 btn-press hover:text-on-accent"
+                className="flex items-center gap-1.5 bg-brand hover:bg-brand text-on-accent font-bold text-xs px-4 py-2.5 rounded-lg transition flex-shrink-0 btn-press hover:text-on-accent"
               >
                 {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                 <span>{copied ? 'Скопировано!' : 'Копировать'}</span>

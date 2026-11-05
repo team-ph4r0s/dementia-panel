@@ -105,7 +105,7 @@ export const AddClientModal: React.FC<AddClientModalProps> = ({
             <button
               type="submit"
               disabled={loading}
-              className="bg-brand hover:bg-brand disabled:opacity-50 text-on-accent font-bold text-sm px-5 py-2 rounded-full transition btn-press hover:text-on-accent"
+              className="bg-brand hover:bg-brand disabled:opacity-50 text-on-accent font-bold text-sm px-5 py-2 rounded-lg transition btn-press hover:text-on-accent"
             >
               {loading ? 'Создание...' : 'Создать клиента'}
             </button>

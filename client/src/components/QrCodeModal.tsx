@@ -94,7 +94,7 @@ export const QrCodeModal: React.FC<QrCodeModalProps> = ({
             <button
               type="button"
               onClick={handleDownload}
-              className="flex-1 flex items-center justify-center gap-2 bg-brand hover:bg-brand text-on-accent font-bold text-sm py-2.5 rounded-full transition btn-press hover:text-on-accent"
+              className="flex-1 flex items-center justify-center gap-2 bg-brand hover:bg-brand text-on-accent font-bold text-sm py-2.5 rounded-lg transition btn-press hover:text-on-accent"
             >
               <Download className="w-4 h-4" />
               <span>Скачать .conf файл</span>
