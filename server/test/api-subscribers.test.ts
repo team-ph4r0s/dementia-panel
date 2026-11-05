@@ -1,3 +1,4 @@
+import { get } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { db, initDatabase } from '../src/db/index.js';
 import { AuthService } from '../src/services/auth.service.js';
@@ -88,6 +89,46 @@ describe('API: Подписчики и подписки (интеграцион�
     const decoded = Buffer.from(text, 'base64').toString('utf-8');
     expect(decoded).toContain('awg://');
     expect(decoded).toContain(encodeURIComponent('🇫🇮 Хельсинки'));
+  });
+
+  it('показывает HTML при навигации браузера и сохраняет машинные форматы', async () => {
+    const path = `/sub/${subToken}`;
+    const headers = { Accept: 'text/html,application/xhtml+xml,*/*;q=0.8', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document' };
+    // fetch подставляет собственный Sec-Fetch-Mode, поэтому отправляем заголовки навигации через HTTP.
+    const navigate = (url: string) => new Promise<Response>((resolve, reject) => {
+      get(testEnv.baseUrl + url, { headers }, async (incoming) => {
+        try {
+          const chunks: Buffer[] = [];
+          for await (const chunk of incoming) chunks.push(chunk);
+          resolve(new Response(Buffer.concat(chunks), { status: incoming.statusCode, headers: incoming.headers as Record<string, string> }));
+        } catch (error) {
+          reject(error);
+        }
+      }).on('error', reject);
+    });
+    const raw = await testEnv.request(path);
+    const payload = await raw.text();
+    const response = await navigate(path);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/html');
+    expect(response.headers.get('cache-control')).toContain('no-store');
+    expect(response.headers.get('content-disposition')).toBeNull();
+    const html = await response.text();
+    expect(html).toContain('Иван Петров');
+    expect(html).toContain('🇫🇮 Хельсинки');
+    expect(html).toContain('href="?format=clash"');
+    expect(html).not.toContain('awg://');
+
+    const vpn = await testEnv.request(path, { headers: { Accept: headers.Accept, 'User-Agent': 'Incy/1.0' } });
+    expect(await vpn.text()).toBe(payload);
+    for (const format of ['awg', 'incy', 'json', 'clash', 'mihomo', 'unknown', '']) {
+      const url = `${path}?format=${format}`;
+      const explicit = await navigate(url);
+      const baseline = await testEnv.request(url);
+      expect(explicit.headers.get('content-type')).toBe(baseline.headers.get('content-type'));
+      expect(explicit.headers.get('content-type')).not.toContain('text/html');
+      expect(await explicit.text()).toBe(await baseline.text());
+    }
   });
 
   it('поддерживает формат Clash/mihomo (?format=clash)', async () => {

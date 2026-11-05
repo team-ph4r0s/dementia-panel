@@ -18,9 +18,14 @@
 
 ## Форматы
 
+Навигация в браузере (`Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document` и `Accept: text/html`)
+без параметра `format` показывает HTML-страницу со статусом, сроком, трафиком, списком серверов и ссылками
+на форматы. Распознанные клиенты mihomo сохраняют YAML, а явный параметр `format` сохраняет прежний выбор
+формата даже в браузере. HTML не содержит клиентских конфигураций, не загружает внешние ресурсы и не кешируется.
+
 | Формат | Как выбирается | Тело |
 |---|---|---|
-| Incy (по умолчанию) | `?format=awg`/`incy` или любой UA | base64 списка строк `awg://<base64url(.conf)>#<имя>` ([спецификация](https://docs.incy.cc/en/subscription-format/)) |
+| Incy (по умолчанию) | `?format=awg`/`incy` или запрос, для которого не выбраны HTML и mihomo | base64 списка строк `awg://<base64url(.conf)>#<имя>` ([спецификация](https://docs.incy.cc/en/subscription-format/)) |
 | JSON Incy | `?format=json` | `{"type":"amneziawg","version":1,"servers":[{"name","config":"<base64url .conf>"}]}` |
 | mihomo | `?format=clash`/`mihomo` или UA `mihomo`, `clash-meta`, `clash-verge`, `flclash`, `clashmi`, `clash.party` | JSON (валидный YAML): `proxies` (`type: wireguard` + `amnezia-wg-option`), группа `Dementia`, `rules: MATCH,Dementia` |
 

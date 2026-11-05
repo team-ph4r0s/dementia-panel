@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import { db } from '../db/index.js';
 import { AwgService } from '../services/awg.service.js';
 import { SubscriptionService } from '../services/subscription.service.js';
@@ -7,6 +7,7 @@ import { contentDisposition } from '../utils/http.js';
 import { paramsFromRow } from '../utils/awg-params.js';
 import { countryFlag, ProbeService } from '../services/probe.service.js';
 import { BridgeService } from '../services/bridge.service.js';
+import { renderSubscriptionPage } from './subscription-page.js';
 
 /** Названия доп. параметров AWG 3.x в amnezia-wg-option mihomo */
 const MIHOMO_EXTRA_KEYS: Record<string, string> = {
@@ -47,6 +48,14 @@ export function mihomoAmneziaOption(server: any): Record<string, unknown> {
 export const subscriptionRouter = Router();
 
 type Format = 'awg' | 'json' | 'clash';
+
+function isBrowserNavigation(req: Request): boolean {
+  return req.query.format === undefined
+    && req.get('sec-fetch-mode') === 'navigate'
+    && req.get('sec-fetch-dest') === 'document'
+    && /(?:^|,)\s*text\/html\s*(?:;|,|$)/i.test(req.get('accept') ?? '')
+    && Boolean(req.accepts('html'));
+}
 
 /**
  * Формат по ?format= или по User-Agent: клиенты на ядре mihomo (Clash Verge Rev, FlClash, Mihomo Party,
@@ -116,8 +125,10 @@ export function buildClashConfig(entries: { name: string; server: any; client: a
 subscriptionRouter.get('/:token', (req, res) => {
   const { token } = req.params;
   const format = detectFormat(req.query.format, req.get('user-agent'));
+  const showPage = format === 'awg' && isBrowserNavigation(req);
 
   res.setHeader('Cache-Control', 'no-store');
+  res.vary('Accept').vary('Sec-Fetch-Mode').vary('Sec-Fetch-Dest').vary('User-Agent');
 
   const subscriber = db.prepare('SELECT * FROM subscribers WHERE token = ?').get(token) as any;
   if (!subscriber) {
@@ -129,17 +140,19 @@ subscriptionRouter.get('/:token', (req, res) => {
   }
 
   const usage = SubscriptionService.getUsage(subscriber.id);
-  const active = !SubscriptionService.isExpired(subscriber) && !SubscriptionService.isOverLimit(subscriber, usage);
+  const expired = SubscriptionService.isExpired(subscriber);
+  const overLimit = SubscriptionService.isOverLimit(subscriber, usage);
+  const active = !expired && !overLimit;
   const expire = subscriber.expire_at ? Math.floor(new Date(subscriber.expire_at).getTime() / 1000) : 0;
 
   res.setHeader(
     'Subscription-Userinfo',
     `upload=${usage.upload}; download=${usage.download}; total=${subscriber.traffic_limit || 0}; expire=${expire}`
   );
-  for (const [name, value] of Object.entries(buildSubscriptionHeaders(readSubscriptionSettings(), subscriber.name, ProbeService.getLegend()))) {
+  const subscriptionSettings = readSubscriptionSettings();
+  for (const [name, value] of Object.entries(buildSubscriptionHeaders(subscriptionSettings, subscriber.name, ProbeService.getLegend()))) {
     res.setHeader(name, value);
   }
-  res.setHeader('Content-Disposition', contentDisposition('inline', `${subscriber.name}.${format === 'clash' ? 'yaml' : 'txt'}`));
 
   // Все установленные ноды пользователя: временно недоступная нода не должна пропадать из приложения
   const peers = active
@@ -168,6 +181,20 @@ subscriptionRouter.get('/:token', (req, res) => {
       client: p,
     };
   });
+
+  if (showPage) {
+    return res.type('html').send(renderSubscriptionPage({
+      title: subscriber.name,
+      status: expired ? 'Срок истёк' : overLimit ? 'Лимит исчерпан' : 'Активна',
+      active,
+      expire,
+      used: usage.used,
+      limit: subscriber.traffic_limit,
+      nodes: entries.map((entry) => entry.name),
+    }));
+  }
+
+  res.setHeader('Content-Disposition', contentDisposition('inline', `${subscriber.name}.${format === 'clash' ? 'yaml' : 'txt'}`));
 
   if (format === 'clash') {
     const dns = settings.dns.split(',').map((s) => s.trim()).filter(Boolean);
