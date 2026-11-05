@@ -296,6 +296,22 @@ serversRouter.post('/import-amnezia', asyncHandler(async (req, res) => {
   res.json({ results });
 }));
 
+// Страна — локальная метка карты, в том числе для нод партнёров.
+serversRouter.put('/:id/country', (req, res) => {
+  const id = parseId(req.params.id);
+  const server = getServerOr404(id);
+  const value: unknown = req.body?.country;
+  const country = typeof value === 'string' ? value.trim().toUpperCase() : value;
+  if (country !== null && (typeof country !== 'string' || !/^[A-Z]{2}$/.test(country))) {
+    throw new HttpError(400, 'Укажите двухбуквенный код страны или очистите поле');
+  }
+  if (server.country !== country) {
+    db.prepare('UPDATE servers SET country = ? WHERE id = ?').run(country, id);
+    EventService.log('info', 'server.updated', `Изменена страна ноды «${server.name}»`, { kind: 'server', id });
+  }
+  res.json(serializeServer(selectServerWithCounts(id)));
+});
+
 // PUT update server
 serversRouter.put('/:id', asyncHandler(async (req, res) => {
   const id = parseId(req.params.id);

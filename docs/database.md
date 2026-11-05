@@ -28,6 +28,7 @@ SQLite (`node:sqlite`, Node ≥ 22.13), файл `data/dementia.db`, режим 
 | v11 | 2FA и сессии: `admins.totp_secret`, `totp_enabled`, `recovery_codes`; таблица `sessions` с `id`, `ip`, `user_agent`, `last_activity` |
 | v12 | Гостевой доступ: `sessions.role` (`admin` / `guest`); логин и хэш пароля гостя — в `settings` (`guest_*`) |
 | v13 | Проверка и обновление Docker-образов нод: `node_updates` |
+| v14 | Необязательная метка страны для глобуса: `servers.country` |
 
 ## Таблицы
 
@@ -48,6 +49,7 @@ SQLite (`node:sqlite`, Node ≥ 22.13), файл `data/dementia.db`, режим 
 | `container_name`, `iface`, `conf_path`, `awg_tool` | Где AmneziaWG на ноде (`amnezia-awg`/`awg0`/`/opt/amnezia/awg/awg0.conf`/`awg` у панели) |
 | `managed_by` | `dementia` — контейнер панели, `amnezia` — контейнер приложения Amnezia, `partner` — нода партнёра |
 | `sub_name`, `sub_order` | Отображаемое имя и порядок в подписке |
+| `country` | Двухбуквенный код страны для размещения ноды на глобусе, NULL — без геопривязки. У нод партнёров метка хранится локально |
 | `remote_panel_id`, `remote_node_id` | Нода партнёрской панели (без SSH); каскадное удаление с `remote_panels` |
 | `probe_port` | Порт TCP-проверки доступности из стран для нод без заглушки (ноды партнёров) и запасной для своих; NULL — не задан ([probes.md](probes.md)) |
 | `stub_port`, `stub_token` | Порт заглушки проверки доступности на ноде (NULL — не установлена) и метка её страницы (не секрет: по ней проверяется пересылка через мост) |

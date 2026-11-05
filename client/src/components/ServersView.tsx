@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Map as MapIcon, List } from 'lucide-react';
+import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { Globe2, Map as MapIcon, List } from 'lucide-react';
 import type { Bridge, Client, Server, Subscriber } from '../types';
 import { nodeKey, type Selection } from '../topology/model';
 import { TopologyMap } from './TopologyMap';
@@ -10,13 +10,16 @@ import { ClientList } from './ClientList';
 import { ProbesCard } from './ProbesCard';
 import { ProbeBadges } from './ProbeBadges';
 import { NodeUpdatesCard } from './NodeUpdatesCard';
+import { NodeCountry } from './NodeCountry';
 
-type ViewMode = 'map' | 'list';
+const TopologyGlobe = lazy(() => import('./TopologyGlobe').then(({ TopologyGlobe }) => ({ default: TopologyGlobe })));
+type ViewMode = 'map' | 'globe' | 'list';
 const VIEW_KEY = 'dementia.servers.view.v1';
 
 function readMode(): ViewMode {
   try {
-    return window.localStorage.getItem(VIEW_KEY) === 'list' ? 'list' : 'map';
+    const stored = window.localStorage.getItem(VIEW_KEY);
+    return stored === 'list' || stored === 'globe' ? stored : 'map';
   } catch {
     return 'map';
   }
@@ -99,6 +102,7 @@ export const ServersView: React.FC<ServersViewProps> = (props) => {
       {(
         [
           ['map', 'Карта', MapIcon],
+          ['globe', 'Глобус', Globe2],
           ['list', 'Список', List],
         ] as const
       ).map(([id, label, Icon]) => (
@@ -169,6 +173,9 @@ export const ServersView: React.FC<ServersViewProps> = (props) => {
                 onEditServer={props.onEditServer}
                 onServerChanged={props.onServerChanged}
               />
+              <div className="mt-4">
+                <NodeCountry key={listServer.id} server={listServer} readOnly={props.readOnly} onChanged={props.onServerChanged} />
+              </div>
             </div>
             <ClientList
               clients={clients}
@@ -190,14 +197,20 @@ export const ServersView: React.FC<ServersViewProps> = (props) => {
       {!props.readOnly && <NodeUpdatesCard onChanged={props.onServerChanged} />}
       <div className="flex items-center justify-between gap-3 flex-wrap">{toggle}</div>
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_440px] gap-4 items-start">
-        <TopologyMap
-          servers={servers}
-          bridges={bridges}
-          subscribers={subscribers}
-          selected={valid}
-          onSelect={select}
-          className="h-[58dvh] min-h-[380px] lg:h-[calc(100dvh-11.5rem)] lg:min-h-[520px] rounded-2xl border border-line bg-page/60"
-        />
+        {mode === 'globe' ? (
+          <Suspense fallback={<p className="rounded-2xl border border-line bg-card p-5 text-xs text-muted">Загружается глобус…</p>}>
+            <TopologyGlobe servers={servers} bridges={bridges} subscribers={subscribers} selected={valid} onSelect={select} />
+          </Suspense>
+        ) : (
+          <TopologyMap
+            servers={servers}
+            bridges={bridges}
+            subscribers={subscribers}
+            selected={valid}
+            onSelect={select}
+            className="h-[58dvh] min-h-[380px] lg:h-[calc(100dvh-11.5rem)] lg:min-h-[520px] rounded-2xl border border-line bg-page/60"
+          />
+        )}
 
         <div
           ref={inspectorRef}
@@ -207,6 +220,7 @@ export const ServersView: React.FC<ServersViewProps> = (props) => {
         >
           {valid?.kind === 'server' && selectedServer ? (
             <>
+              <NodeCountry key={`country-${selectedServer.id}`} server={selectedServer} readOnly={props.readOnly} onChanged={props.onServerChanged} />
               <NodeDetails
                 key={selectedServer.id}
                 server={selectedServer}

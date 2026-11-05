@@ -11,13 +11,15 @@ export const CountrySelect: React.FC<{
   onChange: (code: string) => void;
   /** Подпись пустого значения; без неё страна обязательна */
   emptyLabel?: string;
+  label?: string;
   className?: string;
-}> = ({ value, onChange, emptyLabel, className }) => {
+}> = ({ value, onChange, emptyLabel, label, className }) => {
   const [custom, setCustom] = useState(Boolean(value) && !COMMON_COUNTRIES.includes(value));
   const selected = custom ? OTHER : value;
   return (
     <div className="flex items-center gap-2">
       <select
+        aria-label={label}
         value={selected}
         required={!emptyLabel}
         onChange={(e) => {
@@ -41,6 +43,7 @@ export const CountrySelect: React.FC<{
       </select>
       {custom && (
         <input
+          aria-label={label ? 'Код страны' : undefined}
           value={value}
           onChange={(e) => onChange(e.target.value.trim().toLowerCase().slice(0, 2))}
           placeholder="код"

@@ -50,6 +50,22 @@ describe('API: Подписчики и подписки (интеграцион�
   let subscriberId: number;
   let subToken: string;
 
+  it('сохраняет, нормализует и очищает страну ноды для карты', async () => {
+    const path = `/api/servers/${serverId}/country`;
+    const setCountry = (country: unknown) => testEnv.request(path, {
+      method: 'PUT',
+      headers: authHeaders(),
+      body: JSON.stringify({ country }),
+    });
+    expect((await setCountry('Finland')).status).toBe(400);
+    const updated = await setCountry(' fi ');
+    expect(updated.status).toBe(200);
+    expect(await updated.json()).toMatchObject({ country: 'FI', status: 'online' });
+    const saved = await testEnv.request(`/api/servers/${serverId}`, { headers: authHeaders() });
+    expect(await saved.json()).toMatchObject({ country: 'FI' });
+    expect(await (await setCountry(null)).json()).toMatchObject({ country: null });
+  });
+
   it('создаёт подписчика и автоматически генерирует для него клиента на выбранном сервере', async () => {
     const res = await testEnv.request('/api/subscribers', {
       method: 'POST',

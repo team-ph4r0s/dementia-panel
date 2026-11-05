@@ -200,6 +200,7 @@ describe('Гостевой доступ (только просмотр)', () => 
       const attempts: [string, string, unknown?][] = [
         ['POST', '/api/servers', { name: 'x', host: '203.0.113.1', ssh_password: 'p', awg_port: 51820, subnet: '10.1.1.1/24' }],
         ['PUT', `/api/servers/${serverId}`, { name: 'Взлом' }],
+        ['PUT', `/api/servers/${serverId}/country`, { country: 'FI' }],
         ['DELETE', `/api/servers/${serverId}`],
         ['POST', `/api/servers/${serverId}/sync`],
         ['POST', `/api/servers/${serverId}/test-ssh`],

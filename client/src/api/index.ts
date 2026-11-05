@@ -228,6 +228,10 @@ export const api = {
     return request(`${API_BASE}/servers/${id}`, { method: 'PUT', ...json(data) }, 'Ошибка обновления сервера');
   },
 
+  updateServerCountry(id: number, country: string | null): Promise<Server> {
+    return request(`${API_BASE}/servers/${id}/country`, { method: 'PUT', ...json({ country }) }, 'Ошибка сохранения страны');
+  },
+
   async deleteServer(id: number, options: { teardown?: boolean; force?: boolean } = {}): Promise<void> {
     const params = new URLSearchParams();
     if (options.teardown) params.set('teardown', '1');

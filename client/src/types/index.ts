@@ -44,6 +44,7 @@ export interface Subscriber {
 export type ServerStatus = 'uninstalled' | 'installing' | 'online' | 'offline' | 'error';
 
 export interface Server {
+  country?: string | null;
   id: number;
   name: string;
   host: string;

@@ -448,6 +448,10 @@ const migrations: Array<() => void> = [
       error TEXT
     )`);
   },
+  // v14: география ноды для глобуса
+  () => {
+    addColumn('servers', 'country TEXT');
+  },
 ];
 
 /** Версия схемы, которую умеет эта сборка панели (число миграций) */
