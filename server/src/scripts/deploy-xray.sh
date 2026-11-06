@@ -103,15 +103,15 @@ docker pull "$IMAGE_NAME"
 echo "[4/6] Подготовка конфигурации Xray-core..."
 mkdir -p "$XRAY_DIR"
 chmod 700 "$XRAY_DIR"
-echo "$XRAY_CONF_B64" | base64 -d > "$XRAY_DIR/config.json.new"
-chmod 600 "$XRAY_DIR/config.json.new"
+echo "$XRAY_CONF_B64" | base64 -d > "$XRAY_DIR/config.new.json"
+chmod 600 "$XRAY_DIR/config.new.json"
 # Образ distroless запускается не от root: конфиг 600 и порты < 1024 требуют --user 0:0
-if ! docker run --rm --user 0:0 -v "$XRAY_DIR:/etc/xray:ro" "$IMAGE_NAME" run -test -c /etc/xray/config.json.new; then
-  rm -f "$XRAY_DIR/config.json.new"
+if ! docker run --rm --user 0:0 -v "$XRAY_DIR:/etc/xray:ro" "$IMAGE_NAME" run -test -c /etc/xray/config.new.json; then
+  rm -f "$XRAY_DIR/config.new.json"
   echo "Ошибка: Xray отклонил сгенерированную конфигурацию, работающий контейнер не тронут."
   exit 1
 fi
-mv -f "$XRAY_DIR/config.json.new" "$XRAY_DIR/config.json"
+mv -f "$XRAY_DIR/config.new.json" "$XRAY_DIR/config.json"
 printf 'VLESS_PORT=%s\nXRAY_IMAGE=%s\n' "$VLESS_PORT" "$IMAGE_NAME" > "$XRAY_DIR/dementia.env.new"
 chmod 600 "$XRAY_DIR/dementia.env.new"
 mv -f "$XRAY_DIR/dementia.env.new" "$XRAY_DIR/dementia.env"

@@ -29,7 +29,7 @@ AmneziaWG быстрее на чистом UDP и остаётся проток�
 ## Добавление ноды
 
 В окне «Добавить сервер» выберите **VLESS Reality**: порт по умолчанию 443 (должен быть свободен), подсети нет. Панель генерирует
-ключи и параметры Reality (`generateVlessParams`: сайт из списка `DEFAULT_REALITY_TARGETS`, один shortId, flow `xtls-rprx-vision`,
+ключи и параметры Reality (`generateVlessParams`: сайт из списка `DEFAULT_REALITY_TARGETS` — без `www.microsoft.com`/`www.apple.com`, на которые Xray 26 предупреждает о блокировке, один shortId, flow `xtls-rprx-vision`,
 отпечаток `chrome`). Установка — `deploy-xray.sh` через stdin, см. [node-management.md](node-management.md#vless).
 
 ## Параметры Reality

@@ -132,7 +132,7 @@ AmneziaWG он не трогает. Мосты в странах пользов�
 
 - **Установка** (`doInstallVless`): до изменений проверяется, что контейнер `dementia-xray` без метки `/opt/dementia-xray/dementia.env` не существует и TCP-порт
   не занят чужой службой. `deploy-xray.sh` (через stdin): Docker, `docker pull ghcr.io/xtls/xray-core:latest`, проверка конфига `xray run -test` до замены
-  контейнера, контейнер `--restart always --network host --user 0:0` с каталогом `/opt/dementia-xray` в `/etc/xray`, открытие TCP-порта, fail2ban, ожидание
+  контейнера (временный файл `config.new.json`: формат Xray определяет по расширению, `config.json.new` он не читает), контейнер `--restart always --network host --user 0:0` с каталогом `/opt/dementia-xray` в `/etc/xray`, открытие TCP-порта, fail2ban, ожидание
   работающего контейнера и порта. Успех — маркер `---DEMENTIA_OK---`, затем `deployed_port = awg_port`.
 - **Синхронизация и применение**: config.json пишется на хост (`umask 077`, атомарный `mv`), затем `docker restart`. Смена порта — переустановка.
 - **Статистика**: `docker exec dementia-xray /usr/local/bin/xray api statsquery -s 127.0.0.1:10085 -reset`; разбор — `parseXrayStats` (строгий формат имён

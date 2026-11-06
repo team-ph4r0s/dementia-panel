@@ -36,10 +36,11 @@ export const VLESS_FLOWS = ['xtls-rprx-vision', ''] as const;
 export type VlessFlow = (typeof VLESS_FLOWS)[number];
 export const VLESS_FINGERPRINTS = ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', 'random', 'randomized'] as const;
 
-/** Сайты для маскировки Reality по умолчанию: TLS 1.3 + HTTP/2, не за Cloudflare */
+/**
+ * Сайты для маскировки Reality по умолчанию: TLS 1.3 + HTTP/2, не за Cloudflare. www.microsoft.com и www.apple.com
+ * не используются: Xray 26 предупреждает, что с ними сервер блокируют чаще.
+ */
 export const DEFAULT_REALITY_TARGETS = [
-  'www.microsoft.com',
-  'www.apple.com',
   'dl.google.com',
   'www.samsung.com',
   'www.nvidia.com',
@@ -117,11 +118,11 @@ export function vlessParamsToColumns(p: VlessParams): Record<string, string> {
  */
 export function validateVlessParams(p: VlessParams): string | null {
   if (typeof p.reality_sni !== 'string' || !HOSTNAME_RE.test(p.reality_sni)) {
-    return 'SNI Reality должен быть доменным именем (например, www.microsoft.com)';
+    return 'SNI Reality должен быть доменным именем (например, dl.google.com)';
   }
   const dest = typeof p.reality_dest === 'string' ? p.reality_dest.match(/^([^:\s]+):(\d{1,5})$/) : null;
   if (!dest || !HOSTNAME_RE.test(dest[1]) || Number(dest[2]) < 1 || Number(dest[2]) > 65535) {
-    return 'Адрес маскировки Reality укажите как домен:порт (например, www.microsoft.com:443)';
+    return 'Адрес маскировки Reality укажите как домен:порт (например, dl.google.com:443)';
   }
   if (!Array.isArray(p.reality_short_ids) || p.reality_short_ids.length < 1 || p.reality_short_ids.length > 8) {
     return 'Нужен от 1 до 8 shortId';

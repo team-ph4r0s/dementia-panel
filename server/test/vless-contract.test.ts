@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  DEFAULT_REALITY_TARGETS,
   generateVlessParams,
   isValidUuid,
   toXrayKey,
@@ -71,6 +72,12 @@ describe('параметры VLESS', () => {
     expect(validateVlessParams({ ...base, reality_short_ids: [] })).not.toBeNull();
     expect(validateVlessParams({ ...base, xray_flow: 'other' as any })).not.toBeNull();
     expect(validateVlessParams({ ...base, xray_fingerprint: 'chrome"' })).not.toBeNull();
+  });
+
+  it('сайты маскировки по умолчанию — без тех, на которые Xray предупреждает о блокировке', () => {
+    expect(DEFAULT_REALITY_TARGETS).not.toContain('www.microsoft.com');
+    expect(DEFAULT_REALITY_TARGETS).not.toContain('www.apple.com');
+    for (let i = 0; i < 20; i++) expect(DEFAULT_REALITY_TARGETS).toContain(generateVlessParams().reality_sni);
   });
 
   it('ключ переводится в base64url без выравнивания, UUID проверяется строго', () => {

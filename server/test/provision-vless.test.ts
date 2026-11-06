@@ -436,8 +436,14 @@ describe('deploy-xray.sh', () => {
     const foreignCheck = script.indexOf('метки панели');
     expect(foreignCheck).toBeGreaterThan(0);
     expect(foreignCheck).toBeLessThan(script.indexOf('dementia.env.new'));
-    expect(foreignCheck).toBeLessThan(script.indexOf('config.json.new'));
-    expect(script.indexOf('run -test -c /etc/xray/config.json.new')).toBeLessThan(script.indexOf('docker rm -f "$CONTAINER_NAME"'));
+    expect(foreignCheck).toBeLessThan(script.indexOf('config.new.json'));
+    expect(script.indexOf('run -test -c /etc/xray/config.new.json')).toBeLessThan(script.indexOf('docker rm -f "$CONTAINER_NAME"'));
+  });
+
+  it('проверяемый конфиг имеет расширение .json: формат Xray определяет по расширению (config.json.new отвергался)', () => {
+    const tested = [...script.matchAll(/run -test -c ([^\s;]+)/g)].map((m) => m[1]);
+    expect(tested.length).toBeGreaterThan(0);
+    for (const file of tested) expect(file).toMatch(/\.json$/);
   });
 
   it('образ distroless запускается от root (конфиг 600, порт 443) и не трогает AmneziaWG', () => {
