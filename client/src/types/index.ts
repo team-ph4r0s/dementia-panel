@@ -497,6 +497,24 @@ export interface Bridge {
   links: BridgeLink[];
 }
 
+/** Диагностика пути «мост → панель» (POST /api/bridges/:id/panel-check) */
+export interface PanelPathCheck {
+  ok: boolean;
+  host: string;
+  port: number;
+  name: string | null;
+  steps: { ok: boolean; title: string; detail: string }[];
+}
+
+export interface FailoverDnsCheck {
+  domain: string;
+  resolved: string[];
+  published: string[];
+  missing: string[];
+  extra: string[];
+  error: string | null;
+}
+
 /** Резервный домен подписок (docs/bridges.md#failover) */
 export interface FailoverStatus {
   enabled: boolean;

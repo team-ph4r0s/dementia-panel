@@ -237,3 +237,84 @@ describe('резервный домен подписок', () => {
     SslService.clearCertificate();
   });
 });
+
+describe('диагностика пути «мост → панель»', () => {
+  async function tlsPanel(name: string) {
+    const https = await import('node:https');
+    const cert = await generate([{ name: 'commonName', value: name }], {
+      keySize: 2048, extensions: [{ name: 'subjectAltName', altNames: [{ type: 2, value: name }] }],
+    } as any);
+    const server = https.createServer({ key: cert.private, cert: cert.cert }, (req, res) => {
+      if (req.url === '/api/health') { res.setHeader('Content-Type', 'application/json'); res.end('{"status":"ok"}'); return; }
+      res.statusCode = 404; res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    return { server, cert, port: (server.address() as any).port as number };
+  }
+
+  it('все шаги зелёные: TCP до моста, TLS с именем резервного домена, ответ панели', async () => {
+    const panel = await tlsPanel(FAILOVER);
+    const previous = process.env.PORT;
+    process.env.PORT = String(panel.port);
+    try {
+      setSetting('failover_domain', FAILOVER);
+      vi.spyOn(SslService, 'isActive').mockReturnValue(true);
+      const bridge = bridgeRow({ host: '127.0.0.1', panel_forward: 1 });
+      const res = await FailoverService.checkBridge(bridge, { ca: panel.cert.cert });
+      expect(res.steps.map((s) => [s.title, s.ok])).toEqual([
+        ['Пересылка панели включена', true],
+        ['Правила применены на мосту', true],
+        [`TCP до моста 127.0.0.1:${panel.port}`, true],
+        [`TLS с именем ${FAILOVER}`, true],
+        ['Ответ панели через мост', true],
+      ]);
+      expect(res.ok).toBe(true);
+    } finally {
+      process.env.PORT = previous;
+      panel.server.close();
+    }
+  });
+
+  it('сертификат не на то имя — шаг TLS красный с объяснением', async () => {
+    const panel = await tlsPanel('panel.example.com');
+    const previous = process.env.PORT;
+    process.env.PORT = String(panel.port);
+    try {
+      setSetting('failover_domain', FAILOVER);
+      vi.spyOn(SslService, 'isActive').mockReturnValue(true);
+      const bridge = bridgeRow({ host: '127.0.0.1', panel_forward: 1 });
+      const res = await FailoverService.checkBridge(bridge, { ca: panel.cert.cert });
+      expect(res.ok).toBe(false);
+      const step = res.steps.find((s) => s.title.startsWith('TLS'))!;
+      expect(step.ok).toBe(false);
+      expect(step.detail).toContain(`не выписан на ${FAILOVER}`);
+    } finally {
+      process.env.PORT = previous;
+      panel.server.close();
+    }
+  });
+
+  it('порт закрыт — TCP красный с подсказкой; выключенная пересылка — первый шаг', async () => {
+    const closed = await new Promise<number>((resolve) => {
+      const srv = require('node:net').createServer();
+      srv.listen(0, '127.0.0.1', () => { const port = srv.address().port; srv.close(() => resolve(port)); });
+    });
+    const previous = process.env.PORT;
+    process.env.PORT = String(closed);
+    try {
+      const bridge = bridgeRow({ host: '127.0.0.1', panel_forward: 1 });
+      const res = await FailoverService.checkBridge(bridge, { timeoutMs: 2000 });
+      const tcp = res.steps.find((s) => s.title.startsWith('TCP'))!;
+      expect(tcp.ok).toBe(false);
+      expect(tcp.detail).toContain('ECONNREFUSED');
+
+      const off = bridgeRow({ host: '198.51.100.99' });
+      const api2 = await api(`/api/bridges/${off}/panel-check`, 'POST');
+      expect(api2.status).toBe(200);
+      expect(api2.body.steps).toHaveLength(1);
+      expect(api2.body.steps[0]).toMatchObject({ ok: false, title: 'Пересылка панели включена' });
+    } finally {
+      process.env.PORT = previous;
+    }
+  });
+});

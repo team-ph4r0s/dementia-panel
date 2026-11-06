@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Plus, Waypoints, RefreshCw, Pencil, Trash2, Terminal, Loader2, Save, CheckCircle2, XCircle, AlertTriangle, LayoutDashboard } from 'lucide-react';
+import { Plus, Waypoints, RefreshCw, Pencil, Trash2, Terminal, Loader2, Save, CheckCircle2, XCircle, AlertTriangle, LayoutDashboard, Stethoscope } from 'lucide-react';
 import type { Bridge, BridgeLinkMode, Server } from '../types';
 import { api } from '../api';
 import { countryFlag, countryName } from '../utils';
@@ -182,7 +182,7 @@ const LinkState: React.FC<{ bridge: Bridge; link: Bridge['links'][number] }> = (
  * Раздел «Мосты» (docs/bridges.md): серверы в странах пользователей, через которые подписка выдаёт ноды, недоступные напрямую.
  */
 export const BridgesView: React.FC<{ servers: Server[]; onSubscriptionUrlChange?: (url: string | null) => void }> = ({ servers, onSubscriptionUrlChange }) => {
-  const { confirm } = useFeedback();
+  const { confirm, alert } = useFeedback();
   const [bridges, setBridges] = useState<Bridge[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [modal, setModal] = useState<{ open: boolean; bridge: Bridge | null }>({ open: false, bridge: null });
@@ -244,6 +244,17 @@ export const BridgesView: React.FC<{ servers: Server[]; onSubscriptionUrlChange?
       setFailoverKey((k) => k + 1);
     });
   };
+
+  /** Путь «мост → панель» по шагам: так видно, где именно рвётся (порт, сертификат, ответ панели) */
+  const handlePanelCheck = (b: Bridge) =>
+    act(b.id, async () => {
+      const result = await api.checkBridgePanelPath(b.id);
+      const lines = result.steps.map((s) => `${s.ok ? '✅' : '❌'} ${s.title}\n    ${s.detail}`);
+      const footer = result.ok
+        ? '\n\nМост пересылает панель. Пользователям нужна ссылка подписки с резервным доменом — старые ссылки (через Cloudflare или IP панели) мимо моста.'
+        : '\n\nПроверка идёт из панели: она показывает, что мост пересылает панель, но не то, доступен ли мост из страны пользователей.';
+      await alert(lines.join('\n') + footer, result.ok ? `Путь через «${b.name}» работает` : `Путь через «${b.name}» не работает`);
+    });
 
   const handleDelete = async (b: Bridge) => {
     if (!(await confirm({ message: `Удалить мост «${b.name}»? Пользователи, получавшие ноды через него, получат прямые адреса при обновлении подписки.`, danger: true, confirmLabel: 'Удалить' }))) return;
@@ -337,6 +348,15 @@ export const BridgesView: React.FC<{ servers: Server[]; onSubscriptionUrlChange?
                     >
                       <LayoutDashboard className="w-3.5 h-3.5" /> {b.panel_forward ? 'Панель через мост: вкл' : 'Панель через мост'}
                     </button>
+                    {Boolean(b.panel_forward) && (
+                      <button
+                        onClick={() => handlePanelCheck(b)}
+                        disabled={busy !== null}
+                        className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-line bg-soft hover:bg-soft-2 text-ink disabled:opacity-40"
+                      >
+                        <Stethoscope className="w-3.5 h-3.5" /> Проверить путь к панели
+                      </button>
+                    )}
                     <button onClick={() => handleTest(b)} disabled={busy !== null} className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-line bg-soft hover:bg-soft-2 text-ink disabled:opacity-40">
                       <Terminal className="w-3.5 h-3.5" /> Тест SSH
                     </button>

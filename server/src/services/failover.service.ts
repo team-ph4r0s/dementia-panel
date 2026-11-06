@@ -1,4 +1,6 @@
+import dns from 'node:dns';
 import net from 'node:net';
+import tls from 'node:tls';
 import { db, getSetting, setSetting, transaction } from '../db/index.js';
 import { HttpError } from '../utils/http.js';
 import { detectPublicIpv4 } from '../utils/net.js';
@@ -294,4 +296,109 @@ export class FailoverService {
     EventService.log('info', 'failover.disabled', `Резервный домен подписок ${domain} отключён`);
     return this.status();
   }
+
+  /**
+   * Диагностика пути «пользователь → мост → панель» из самой панели (docs/bridges.md#check): TCP до моста на порт панели,
+   * TLS с именем резервного домена (или домена сертификата) и проверка сертификата, ответ `/api/health` через мост.
+   * Доступность моста из страны пользователя отсюда не видна — только то, что мост пересылает панель правильно.
+   * `ca` — только для тестов (самоподписанный сертификат).
+   */
+  static async checkBridge(bridgeId: number, options: { ca?: string; timeoutMs?: number } = {}): Promise<PathCheck> {
+    const bridge = db.prepare('SELECT * FROM bridges WHERE id = ?').get(bridgeId) as any;
+    if (!bridge) throw new HttpError(404, 'Мост не найден');
+    const port = panelPort();
+    const name = getSetting('failover_domain') || SslService.getStatus().domain || null;
+    const steps: PathStep[] = [];
+    const add = (ok: boolean, title: string, detail: string) => { steps.push({ ok, title, detail }); return ok; };
+    const result = () => ({ ok: steps.every((s) => s.ok), host: bridge.host, port, name, steps });
+
+    if (!add(Boolean(bridge.panel_forward), 'Пересылка панели включена', bridge.panel_forward
+      ? `мост слушает TCP ${port} и пересылает на ${getSetting('panel_origin_ip') ?? '?'}:${port}`
+      : 'нажмите «Панель через мост» на карточке моста')) return result();
+    if (!add(bridge.status === 'online' && !bridge.needs_apply, 'Правила применены на мосту', bridge.status === 'online'
+      ? (bridge.needs_apply ? 'правила ждут применения — нажмите «Переустановить» или подождите минуту' : 'мост работает')
+      : `статус моста: ${bridge.status}${bridge.last_error ? ` (${bridge.last_error})` : ''}`)) return result();
+
+    const timeout = options.timeoutMs ?? 8000;
+    const https = SslService.isActive();
+    // TCP + (TLS) + GET /api/health одним соединением через мост
+    const outcome = await new Promise<{ stage: 'tcp' | 'tls' | 'http' | 'done'; error?: string; status?: number; body?: string; authorized?: boolean }>((resolve) => {
+      let stage: 'tcp' | 'tls' | 'http' = 'tcp';
+      let settled = false;
+      const done = (value: any) => { if (!settled) { settled = true; socket.destroy(); resolve(value); } };
+      const request = (sock: net.Socket) => {
+        stage = 'http';
+        let data = '';
+        sock.on('data', (chunk) => { data += chunk.toString('utf-8'); if (data.length > 65536) done({ stage, error: 'слишком длинный ответ' }); });
+        sock.on('end', () => {
+          const status = Number(/^HTTP\/1\.[01] (\d{3})/.exec(data)?.[1] ?? 0);
+          done({ stage: 'done', status, body: data.split('\r\n\r\n').slice(1).join('\r\n\r\n') });
+        });
+        sock.write(`GET /api/health HTTP/1.1\r\nHost: ${name ?? bridge.host}:${port}\r\nConnection: close\r\nUser-Agent: dementia-bridge-check\r\n\r\n`);
+      };
+      const socket: net.Socket = https
+        ? tls.connect({ host: bridge.host, port, servername: name && !net.isIP(name) ? name : undefined, rejectUnauthorized: false, ca: options.ca, ALPNProtocols: ['http/1.1'] })
+        : net.connect({ host: bridge.host, port });
+      socket.setTimeout(timeout, () => done({ stage, error: `нет ответа за ${Math.round(timeout / 1000)} с` }));
+      socket.on('error', (err: any) => done({ stage, error: err.code || err.message }));
+      if (https) {
+        socket.on('connect', () => { stage = 'tls'; });
+        socket.once('secureConnect', () => {
+          const t = socket as tls.TLSSocket;
+          // Проверка имени — своя: rejectUnauthorized выключен, чтобы показать, что именно не так
+          const cert = t.getPeerCertificate();
+          const nameOk = name ? !tls.checkServerIdentity(name, cert as any) : false;
+          if (!t.authorized || !nameOk) {
+            return done({ stage: 'tls', authorized: false, error: !nameOk
+              ? `сертификат не выписан на ${name ?? 'имя панели'} (CN=${(cert?.subject as any)?.CN ?? '?'})`
+              : `сертификат не принят: ${t.authorizationError}` });
+          }
+          request(t);
+        });
+      } else {
+        socket.on('connect', () => request(socket));
+      }
+    });
+
+    const tcpOk = outcome.stage !== 'tcp';
+    add(tcpOk, `TCP до моста ${bridge.host}:${port}`, tcpOk ? 'соединение установлено'
+      : `не подключиться: ${outcome.error}. Проверьте, что порт ${port} открыт на мосту (фаервол хостера) и правила применены`);
+    if (!tcpOk) return result();
+    if (https) {
+      const tlsOk = outcome.stage === 'http' || outcome.stage === 'done';
+      add(tlsOk, `TLS с именем ${name ?? '—'}`, tlsOk ? 'сертификат панели действителен для этого имени'
+        : `${outcome.error}${outcome.error?.includes('ECONNRESET') || outcome.error?.includes('нет ответа')
+          ? `. Скорее всего, мост не достучался до панели: откройте порт ${port} на сервере панели (фаервол хостера) — мост пересылает именно его`
+          : ''}`);
+      if (!tlsOk) return result();
+    } else {
+      add(true, 'HTTPS', 'HTTPS на панели не включён — подписки через мост пойдут открытым текстом. Включите HTTPS (резервный домен включает его сам)');
+    }
+    const healthOk = outcome.stage === 'done' && outcome.status === 200 && /"status"\s*:\s*"ok"/.test(outcome.body ?? '');
+    add(healthOk, 'Ответ панели через мост', healthOk ? 'панель ответила через мост'
+      : outcome.error ? `ошибка: ${outcome.error}` : `неожиданный ответ (HTTP ${outcome.status || '—'})`);
+    return result();
+  }
+
+  /** Что отвечает публичный DNS на резервный домен: совпадает ли с опубликованными панелью адресами */
+  static async checkDns(): Promise<{ domain: string; resolved: string[]; published: string[]; missing: string[]; extra: string[]; error: string | null }> {
+    const domain = getSetting('failover_domain');
+    if (!domain) throw new HttpError(400, 'Резервный домен не включён');
+    const published = Object.keys(readRecords());
+    const resolver = new dns.promises.Resolver({ timeout: 5000, tries: 1 });
+    resolver.setServers(['1.1.1.1', '8.8.8.8']);
+    let resolved: string[] = [];
+    let error: string | null = null;
+    try { resolved = (await resolver.resolve4(domain)).sort(); }
+    catch (err: any) { error = err.code === 'ENOTFOUND' || err.code === 'ENODATA' ? 'имя не найдено в DNS' : (err.code || err.message); }
+    return {
+      domain, resolved, published,
+      missing: published.filter((ip) => !resolved.includes(ip)),
+      extra: resolved.filter((ip) => !published.includes(ip)),
+      error,
+    };
+  }
 }
+
+export interface PathStep { ok: boolean; title: string; detail: string }
+export interface PathCheck { ok: boolean; host: string; port: number; name: string | null; steps: PathStep[] }

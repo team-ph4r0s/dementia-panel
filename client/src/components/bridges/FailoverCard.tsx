@@ -11,7 +11,7 @@ const inputClass = 'mt-1 w-full bg-paper border border-line rounded-lg px-3 py-2
  * панель, и (по выбору) прямого IP панели. Ссылки подписок выдаются с ним: приложение пробует адреса по очереди.
  */
 export const FailoverCard: React.FC<{ refreshKey: number; onChanged: (url: string | null) => void }> = ({ refreshKey, onChanged }) => {
-  const { confirm, toast } = useFeedback();
+  const { confirm, toast, alert } = useFeedback();
   const [status, setStatus] = useState<FailoverStatus | null>(null);
   const [form, setForm] = useState({ domain: '', includePanel: true, token: '', email: '' });
   const [busy, setBusy] = useState(false);
@@ -52,6 +52,25 @@ export const FailoverCard: React.FC<{ refreshKey: number; onChanged: (url: strin
       toast('Резервный домен подписок включён', 'success');
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Не удалось включить резервный домен', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const checkDns = async () => {
+    setBusy(true);
+    try {
+      const r = await api.checkFailoverDns();
+      const lines = [
+        `Публичный DNS (1.1.1.1, 8.8.8.8) отвечает на ${r.domain}: ${r.resolved.length ? r.resolved.join(', ') : r.error ?? 'ничего'}`,
+        `Панель опубликовала: ${r.published.join(', ') || '—'}`,
+      ];
+      if (r.missing.length) lines.push(`Ещё не видны в DNS: ${r.missing.join(', ')} — подождите пару минут (TTL 60 с)`);
+      if (r.extra.length) lines.push(`Лишние адреса (не от панели): ${r.extra.join(', ')} — удалите их в Cloudflare`);
+      if (!r.missing.length && !r.extra.length && !r.error) lines.push('Всё совпадает ✅');
+      await alert(lines.join('\n\n'), 'Проверка DNS резервного домена');
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Не удалось проверить DNS', 'error');
     } finally {
       setBusy(false);
     }
@@ -109,6 +128,30 @@ export const FailoverCard: React.FC<{ refreshKey: number; onChanged: (url: strin
         </dl>
       )}
 
+      <details className="text-xs text-muted bg-paper border border-line rounded-lg px-3 py-2">
+        <summary className="cursor-pointer text-ink">Как это работает и как проверить</summary>
+        <ol className="list-decimal pl-5 mt-2 space-y-1.5">
+          <li>На мостах включите «Панель через мост» и нажмите «Проверить путь к панели» — все шаги должны быть зелёными.</li>
+          <li>Включите резервный домен здесь. Панель создаст для имени A-записи с IP мостов (и панели, если отмечено) и добавит имя в сертификат.</li>
+          <li>
+            <b className="text-ink">Выдайте пользователям новую ссылку</b> (она строится с резервным доменом — «Пользователи → Подписка»). Ссылки,
+            уже добавленные в приложения, остаются старыми и идут мимо мостов: подписку в приложении нужно удалить и добавить заново.
+          </li>
+          <li>
+            Приложение получает из DNS все адреса и подключается к одному из них; если подключение не устанавливается (адрес заблокирован
+            или мост выключен), пробует следующий — через несколько секунд таймаута. Если же адрес «замораживает» уже открытое
+            соединение, приложение на другой адрес не перейдёт: такие адреса (например, прямой IP панели там, где его режут) лучше не держать в DNS.
+          </li>
+          <li>
+            Проверить переключение вручную: на одном мосту временно закройте порт панели
+            (<span className="font-mono">iptables -I INPUT -p tcp --dport {status.port} -j DROP</span> — правило на минуту, потом
+            <span className="font-mono"> iptables -D INPUT -p tcp --dport {status.port} -j DROP</span>) и обновите подписку в приложении.
+            С компьютера то же видно командой <span className="font-mono">curl -v --connect-timeout 5 https://{status.domain || 'sub.example.com'}:{status.port}/api/health</span> —
+            она пишет «Trying …» для каждого адреса.
+          </li>
+        </ol>
+      </details>
+
       {forwarding.length === 0 && (
         <p className="p-3 bg-warn-soft text-warn rounded-lg text-xs">
           Ни на одном мосту не включена «Панель через мост» — без неё резервный домен ведёт только на прямой IP панели.
@@ -140,6 +183,11 @@ export const FailoverCard: React.FC<{ refreshKey: number; onChanged: (url: strin
           </label>
         </div>
         <div className="flex flex-wrap justify-end gap-3">
+          {status.enabled && (
+            <button type="button" onClick={() => void checkDns()} className="px-3 py-2 text-xs font-medium text-ink bg-soft hover:bg-soft-2 rounded-lg btn-press border border-line">
+              Проверить DNS
+            </button>
+          )}
           {status.enabled && (
             <button type="button" onClick={() => void disable()} className="px-3 py-2 text-xs font-medium text-bad bg-soft hover:bg-soft-2 rounded-lg btn-press border border-line">
               Выключить

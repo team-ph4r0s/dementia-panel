@@ -40,6 +40,8 @@ import type {
   CdnInput,
   FailoverInput,
   FailoverStatus,
+  FailoverDnsCheck,
+  PanelPathCheck,
 } from '../types';
 
 const API_BASE = '/api';
@@ -484,6 +486,14 @@ export const api = {
 
   disableFailover(): Promise<FailoverStatus> {
     return request(`${API_BASE}/bridges/failover`, { method: 'DELETE' }, 'Не удалось выключить резервный домен');
+  },
+
+  checkFailoverDns(): Promise<FailoverDnsCheck> {
+    return request(`${API_BASE}/bridges/failover/check-dns`, { method: 'POST' }, 'Не удалось проверить DNS');
+  },
+
+  checkBridgePanelPath(id: number): Promise<PanelPathCheck> {
+    return request(`${API_BASE}/bridges/${id}/panel-check`, { method: 'POST' }, 'Не удалось проверить путь к панели');
   },
 
   getBridges(): Promise<Bridge[]> {

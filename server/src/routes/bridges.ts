@@ -44,6 +44,16 @@ bridgesRouter.delete('/failover', asyncHandler(async (req, res) => {
   res.json(await FailoverService.disable());
 }));
 
+// POST /api/bridges/failover/check-dns — что публичный DNS отвечает на резервный домен
+bridgesRouter.post('/failover/check-dns', asyncHandler(async (req, res) => {
+  res.json(await FailoverService.checkDns());
+}));
+
+// POST /api/bridges/:id/panel-check — путь «мост → панель» по шагам: TCP, TLS с нужным именем, ответ панели
+bridgesRouter.post('/:id/panel-check', asyncHandler(async (req, res) => {
+  res.json(await FailoverService.checkBridge(parseId(req.params.id)));
+}));
+
 // PUT /api/bridges/:id — имя, адрес, SSH-доступ, страна, пересылка панели (panel_forward)
 bridgesRouter.put('/:id', asyncHandler(async (req, res) => {
   const id = parseId(req.params.id);
