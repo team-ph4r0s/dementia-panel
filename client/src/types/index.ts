@@ -497,6 +497,22 @@ export interface Bridge {
   links: BridgeLink[];
 }
 
+/** Публичный IP панели и что от него зависит (GET /api/security/panel-ip) */
+export interface PanelIpStatus {
+  known: string | null;
+  detected: string | null;
+  changed: boolean;
+  auto: boolean;
+  checked_at: string | null;
+  uses: { cloudflare_domain: string | null; bridges: number; failover_domain: string | null; public_url_by_ip: boolean };
+}
+
+export interface PanelIpApplyResult {
+  ip: string;
+  previous: string | null;
+  steps: { ok: boolean; title: string; detail: string }[];
+}
+
 /** Диагностика пути «мост → панель» (POST /api/bridges/:id/panel-check) */
 export interface PanelPathCheck {
   ok: boolean;

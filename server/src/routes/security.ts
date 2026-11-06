@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/auth.middleware.js';
 import { asyncHandler, HttpError } from '../utils/http.js';
 import { EventService } from '../services/event.service.js';
 import { CloudflarePanelService } from '../services/cloudflare-panel.service.js';
+import { PanelAddressService } from '../services/panel-address.service.js';
 
 export const securityRouter = Router();
 
@@ -35,6 +36,13 @@ function wrap<T>(fn: () => Promise<T> | T) {
 securityRouter.get('/ssl', (req, res) => {
   res.json(SslService.getStatus());
 });
+
+// IP-адрес панели (docs/security.md#panel-ip): состояние, применение нового адреса, автообновление
+securityRouter.get('/panel-ip', (_req, res) => res.json(PanelAddressService.status()));
+securityRouter.post('/panel-ip', asyncHandler(async (req, res) => {
+  res.json(await PanelAddressService.apply(req.body?.ip));
+}));
+securityRouter.put('/panel-ip/auto', (req, res) => res.json(PanelAddressService.setAuto(req.body?.auto)));
 
 securityRouter.get('/cloudflare', (_req, res) => res.json(CloudflarePanelService.status()));
 securityRouter.post('/cloudflare', asyncHandler(async (req, res) => {

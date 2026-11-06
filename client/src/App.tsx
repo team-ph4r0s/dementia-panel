@@ -72,6 +72,8 @@ export const App: React.FC = () => {
   // База ссылок подписок: резервный домен (через мосты), если включён, иначе публичный адрес панели
   const [subscriptionUrl, setSubscriptionUrl] = useState<string | null>(null);
   const subscriptionBase = subscriptionUrl || publicUrl;
+  // Обнаруженная смена IP панели (PanelAddressService): домен и мосты ведут на старый адрес, пока его не обновят
+  const [panelIpChange, setPanelIpChange] = useState<{ known: string | null; detected: string | null } | null>(null);
   // Номер последнего запроса клиентов: ответ для ранее выбранного сервера отбрасывается
   const clientsRequestRef = useRef(0);
   const dataInFlightRef = useRef(false);
@@ -106,14 +108,16 @@ export const App: React.FC = () => {
     if (!user || dataInFlightRef.current) return;
     dataInFlightRef.current = true;
     try {
-      const [serversData, subscribersData, bridgesData, settings, migration] = await Promise.all([
+      const [serversData, subscribersData, bridgesData, settings, migration, panelIp] = await Promise.all([
         api.getServers(),
         api.getSubscribers(),
         api.getBridges().catch(() => null),
         settingsLoadedRef.current ? Promise.resolve(null) : api.getSettings().catch(() => null),
         isGuest ? Promise.resolve(null) : api.getMigrationStatus().catch(() => null),
+        isGuest ? Promise.resolve(null) : api.getPanelIp().catch(() => null),
       ]);
       if (migration) setMigrationState(migration.state);
+      setPanelIpChange(panelIp?.changed ? { known: panelIp.known, detected: panelIp.detected } : null);
       setServers(serversData);
       setSubscribers(subscribersData);
       if (bridgesData) setBridges(bridgesData);
@@ -329,6 +333,21 @@ export const App: React.FC = () => {
           <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-2.5 flex flex-wrap items-center gap-2">
             <Eye className="w-4 h-4 flex-shrink-0" />
             <span>Гостевой режим: панель открыта только для просмотра. Ссылки подписок, ключи и доступы к серверам скрыты.</span>
+          </div>
+        </div>
+      )}
+
+      {panelIpChange && (
+        <div role="status" className="bg-warn-soft border-b border-line text-warn text-xs">
+          <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-2.5 flex flex-wrap items-center gap-2">
+            <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+            <span>
+              IP панели изменился: <span className="font-mono">{panelIpChange.known}</span> → <span className="font-mono">{panelIpChange.detected}</span>.
+              Домен, мосты и резервный домен пока ведут на старый адрес.
+            </span>
+            <button onClick={() => setActiveTab('security')} className="underline hover:text-ink">
+              Обновить адрес
+            </button>
           </div>
         </div>
       )}

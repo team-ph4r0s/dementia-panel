@@ -267,7 +267,8 @@ CI на `main`. Подробно — [docs/releases.md](docs/releases.md).
 46. **Cloudflare проксирует только домен панели, а не VPN.** Настройка домена не меняет ноды/клиентов/ключи и не перезаписывает чужие адресные записи;
     основной listener сохраняется, дополнительный использует тот же TLS/API/WSS. Изменения TLS/домена сериализуйте через `SslService.exclusive`.
     Не выдавайте сохранённый `cf_token` браузеру (только флаг); при повторном выпуске сертификата не сбрасывайте `proxied`.
-    `CF-Connecting-IP` принимается только от реальных сетей Cloudflare, не от произвольного `X-Forwarded-For`. Исключение — вход через CDN нод VLESS
+    `CF-Connecting-IP` принимается только от реальных сетей Cloudflare, не от произвольного `X-Forwarded-For`. Смена IP панели — только через `PanelAddressService`
+    (своя A-запись и только со старым IP; автообновление выключено по умолчанию, docs/security.md#panel-ip). Исключение — вход через CDN нод VLESS
     (`CdnService`, docs/vless.md#cdn): отдельное имя на IP ноды, те же правила записей, отката и `SslService.exclusive`. Подробности — docs/cloudflare.md.
 
 47. **VLESS повторяет контракт AWG и не трогает AmneziaWG.** Протокол ноды — `servers.protocol` (`nodeProtocol()`), ветвление — в

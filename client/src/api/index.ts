@@ -41,6 +41,8 @@ import type {
   FailoverInput,
   FailoverStatus,
   FailoverDnsCheck,
+  PanelIpStatus,
+  PanelIpApplyResult,
   PanelPathCheck,
 } from '../types';
 
@@ -486,6 +488,18 @@ export const api = {
 
   disableFailover(): Promise<FailoverStatus> {
     return request(`${API_BASE}/bridges/failover`, { method: 'DELETE' }, 'Не удалось выключить резервный домен');
+  },
+
+  getPanelIp(): Promise<PanelIpStatus> {
+    return request(`${API_BASE}/security/panel-ip`, {}, 'Ошибка загрузки IP панели');
+  },
+
+  applyPanelIp(ip: string): Promise<PanelIpApplyResult> {
+    return request(`${API_BASE}/security/panel-ip`, { method: 'POST', ...json({ ip }) }, 'Не удалось обновить IP панели');
+  },
+
+  setPanelIpAuto(auto: boolean): Promise<PanelIpStatus> {
+    return request(`${API_BASE}/security/panel-ip/auto`, { method: 'PUT', ...json({ auto }) }, 'Не удалось сохранить настройку');
   },
 
   checkFailoverDns(): Promise<FailoverDnsCheck> {

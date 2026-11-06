@@ -43,6 +43,7 @@ import { FederationClient } from './services/federation-client.service.js';
 import { ProvisionService } from './services/provision.service.js';
 import { SubscriptionService } from './services/subscription.service.js';
 import { CdnService } from './services/cdn.service.js';
+import { PanelAddressService } from './services/panel-address.service.js';
 import { SslService, http01Challenges } from './services/ssl.service.js';
 import { errorHandler } from './middleware/error-handler.js';
 import { securityHeaders } from './middleware/security-headers.js';
@@ -387,6 +388,15 @@ setInterval(() => {
   reauthLimiter.cleanup();
   migrationCodeLimiter.cleanup();
 }, 60 * 60 * 1000);
+
+// Смена публичного IP панели: раз в 10 минут (docs/security.md#panel-ip)
+setInterval(() => {
+  if (MigrationService.isBackgroundPaused()) return;
+  PanelAddressService.check().catch((err) => console.error('[IP]', err));
+}, 10 * 60 * 1000);
+setTimeout(() => {
+  if (!MigrationService.isBackgroundPaused()) PanelAddressService.check().catch((err) => console.error('[IP]', err));
+}, 60 * 1000);
 
 const renew = () => {
   // Сертификат перенесённой панели продлевает новая

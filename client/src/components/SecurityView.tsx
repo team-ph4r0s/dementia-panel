@@ -9,6 +9,7 @@ import { GuestAccessCard } from './GuestAccessCard';
 import { HttpsCard } from './security/HttpsCard';
 import { Fail2banCard } from './security/Fail2banCard';
 import { CloudflarePanelCard } from './security/CloudflarePanelCard';
+import { PanelIpCard } from './security/PanelIpCard';
 
 export const SecurityView: React.FC<{
   publicUrl: string | null;
@@ -46,6 +47,7 @@ export const SecurityView: React.FC<{
       <TelegramCard />
       <BackupsCard />
       <HttpsCard sslStatus={sslStatus} onStatusChange={setSslStatus} onReload={loadSecurityData} />
+      <PanelIpCard />
       <CloudflarePanelCard onChanged={() => {
         void loadSecurityData();
         void api.getSettings().then((settings) => onSettingsSaved?.(settings)).catch(() => {
