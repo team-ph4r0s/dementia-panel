@@ -191,6 +191,15 @@ describe('CORE VLESS', () => {
     expect(result.body.server).toMatchObject({ reality_sni: node.reality_sni, needs_apply: true });
   });
 
+  it('форма с прежней пустой подсетью сохраняет имя VLESS-ноды, а смена подсети отклоняется', async () => {
+    const node = await createNode();
+    const saved = await admin.api(`/api/servers/${node.id}`, 'PUT', { name: 'Reality 2', subnet: '' });
+    expect(saved.status).toBe(200);
+    expect(saved.body.name).toBe('Reality 2');
+    const rejected = await admin.api(`/api/servers/${node.id}`, 'PUT', { subnet: '10.9.0.1/24' });
+    expect(rejected.status).toBe(400);
+  });
+
   it('отклоняет операции AmneziaWG для VLESS до обращения по SSH', async () => {
     const node = await createNode();
     const ssh = stubSsh();

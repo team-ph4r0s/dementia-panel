@@ -343,9 +343,15 @@ serversRouter.put('/:id', asyncHandler(async (req, res) => {
   const updates: Record<string, unknown> = {};
   const protocol = nodeProtocol(server);
   if (body.protocol !== undefined && body.protocol !== protocol) throw new HttpError(400, 'Нельзя изменить протокол ноды');
-  if (protocol === 'vless' && [...INT_PARAM_KEYS, ...TEXT_PARAM_KEYS, 'subnet', 'awg_version', 'extra_params']
-    .some((key) => body[key] !== undefined)) {
-    throw new HttpError(400, 'Параметры AmneziaWG недоступны для VLESS');
+  if (protocol === 'vless') {
+    // Подсеть у VLESS не используется: форма может прислать прежнее (пустое) значение — его просто не трогаем
+    if (body.subnet !== undefined && body.subnet !== '' && body.subnet !== server.subnet) {
+      throw new HttpError(400, 'Параметры AmneziaWG недоступны для VLESS');
+    }
+    delete body.subnet;
+    if ([...INT_PARAM_KEYS, ...TEXT_PARAM_KEYS, 'awg_version', 'extra_params'].some((key) => body[key] !== undefined)) {
+      throw new HttpError(400, 'Параметры AmneziaWG недоступны для VLESS');
+    }
   }
 
   if (body.name !== undefined) updates.name = validateName(body.name);
