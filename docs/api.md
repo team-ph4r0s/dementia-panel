@@ -49,6 +49,12 @@ HTTP-кодом. Тела — JSON.
 
 Для нод партнёра доступны GET, sync и изменение локальной метки через `PUT /:id/country`.
 
+Для VLESS укажите `protocol: "vless"` при создании ноды. Порт `awg_port` используется по TCP (по умолчанию 443),
+подсеть не требуется. `PUT /:id` принимает `reality_sni`, `reality_dest`, `reality_short_ids` (массив строк),
+`xray_flow` и `xray_fingerprint`. Если применить параметры к работающей ноде не удалось, панель возвращает 502
+и восстанавливает прежние значения. `randomize-params` обновляет параметры Reality с сохранением пары ключей.
+Сканирование, импорт AmneziaVPN, обновление протокола AWG и выдача ноды партнёру для VLESS недоступны.
+
 ## Клиенты
 | Метод | Путь | Описание |
 |---|---|---|
@@ -72,6 +78,9 @@ HTTP-кодом. Тела — JSON.
 ## Настройки
 - `GET/PUT /api/settings` — `public_url`, `client_dns`, `client_mtu`.
 - `GET/PUT /api/subscription-settings` — оформление подписки и `servers[{id, sub_name, sub_order}]`.
+
+Для клиента VLESS маршрут `config` отдаёт ссылку `vless://` в файле `.txt`, а `qrcode` кодирует ту же ссылку.
+UUID не входит в списки и обычные ответы API. При сбросе ссылки подписчика его VLESS UUID перевыпускаются.
 
 ## Партнёры
 - Владелец `/api/partners`: `GET /`, `POST /` (`name, node_ids, max_clients, traffic_limit, expire_at` →

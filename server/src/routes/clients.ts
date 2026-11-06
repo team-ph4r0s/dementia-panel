@@ -2,6 +2,8 @@ import { Router } from 'express';
 import QRCode from 'qrcode';
 import { db, transaction } from '../db/index.js';
 import { AwgService } from '../services/awg.service.js';
+import { XrayService } from '../services/xray.service.js';
+import { nodeProtocol } from '../utils/vless-params.js';
 import { ProvisionService } from '../services/provision.service.js';
 import { PartnerService } from '../services/partner.service.js';
 import { asyncHandler, contentDisposition, HttpError, parseId } from '../utils/http.js';
@@ -64,17 +66,19 @@ clientsRouter.post('/servers/:serverId/clients', asyncHandler(async (req, res) =
   const rawName = req.body?.name;
   const name = rawName === undefined || rawName === '' ? `client-${Date.now().toString().slice(-4)}` : validateClientName(rawName);
 
-  const keyPair = AwgService.generateKeyPair();
-  const psk = AwgService.generatePresharedKey();
+  const vless = nodeProtocol(server) === 'vless';
+  const keyPair = vless ? { publicKey: '', privateKey: '' } : AwgService.generateKeyPair();
+  const psk = vless ? null : AwgService.generatePresharedKey();
+  const uuid = vless ? XrayService.generateUuid() : null;
 
   if (server.remote_panel_id && server.status === 'uninstalled') throw new HttpError(409, 'Нода партнёра сейчас недоступна');
   const newClient: any = transaction(() => {
-    const clientIp = server.remote_panel_id ? pendingIp() : AwgService.getNextClientIp(serverId, server.subnet);
+    const clientIp = vless ? '' : server.remote_panel_id ? pendingIp() : AwgService.getNextClientIp(serverId, server.subnet);
     const result = db.prepare(`
       INSERT INTO clients (
-        server_id, name, client_ip, client_public_key, client_private_key, preshared_key, enabled
-      ) VALUES (?, ?, ?, ?, ?, ?, 1)
-    `).run(serverId, name, clientIp, keyPair.publicKey, keyPair.privateKey, psk);
+        server_id, name, client_ip, client_public_key, client_private_key, preshared_key, client_uuid, enabled
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+    `).run(serverId, name, clientIp, keyPair.publicKey, keyPair.privateKey, psk, uuid);
     return db.prepare('SELECT * FROM clients WHERE id = ?').get(result.lastInsertRowid);
   });
 
@@ -144,13 +148,20 @@ function loadClientWithServer(id: number) {
   return { client, server };
 }
 
-// GET client .conf configuration file
+function clientConfigText(server: any, client: any): string {
+  return nodeProtocol(server) === 'vless'
+    ? XrayService.buildVlessLink(server, client, client.name)
+    : AwgService.generateClientConfig(server, client);
+}
+
+// GET client configuration file
 clientsRouter.get('/clients/:id/config', (req, res) => {
   const { client, server } = loadClientWithServer(parseId(req.params.id));
-  const configText = AwgService.generateClientConfig(server, client);
+  const configText = clientConfigText(server, client);
+  const extension = nodeProtocol(server) === 'vless' ? 'txt' : 'conf';
 
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.setHeader('Content-Disposition', contentDisposition('attachment', `${client.name}.conf`));
+  res.setHeader('Content-Disposition', contentDisposition('attachment', `${client.name}.${extension}`));
   res.setHeader('Cache-Control', 'no-store');
   res.send(configText);
 });
@@ -158,7 +169,7 @@ clientsRouter.get('/clients/:id/config', (req, res) => {
 // GET QR code as base64 Data URL (PNG)
 clientsRouter.get('/clients/:id/qrcode', asyncHandler(async (req, res) => {
   const { client, server } = loadClientWithServer(parseId(req.params.id));
-  const configText = AwgService.generateClientConfig(server, client);
+  const configText = clientConfigText(server, client);
 
   const dataUrl = await QRCode.toDataURL(configText, {
     errorCorrectionLevel: 'M',

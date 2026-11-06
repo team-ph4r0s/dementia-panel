@@ -3,6 +3,7 @@ import { db, getSetting, transaction } from '../db/index.js';
 import { requireAuth } from '../middleware/auth.middleware.js';
 import { generatePartnerToken, PartnerService } from '../services/partner.service.js';
 import { HttpError, parseId } from '../utils/http.js';
+import { nodeProtocol } from '../utils/vless-params.js';
 
 /**
  * Управление выданными партнёрскими доступами (сторона владельца нод): /api/partners
@@ -22,8 +23,9 @@ function validateNodeIds(value: unknown): number[] {
   const ids = [...new Set(value.map((v) => Number(v)))];
   for (const id of ids) {
     if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, 'Некорректный идентификатор ноды');
-    const server = db.prepare('SELECT remote_panel_id FROM servers WHERE id = ?').get(id) as any;
+    const server = db.prepare('SELECT remote_panel_id, protocol FROM servers WHERE id = ?').get(id) as any;
     if (!server) throw new HttpError(400, `Нода #${id} не найдена`);
+    if (nodeProtocol(server) === 'vless') throw new HttpError(400, 'Нельзя передавать партнёру ноды VLESS');
     if (server.remote_panel_id) throw new HttpError(400, 'Нельзя передавать партнёру чужие (партнёрские) ноды');
   }
   return ids;

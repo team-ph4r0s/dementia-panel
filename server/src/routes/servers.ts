@@ -11,7 +11,10 @@ import { LATEST_AWG_VERSION, paramsFromRow, paramsToColumns } from '../utils/awg
 import { AmneziaKeyError, decodeAmneziaKey, splitAmneziaKeys } from '../utils/amnezia-key.js';
 import { ProbeService } from '../services/probe.service.js';
 import { EventService } from '../services/event.service.js';
-import { nodeProtocol, vlessParamsFromRow } from '../utils/vless-params.js';
+import {
+  DEFAULT_VLESS_PORT, generateVlessParams, NODE_PROTOCOLS, NodeProtocol, nodeProtocol,
+  validateVlessParams, vlessParamsFromRow, vlessParamsToColumns, XRAY_API_PORT, XRAY_CONF_PATH, XRAY_CONTAINER,
+} from '../utils/vless-params.js';
 
 export const serversRouter = Router();
 
@@ -93,6 +96,12 @@ function validatePort(value: unknown, label: string): number {
   return port;
 }
 
+function validateNodePort(value: unknown, protocol: NodeProtocol): number {
+  const port = validatePort(value, protocol === 'vless' ? 'Порт VLESS' : 'Порт AmneziaWG');
+  if (protocol === 'vless' && port === XRAY_API_PORT) throw new HttpError(400, 'Этот порт зарезервирован для API Xray');
+  return port;
+}
+
 function validateSubnet(value: unknown): string {
   try {
     parseSubnet(String(value));
@@ -105,14 +114,15 @@ function validateSubnet(value: unknown): string {
 /**
  * Два сервера с одним адресом и портом AmneziaWG управляли бы одним и тем же контейнером на ноде
  */
-function assertEndpointFree(host: string, awgPort: number, exceptId = 0): void {
+function assertEndpointFree(host: string, awgPort: number, protocol: NodeProtocol, exceptId = 0): void {
+  const label = protocol === 'vless' ? 'VLESS' : 'AmneziaWG';
   if (getSetting('cf_panel_enabled') === '1' && host.toLowerCase().replace(/\.$/, '') === getSetting('cf_panel_domain')) {
-    throw new HttpError(409, 'Это проксируемый домен панели. Для AmneziaWG укажите IP или отдельный домен без проксирования Cloudflare.');
+    throw new HttpError(409, `Это проксируемый домен панели. Для ${label} укажите IP или отдельный домен без проксирования Cloudflare.`);
   }
   const duplicate = db.prepare(
-    'SELECT id FROM servers WHERE LOWER(host) = LOWER(?) AND awg_port = ? AND remote_panel_id IS NULL AND id != ?'
-  ).get(host, awgPort, exceptId);
-  if (duplicate) throw new HttpError(409, `Сервер ${host} с портом AmneziaWG ${awgPort} уже добавлен в панель`);
+    'SELECT id FROM servers WHERE LOWER(host) = LOWER(?) AND awg_port = ? AND protocol = ? AND remote_panel_id IS NULL AND id != ?'
+  ).get(host, awgPort, protocol, exceptId);
+  if (duplicate) throw new HttpError(409, `Сервер ${host} с портом ${label} ${awgPort} уже добавлен в панель`);
 }
 
 const sameValue = (a: unknown, b: unknown) => (a ?? null) === (b ?? null) || (a != null && b != null && String(a) === String(b));
@@ -181,14 +191,16 @@ serversRouter.post('/', (req, res) => {
   const host = String(body.host).trim();
   const sshPort = validatePort(body.ssh_port ?? 22, 'SSH-порт');
   const sshUser = validateSshUser(body.ssh_user ?? 'root');
-  const awgPort = validatePort(body.awg_port ?? 51820, 'Порт AmneziaWG');
-  const subnet = validateSubnet(body.subnet ?? '10.8.0.1/24');
+  const protocol = body.protocol === undefined ? 'awg' : body.protocol;
+  if (!NODE_PROTOCOLS.includes(protocol)) throw new HttpError(400, 'Неизвестный протокол ноды');
+  const awgPort = validateNodePort(body.awg_port ?? (protocol === 'vless' ? DEFAULT_VLESS_PORT : 51820), protocol);
+  const subnet = protocol === 'vless' ? '' : validateSubnet(body.subnet ?? '10.8.0.1/24');
   const sshKey = body.ssh_key ? validateKey(body.ssh_key) : null;
   const sshPassword = typeof body.ssh_password === 'string' && body.ssh_password ? body.ssh_password : null;
   if (!sshKey && !sshPassword) throw new HttpError(400, 'Укажите SSH-пароль или приватный ключ');
-  assertEndpointFree(host, awgPort);
+  assertEndpointFree(host, awgPort, protocol);
 
-  const id = insertServer({ name, host, sshPort, sshUser, sshPassword, sshKey, awgPort, subnet });
+  const id = insertServer({ name, host, sshPort, sshUser, sshPassword, sshKey, awgPort, subnet, protocol });
   EventService.log('info', 'server.created', `Добавлена нода «${name}»`, { kind: 'server', id });
   res.status(201).json(serializeServer(selectServerWithCounts(id)));
 });
@@ -202,6 +214,7 @@ interface NewServer {
   sshKey: string | null;
   awgPort: number;
   subnet: string;
+  protocol?: NodeProtocol;
 }
 
 /**
@@ -209,19 +222,21 @@ interface NewServer {
  * При подключении уже установленного AmneziaWG сканер заменит их фактическими значениями с ноды.
  */
 function insertServer(s: NewServer): number {
-  const params = AwgService.generateRandomParams();
+  const protocol = s.protocol ?? 'awg';
   const keyPair = AwgService.generateKeyPair();
-  const psk = AwgService.generatePresharedKey();
-  const columns = paramsToColumns(params);
+  const psk = protocol === 'vless' ? null : AwgService.generatePresharedKey();
+  const columns = protocol === 'vless'
+    ? { ...vlessParamsToColumns(generateVlessParams()), container_name: XRAY_CONTAINER, conf_path: XRAY_CONF_PATH }
+    : paramsToColumns(AwgService.generateRandomParams());
   const result = db.prepare(`
     INSERT INTO servers (
       name, host, ssh_port, ssh_user, ssh_password, ssh_key,
-      awg_port, subnet, server_public_key, server_private_key, preshared_key, status,
+      awg_port, subnet, server_public_key, server_private_key, preshared_key, protocol, status,
       ${Object.keys(columns).join(', ')}
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'uninstalled', ${Object.keys(columns).map(() => '?').join(', ')})
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'uninstalled', ${Object.keys(columns).map(() => '?').join(', ')})
   `).run(
     s.name, s.host, s.sshPort, s.sshUser, encryptSecret(s.sshPassword), encryptSecret(s.sshKey),
-    s.awgPort, s.subnet, keyPair.publicKey, keyPair.privateKey, psk,
+    s.awgPort, s.subnet, keyPair.publicKey, keyPair.privateKey, psk, protocol,
     ...(Object.values(columns) as any[])
   );
   return Number(result.lastInsertRowid);
@@ -236,6 +251,7 @@ const MAX_IMPORT_KEYS = 50;
  * неустановленным, и его можно установить из панели.
  */
 serversRouter.post('/import-amnezia', asyncHandler(async (req, res) => {
+  if (req.body?.protocol === 'vless') throw new HttpError(400, 'Недоступно для VLESS');
   const keys = splitAmneziaKeys(String(req.body?.keys ?? ''));
   if (keys.length === 0) throw new HttpError(400, 'Вставьте один или несколько ключей AmneziaVPN (vpn://…)');
   if (keys.length > MAX_IMPORT_KEYS) throw new HttpError(400, `Не больше ${MAX_IMPORT_KEYS} ключей за раз`);
@@ -325,6 +341,12 @@ serversRouter.put('/:id', asyncHandler(async (req, res) => {
   const server = getLocalServerOr404(id);
   const body = req.body ?? {};
   const updates: Record<string, unknown> = {};
+  const protocol = nodeProtocol(server);
+  if (body.protocol !== undefined && body.protocol !== protocol) throw new HttpError(400, 'Нельзя изменить протокол ноды');
+  if (protocol === 'vless' && [...INT_PARAM_KEYS, ...TEXT_PARAM_KEYS, 'subnet', 'awg_version', 'extra_params']
+    .some((key) => body[key] !== undefined)) {
+    throw new HttpError(400, 'Параметры AmneziaWG недоступны для VLESS');
+  }
 
   if (body.name !== undefined) updates.name = validateName(body.name);
   if (body.host !== undefined) {
@@ -348,7 +370,7 @@ serversRouter.put('/:id', asyncHandler(async (req, res) => {
 
   let interfaceChanged = false;
   if (body.awg_port !== undefined) {
-    updates.awg_port = validatePort(body.awg_port, 'Порт AmneziaWG');
+    updates.awg_port = validateNodePort(body.awg_port, protocol);
     interfaceChanged ||= updates.awg_port !== server.awg_port;
   }
   // Форма редактирования присылает подсеть всегда; у импортированных нод она бывает адресом сети (10.8.1.0/24),
@@ -390,11 +412,30 @@ serversRouter.put('/:id', asyncHandler(async (req, res) => {
     }
   }
 
+  let paramColumns = paramsToColumns(current);
+  if (protocol === 'vless') {
+    const reality = vlessParamsFromRow(server);
+    const before = vlessParamsToColumns(reality);
+    const supplied = Object.keys(before).filter((key) => body[key] !== undefined);
+    if (supplied.length) {
+      const next = Object.assign(reality, Object.fromEntries(supplied.map((key) => [key, body[key]])));
+      const error = validateVlessParams(next);
+      if (error) throw new HttpError(400, error);
+      for (const [key, value] of Object.entries(vlessParamsToColumns(next))) {
+        if (value !== before[key]) {
+          updates[key] = value;
+          interfaceChanged = true;
+        }
+      }
+    }
+    paramColumns = before;
+  }
+
   // Уже существующие дубли не мешают правке других полей — проверяется только смена адреса или порта
   if (updates.host !== undefined || updates.awg_port !== undefined) {
     const host = String(updates.host ?? server.host);
     const awgPort = Number(updates.awg_port ?? server.awg_port);
-    if (host.toLowerCase() !== String(server.host).toLowerCase() || awgPort !== server.awg_port) assertEndpointFree(host, awgPort, id);
+    if (host.toLowerCase() !== String(server.host).toLowerCase() || awgPort !== server.awg_port) assertEndpointFree(host, awgPort, protocol, id);
   }
 
   const keys = Object.keys(updates);
@@ -407,7 +448,6 @@ serversRouter.put('/:id', asyncHandler(async (req, res) => {
   }
 
   if (interfaceChanged && server.status !== 'uninstalled') {
-    const paramColumns = paramsToColumns(current);
     const interfaceKeys = Object.keys(updates).filter((k) => k === 'awg_port' || k === 'subnet' || k in paramColumns);
     const written = Object.fromEntries(interfaceKeys.map((k) => [k, updates[k]]));
     const previous = Object.fromEntries(interfaceKeys.map((k) => [k, server[k]]));
@@ -456,13 +496,13 @@ serversRouter.post('/:id/randomize-params', asyncHandler(async (req, res) => {
 
   // Новые случайные значения в рамках текущей версии протокола; I1–I5 и доп. параметры сохраняются
   const current = paramsFromRow(server);
-  const generated = AwgService.generateRandomParams(current.awg_version);
-  const params: AwgParams = {
-    ...generated,
-    i1: current.i1, i2: current.i2, i3: current.i3, i4: current.i4, i5: current.i5,
-    extra_params: current.extra_params,
-  };
-  const columns = paramsToColumns(params);
+  const columns = nodeProtocol(server) === 'vless'
+    ? vlessParamsToColumns(generateVlessParams())
+    : paramsToColumns({
+      ...AwgService.generateRandomParams(current.awg_version),
+      i1: current.i1, i2: current.i2, i3: current.i3, i4: current.i4, i5: current.i5,
+      extra_params: current.extra_params,
+    });
   ProvisionService.noteAppliedBaseline(server);
   db.prepare(`UPDATE servers SET ${Object.keys(columns).map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(
     ...(Object.values(columns) as any[]),
@@ -499,7 +539,7 @@ serversRouter.post('/:id/apply', asyncHandler(async (req, res) => {
 // POST scan — поиск уже установленного AmneziaWG (контейнера панели или приложения Amnezia) и подключение без установки
 serversRouter.post('/:id/scan', asyncHandler(async (req, res) => {
   const id = parseId(req.params.id);
-  getLocalServerOr404(id);
+  if (nodeProtocol(getLocalServerOr404(id)) === 'vless') throw new HttpError(400, 'Недоступно для VLESS');
   if (ProvisionService.isInstalling(id)) throw new HttpError(409, 'Дождитесь окончания установки');
   try {
     const result = await ProvisionService.scanAndAdopt(id);
@@ -514,6 +554,7 @@ serversRouter.post('/:id/scan', asyncHandler(async (req, res) => {
 serversRouter.post('/:id/upgrade-protocol', asyncHandler(async (req, res) => {
   const id = parseId(req.params.id);
   const server = getLocalServerOr404(id);
+  if (nodeProtocol(server) === 'vless') throw new HttpError(400, 'Недоступно для VLESS');
   const current = paramsFromRow(server);
   if (current.awg_version === LATEST_AWG_VERSION) throw new HttpError(400, 'Сервер уже использует актуальную версию протокола');
 

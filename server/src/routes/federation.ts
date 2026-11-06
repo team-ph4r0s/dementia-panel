@@ -6,6 +6,7 @@ import { ProvisionService } from '../services/provision.service.js';
 import { FailureLimiter } from '../middleware/rate-limit.js';
 import { getBearerToken } from '../middleware/auth.middleware.js';
 import { HttpError, parseId } from '../utils/http.js';
+import { nodeProtocol } from '../utils/vless-params.js';
 
 /**
  * API партнёрского доступа (сторона владельца нод): /api/federation/v1
@@ -82,12 +83,17 @@ function allowedNode(partner: any, nodeId: number): any {
     WHERE s.id = ?
   `).get(partner.id, nodeId) as any;
   if (!server) throw new HttpError(404, 'Нода недоступна по этому токену');
+  if (nodeProtocol(server) === 'vless') throw new HttpError(400, 'Партнёрский доступ недоступен для VLESS');
   return server;
 }
 
 function ownPeer(partner: any, peerId: number): any {
-  const client = db.prepare('SELECT * FROM clients WHERE id = ? AND partner_id = ?').get(peerId, partner.id) as any;
+  const client = db.prepare(`
+    SELECT c.*, s.protocol FROM clients c JOIN servers s ON s.id = c.server_id
+    WHERE c.id = ? AND c.partner_id = ?
+  `).get(peerId, partner.id) as any;
   if (!client) throw new HttpError(404, 'Клиент не найден');
+  if (nodeProtocol(client) === 'vless') throw new HttpError(400, 'Партнёрский доступ недоступен для VLESS');
   return client;
 }
 
@@ -117,6 +123,7 @@ federationRouter.get('/nodes', (req: PartnerRequest, res) => {
   const servers = db.prepare(`
     SELECT s.* FROM servers s
     JOIN partner_nodes pn ON pn.server_id = s.id AND pn.partner_id = ?
+    WHERE s.protocol = 'awg'
     ORDER BY s.sub_order, s.id
   `).all(req.partner.id) as any[];
   res.json({ nodes: servers.map((s) => PartnerService.nodePayload(s)), limits: limitsPayload(req.partner) });
@@ -124,7 +131,10 @@ federationRouter.get('/nodes', (req: PartnerRequest, res) => {
 
 // GET /peers — клиенты этого партнёра с трафиком и состоянием
 federationRouter.get('/peers', (req: PartnerRequest, res) => {
-  const clients = db.prepare('SELECT * FROM clients WHERE partner_id = ? ORDER BY id').all(req.partner.id) as any[];
+  const clients = db.prepare(`
+    SELECT c.* FROM clients c JOIN servers s ON s.id = c.server_id
+    WHERE c.partner_id = ? AND s.protocol = 'awg' ORDER BY c.id
+  `).all(req.partner.id) as any[];
   res.json({ peers: clients.map((c) => PartnerService.peerPayload(c)) });
 });
 

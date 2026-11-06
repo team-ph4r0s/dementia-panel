@@ -2,6 +2,8 @@ import { Router } from 'express';
 import crypto from 'node:crypto';
 import { db, transaction } from '../db/index.js';
 import { AwgService } from '../services/awg.service.js';
+import { XrayService } from '../services/xray.service.js';
+import { nodeProtocol } from '../utils/vless-params.js';
 import { ProvisionService } from '../services/provision.service.js';
 import { SubscriptionService } from '../services/subscription.service.js';
 import { requireAuth } from '../middleware/auth.middleware.js';
@@ -83,15 +85,17 @@ function serializeSubscriber(sub: any, usage = SubscriptionService.getUsage(sub.
 }
 
 function addPeer(subscriberId: number, subscriberName: string, enabled: number, server: any): void {
-  const keyPair = AwgService.generateKeyPair();
-  const psk = AwgService.generatePresharedKey();
+  const vless = nodeProtocol(server) === 'vless';
+  const keyPair = vless ? { publicKey: '', privateKey: '' } : AwgService.generateKeyPair();
+  const psk = vless ? null : AwgService.generatePresharedKey();
+  const uuid = vless ? XrayService.generateUuid() : null;
   // На ноде партнёра IP выдаёт панель владельца при синхронизации
-  const clientIp = server.remote_panel_id ? pendingIp() : AwgService.getNextClientIp(server.id, server.subnet);
+  const clientIp = vless ? '' : server.remote_panel_id ? pendingIp() : AwgService.getNextClientIp(server.id, server.subnet);
   db.prepare(`
     INSERT INTO clients (
-      server_id, subscriber_id, name, client_ip, client_public_key, client_private_key, preshared_key, enabled
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(server.id, subscriberId, subscriberPeerName(subscriberName, server.name), clientIp, keyPair.publicKey, keyPair.privateKey, psk, enabled);
+      server_id, subscriber_id, name, client_ip, client_public_key, client_private_key, preshared_key, client_uuid, enabled
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(server.id, subscriberId, subscriberPeerName(subscriberName, server.name), clientIp, keyPair.publicKey, keyPair.privateKey, psk, uuid, enabled);
 }
 
 /**
@@ -280,11 +284,16 @@ subscribersRouter.post('/:id/reset-token', asyncHandler(async (req, res) => {
   // сохранил бы доступ к VPN
   const token = newToken();
   const peers = db.prepare(`
-    SELECT c.id, c.server_id, s.remote_panel_id FROM clients c JOIN servers s ON s.id = c.server_id WHERE c.subscriber_id = ?
+    SELECT c.id, c.server_id, s.remote_panel_id, s.protocol FROM clients c JOIN servers s ON s.id = c.server_id WHERE c.subscriber_id = ?
   `).all(subscriberId) as any[];
   transaction(() => {
     db.prepare('UPDATE subscribers SET token = ? WHERE id = ?').run(token, subscriberId);
     for (const peer of peers) {
+      if (nodeProtocol(peer) === 'vless') {
+        db.prepare('UPDATE clients SET client_uuid = ?, rx_counter = 0, tx_counter = 0 WHERE id = ?')
+          .run(XrayService.generateUuid(), peer.id);
+        continue;
+      }
       const keyPair = AwgService.generateKeyPair();
       if (peer.remote_panel_id) {
         db.prepare(`
