@@ -303,6 +303,8 @@ export interface CloudflareZone {
 
 export interface PanelSettings {
   public_url: string;
+  /** База ссылок подписок (резервный домен), пусто — от public_url */
+  subscription_url?: string;
   client_dns: string;
   client_mtu: number;
 }
@@ -453,7 +455,8 @@ export interface AmneziaImportResult {
 
 /** Мост в стране пользователей (docs/bridges.md) */
 export type BridgeStatus = 'uninstalled' | 'installing' | 'online' | 'offline' | 'error';
-export type BridgeLinkMode = 'auto' | 'always' | 'off';
+/** main — мост основной (+ запасной прямой адрес), auto — при недоступности, always — только мост, off — не использовать */
+export type BridgeLinkMode = 'main' | 'auto' | 'always' | 'off';
 
 export interface BridgeLink {
   server_id: number;
@@ -489,7 +492,35 @@ export interface Bridge {
   last_error: string | null;
   last_seen: string | null;
   created_at: string;
+  /** Мост пересылает порт панели (резервный путь к панели и подпискам) */
+  panel_forward: number | boolean;
   links: BridgeLink[];
+}
+
+/** Резервный домен подписок (docs/bridges.md#failover) */
+export interface FailoverStatus {
+  enabled: boolean;
+  domain: string;
+  url: string | null;
+  port: number;
+  include_panel: boolean;
+  origin_ip: string;
+  /** Адреса, опубликованные в DNS */
+  published: string[];
+  /** Адреса, которые должны быть опубликованы сейчас */
+  desired: string[];
+  error: string | null;
+  token_saved: boolean;
+  email: string;
+  bridges: { id: number; name: string; host: string; status: string; panel_forward: boolean; ipv4: boolean }[];
+}
+
+export interface FailoverInput {
+  domain: string;
+  include_panel?: boolean;
+  origin_ip?: string;
+  token?: string;
+  email?: string;
 }
 
 export interface BridgeInput {
@@ -500,6 +531,7 @@ export interface BridgeInput {
   ssh_password?: string;
   ssh_key?: string;
   country?: string;
+  panel_forward?: boolean;
   links?: { server_id: number; mode: BridgeLinkMode }[];
 }
 

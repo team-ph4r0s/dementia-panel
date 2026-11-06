@@ -1,4 +1,11 @@
-import type { Bridge, ProbeResult, Server, Subscriber } from '../types';
+import type { Bridge, BridgeLink, ProbeResult, Server, Subscriber } from '../types';
+
+/** Выдаётся ли нода через мост пользователям его страны (как BridgeService.routesFor): main/always — всегда, auto — когда «нужен мост» */
+export function linkInUse(link: Pick<BridgeLink, 'mode' | 'active'>): boolean {
+  return link.mode === 'main' || link.mode === 'always' || (link.mode === 'auto' && link.active);
+}
+
+const MODE_TITLE: Record<BridgeLink['mode'], string> = { main: 'основной', always: 'всегда', auto: 'авто', off: 'выключен' };
 
 /**
  * Модель карты топологии: граф «панель → ноды → мосты → страны пользователей» строится из тех же данных, что уже
@@ -222,7 +229,7 @@ export function buildTopology(servers: Server[], bridges: Bridge[], subscribers:
       const server = serverById.get(link.server_id);
       if (!server) continue;
       const broken = b.status !== 'online' || link.check_ok === false;
-      const live = !broken && link.active;
+      const live = !broken && linkInUse(link);
       edges.push({
         key: `${key}>${nodeKey('server', link.server_id)}`,
         kind: 'bridge-server',
@@ -232,7 +239,7 @@ export function buildTopology(servers: Server[], bridges: Bridge[], subscribers:
         flow: live,
         dashed: !live,
         weight: live ? 1 : 0,
-        title: `Мост ${b.name} → ${server.name}: ${link.mode === 'off' ? 'выключен' : link.mode === 'always' ? 'всегда' : link.active ? 'авто, включён' : 'авто, ожидает'}`,
+        title: `Мост ${b.name} → ${server.name}: ${link.mode === 'auto' ? (link.active ? 'авто, включён' : 'авто, ожидает') : MODE_TITLE[link.mode]}`,
       });
     }
   }
@@ -293,7 +300,7 @@ export function buildTopology(servers: Server[], bridges: Bridge[], subscribers:
 
     const localBridges = bridgesByCountry.get(c.code) ?? [];
     for (const b of localBridges) {
-      const live = b.status === 'online' && b.links.some((l) => l.active && l.check_ok !== false);
+      const live = b.status === 'online' && b.links.some((l) => linkInUse(l) && l.check_ok !== false);
       edges.push({
         key: `${key}>${nodeKey('bridge', b.id)}`,
         kind: 'country-bridge', from: key, to: nodeKey('bridge', b.id),
@@ -304,7 +311,7 @@ export function buildTopology(servers: Server[], bridges: Bridge[], subscribers:
     for (const serverId of [...c.servers].sort((a, b) => a - b)) {
       const server = serverById.get(serverId)!;
       const probe = probeOf.get(`${c.code}|${serverId}`);
-      const bypassed = localBridges.some((b) => b.status === 'online' && b.links.some((l) => l.server_id === serverId && l.active && l.check_ok !== false));
+      const bypassed = localBridges.some((b) => b.status === 'online' && b.links.some((l) => l.server_id === serverId && linkInUse(l) && l.check_ok !== false));
       const health: Health = probe ? probeHealth(probe.status) : 'idle';
       edges.push({
         key: `${key}>${nodeKey('server', serverId)}`,

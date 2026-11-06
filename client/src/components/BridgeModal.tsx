@@ -72,7 +72,7 @@ export const BridgeModal: React.FC<BridgeModalProps> = ({ isOpen, bridge, server
         onClose();
         return;
       }
-      const result = await api.createBridge({ ...data, links: serverIds.map((id) => ({ server_id: id, mode: 'auto' })) });
+      const result = await api.createBridge({ ...data, links: serverIds.map((id) => ({ server_id: id, mode: 'main' })) });
       onSaved();
       if (result.success) {
         onClose();

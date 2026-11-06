@@ -128,7 +128,8 @@ describe('API мостов', () => {
     const install = ssh.calls.find((c) => c.command.includes('deploy-bridge'))!;
     const rulesB64 = /RULES_B64='([A-Za-z0-9+/=]+)'/.exec(install.input!)![1];
     expect(decode(rulesB64)).toContain("forward udp 51820 '203.0.113.10' 51820");
-    expect(res.body.bridge.links).toEqual([expect.objectContaining({ server_id: nodeA, listen_port: 51820, mode: 'auto', active: false, check_ok: null })]);
+    // Режим по умолчанию — «основной» (main): мост первым, прямой адрес запасным
+    expect(res.body.bridge.links).toEqual([expect.objectContaining({ server_id: nodeA, listen_port: 51820, mode: 'main', active: false, check_ok: null })]);
 
     expect((await api('/api/bridges', 'POST', { name: 'Дубль', host: '198.51.100.50', ssh_password: 'x', country: 'ru' })).status).toBe(409);
   });
@@ -148,7 +149,7 @@ describe('API мостов', () => {
     const res = await api(`/api/bridges/${bridgeId}/links`, 'PUT', { links: [{ server_id: nodeA }, { server_id: nodeB, mode: 'always' }] });
     expect(res.status).toBe(200);
     const links = res.body.bridge.links;
-    expect(links.find((l: any) => l.server_id === nodeA)).toMatchObject({ listen_port: 51820, mode: 'auto' });
+    expect(links.find((l: any) => l.server_id === nodeA)).toMatchObject({ listen_port: 51820, mode: 'main' });
     const portB = links.find((l: any) => l.server_id === nodeB).listen_port;
     expect(portB).not.toBe(51820);
     expect(portB).toBeGreaterThanOrEqual(20000);

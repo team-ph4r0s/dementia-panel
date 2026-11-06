@@ -69,6 +69,9 @@ export const App: React.FC = () => {
   const [subscriptionModalSubId, setSubscriptionModalSubId] = useState<number | null>(null);
   const [editingServer, setEditingServer] = useState<Server | null>(null);
   const [publicUrl, setPublicUrl] = useState<string | null>(null);
+  // База ссылок подписок: резервный домен (через мосты), если включён, иначе публичный адрес панели
+  const [subscriptionUrl, setSubscriptionUrl] = useState<string | null>(null);
+  const subscriptionBase = subscriptionUrl || publicUrl;
   // Номер последнего запроса клиентов: ответ для ранее выбранного сервера отбрасывается
   const clientsRequestRef = useRef(0);
   const dataInFlightRef = useRef(false);
@@ -117,6 +120,7 @@ export const App: React.FC = () => {
       if (settings) {
         settingsLoadedRef.current = true;
         setPublicUrl(settings.public_url || null);
+        setSubscriptionUrl(settings.subscription_url || null);
       }
       setSelectedServerId((current) =>
         current !== null && serversData.some((s) => s.id === current) ? current : serversData[0]?.id ?? null
@@ -351,11 +355,11 @@ export const App: React.FC = () => {
             Загрузка данных...
           </div>
         ) : activeTab === 'bridges' ? (
-          <BridgesView servers={servers} />
+          <BridgesView servers={servers} onSubscriptionUrlChange={setSubscriptionUrl} />
         ) : activeTab === 'partners' ? (
           <PartnersView servers={servers} publicUrl={publicUrl} onChanged={loadData} />
         ) : activeTab === 'subscription' ? (
-          <SubscriptionSettingsView subscribers={subscribers} publicUrl={publicUrl} />
+          <SubscriptionSettingsView subscribers={subscribers} publicUrl={subscriptionBase} />
         ) : activeTab === 'events' ? (
           <EventsView />
         ) : activeTab === 'security' ? (
@@ -516,7 +520,7 @@ export const App: React.FC = () => {
       <SubscriptionModal
         isOpen={!!subscriptionModalSub}
         subscriber={subscriptionModalSub}
-        publicUrl={publicUrl}
+        publicUrl={subscriptionBase}
         onClose={() => setSubscriptionModalSubId(null)}
         onTokenReset={(updated) => {
           setSubscribers((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));

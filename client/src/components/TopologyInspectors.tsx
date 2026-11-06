@@ -2,7 +2,7 @@ import React from 'react';
 import { Waypoints, Globe2, ExternalLink } from 'lucide-react';
 import type { Bridge, Server, Subscriber } from '../types';
 import { countryFlag, countryName } from '../utils';
-import { UNKNOWN_COUNTRY } from '../topology/model';
+import { linkInUse, UNKNOWN_COUNTRY } from '../topology/model';
 import { ProtocolBadge } from './ProtocolBadge';
 import { ProbeBadges } from './ProbeBadges';
 
@@ -22,7 +22,7 @@ const STATUS_CLASS: Record<Bridge['status'], string> = {
   uninstalled: 'bg-soft text-muted',
 };
 
-const MODE_TEXT = { auto: 'авто', always: 'всегда', off: 'выключен' } as const;
+const MODE_TEXT = { main: 'основной', auto: 'авто', always: 'всегда', off: 'выключен' } as const;
 
 export const BridgeInspector: React.FC<{ bridge: Bridge; servers: Server[]; onOpenBridges: () => void }> = ({ bridge, servers, onOpenBridges }) => (
   <div className="space-y-4">
@@ -56,7 +56,7 @@ export const BridgeInspector: React.FC<{ bridge: Bridge; servers: Server[]; onOp
       {bridge.links.length === 0 && <p className="text-xs text-muted">Ни одна нода не привязана — пересылать нечего.</p>}
       {bridge.links.map((link) => {
         const server = servers.find((s) => s.id === link.server_id);
-        const live = link.active && link.check_ok !== false && bridge.status === 'online';
+        const live = linkInUse(link) && link.check_ok !== false && bridge.status === 'online';
         return (
           <div key={link.server_id} className="bg-paper border border-line rounded-lg px-3 py-2 text-xs flex flex-wrap items-center gap-x-3 gap-y-1">
             <span className="font-semibold text-ink">{server?.name ?? link.server_name}</span>

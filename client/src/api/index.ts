@@ -38,6 +38,8 @@ import type {
   NodeUpdateSettings,
   CloudflarePanelStatus,
   CdnInput,
+  FailoverInput,
+  FailoverStatus,
 } from '../types';
 
 const API_BASE = '/api';
@@ -472,6 +474,18 @@ export const api = {
   },
 
   // Мосты в странах пользователей
+  getFailover(): Promise<FailoverStatus> {
+    return request(`${API_BASE}/bridges/failover`, {}, 'Ошибка загрузки резервного домена');
+  },
+
+  configureFailover(input: FailoverInput): Promise<FailoverStatus> {
+    return request(`${API_BASE}/bridges/failover`, { method: 'POST', ...json(input) }, 'Не удалось настроить резервный домен');
+  },
+
+  disableFailover(): Promise<FailoverStatus> {
+    return request(`${API_BASE}/bridges/failover`, { method: 'DELETE' }, 'Не удалось выключить резервный домен');
+  },
+
   getBridges(): Promise<Bridge[]> {
     return request(`${API_BASE}/bridges`, {}, 'Ошибка загрузки мостов');
   },

@@ -183,17 +183,22 @@ subscriptionRouter.get('/:token', (req, res) => {
   const routes = BridgeService.routesFor(subscriber.country);
   const entries = peers.filter((p) => p.protocol !== 'vless' || p.client_uuid).flatMap((p) => {
     const route = routes.get(p.server_id);
+    const base = p.sub_name || p.server_name;
     const direct = {
-      name: [p.sub_name || p.server_name, marks.get(p.server_id), route ? `🌉 ${countryFlag(subscriber.country)}` : null].filter(Boolean).join(' · '),
+      name: [base, marks.get(p.server_id), route ? `🌉 ${countryFlag(subscriber.country)}` : null].filter(Boolean).join(' · '),
       server: { ...p, preshared_key: p.server_psk, ...(route ? { host: route.host, awg_port: route.port } : {}) },
       client: p,
     };
+    // Режим «основной» (main): мост первым, прямой адрес — запасной записью следом (docs/bridges.md)
+    const fallback = route?.keepDirect
+      ? [{ name: [base, marks.get(p.server_id), 'напрямую'].filter(Boolean).join(' · '), server: { ...p, preshared_key: p.server_psk }, client: p }]
+      : [];
     // Нода VLESS с готовым входом через CDN — вторая запись: адрес Cloudflare вместо IP ноды (docs/vless.md#cdn).
     // Мост её не трогает: у неё свой адрес и порт
     const viaCdn = p.protocol === 'vless' && cdnReady({ ...p, cdn_cert: p.cdn_has_cert, cdn_key: p.cdn_has_cert })
       ? [{ name: [p.sub_name || p.server_name, 'CDN'].join(' · '), server: { ...p, via_cdn: true }, client: p }]
       : [];
-    return [direct, ...viaCdn];
+    return [direct, ...fallback, ...viaCdn];
   });
 
   if (showPage) {

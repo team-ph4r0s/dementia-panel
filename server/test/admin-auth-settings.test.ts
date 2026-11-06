@@ -253,7 +253,7 @@ describe('смена логина', () => {
 
 describe('настройки панели', () => {
   it('значения по умолчанию', async () => {
-    expect((await admin.api('/api/settings')).body).toEqual({ public_url: '', client_dns: '1.1.1.1, 8.8.8.8', client_mtu: 1280 });
+    expect((await admin.api('/api/settings')).body).toEqual({ public_url: '', subscription_url: '', client_dns: '1.1.1.1, 8.8.8.8', client_mtu: 1280 });
   });
 
   it('публичный адрес: только http(s), слэш на конце убирается, пустое значение сбрасывает настройку', async () => {

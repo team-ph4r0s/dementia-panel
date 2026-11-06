@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { db, transaction } from '../db/index.js';
+import { db, getSetting, transaction } from '../db/index.js';
 import { HttpError } from '../utils/http.js';
 import { formatEndpointHost, isValidHost, shellQuote } from '../utils/net.js';
 import { HostKeyMismatchError, SshCredentials, SshService } from './ssh.service.js';
@@ -44,8 +44,14 @@ const PASSIVE_MIN_CLIENTS = 3;
 /** Нода жива: рукопожатие клиента из другой страны не старше этого */
 const PASSIVE_ALIVE_MS = 5 * 60 * 1000;
 
-export type LinkMode = 'auto' | 'always' | 'off';
-const LINK_MODES: LinkMode[] = ['auto', 'always', 'off'];
+/**
+ * Режим пары мост × нода: `main` — мост основной (запись через мост первой, прямая — запасной следом), `always` — только мост,
+ * `auto` — мост, когда для страны действует «нужен мост», `off` — только прямой адрес.
+ */
+export type LinkMode = 'main' | 'auto' | 'always' | 'off';
+const LINK_MODES: LinkMode[] = ['main', 'auto', 'always', 'off'];
+/** Режим новых привязок: мосты — основной путь для пользователей страны (docs/bridges.md) */
+export const DEFAULT_LINK_MODE: LinkMode = 'main';
 const COUNTRY = /^[a-z]{2}$/;
 
 export interface BridgeRuleLink {
@@ -70,6 +76,21 @@ export interface BridgeRoute {
   bridge_name: string;
   host: string;
   port: number;
+  /** Режим `main`: в подписке и запись через мост, и прямая (запасная) */
+  keepDirect: boolean;
+}
+
+/** Пересылка порта панели через мост (резервный путь к панели и подпискам, docs/bridges.md#panel) */
+export interface PanelForward {
+  /** IPv4 сервера панели */
+  ip: string;
+  /** Порт панели (HTTP+HTTPS на одном порту); на мосту слушается тот же номер */
+  port: number;
+}
+
+/** Порт, на котором работает панель (HTTP и HTTPS на одном порту, инвариант 20) */
+export function panelPort(): number {
+  return Number(process.env.PORT) || 3001;
 }
 
 const pendingApply = new Map<number, Promise<OperationResult>>();
@@ -95,7 +116,7 @@ function readDeployScript(): string {
  * в FORWARD (Docker, ufw) не отбрасывала пересылаемый трафик. DNAT срабатывает только для пакетов на адреса самого моста.
  * Ноды, заданные доменом, разрешаются на мосту при каждом применении (и при загрузке).
  */
-export function buildBridgeRules(links: BridgeRuleLink[]): string {
+export function buildBridgeRules(links: BridgeRuleLink[], panel: PanelForward | null = null): string {
   const lines = [
     '#!/bin/sh',
     '# Сгенерировано Dementia Panel — не редактируйте вручную, правила перезаписываются панелью',
@@ -131,12 +152,17 @@ export function buildBridgeRules(links: BridgeRuleLink[]): string {
       lines.push(`forward ${proto} ${Number(link.listen_port)} ${shellQuote(link.host)} ${port}`);
     }
   }
-  lines.push(`echo "---RULES ${expectedRuleCount(links)}"`);
+  if (panel) {
+    // TCP как есть: TLS панели завершается на самой панели, сертификат остаётся её (мост ничего не расшифровывает)
+    if (!net.isIPv4(panel.ip)) throw new Error('Для пересылки панели нужен IPv4-адрес сервера панели');
+    lines.push(`forward tcp ${Number(panel.port)} ${shellQuote(panel.ip)} ${Number(panel.port)}`);
+  }
+  lines.push(`echo "---RULES ${expectedRuleCount(links, panel)}"`);
   return lines.join('\n') + '\n';
 }
 
-export function expectedRuleCount(links: BridgeRuleLink[]): number {
-  return links.reduce((n, l) => n + linkForwards(l).length, 0);
+export function expectedRuleCount(links: BridgeRuleLink[], panel: PanelForward | null = null): number {
+  return links.reduce((n, l) => n + linkForwards(l).length, 0) + (panel ? 1 : 0);
 }
 
 /** Проверка моста: число правил DNAT и то, что переход в цепочку панели — первое правило FORWARD */
@@ -194,6 +220,17 @@ function ruleLinks(bridgeId: number): BridgeRuleLink[] {
     FROM bridge_links l JOIN servers s ON s.id = l.server_id
     WHERE l.bridge_id = ? ORDER BY l.listen_port
   `).all(bridgeId) as any[];
+}
+
+/** Пересылка панели для моста: включена флагом `panel_forward` и известен IPv4 панели (`panel_origin_ip`) */
+function panelForwardOf(bridge: any): PanelForward | null {
+  if (!bridge?.panel_forward) return null;
+  const ip = getSetting('panel_origin_ip');
+  return ip && net.isIPv4(ip) ? { ip, port: panelPort() } : null;
+}
+
+function rulesFor(bridge: any): string {
+  return buildBridgeRules(ruleLinks(bridge.id), panelForwardOf(bridge));
 }
 
 const sha256 = (text: string) => crypto.createHash('sha256').update(text).digest('hex');
@@ -280,6 +317,17 @@ export class BridgeService {
       throw new HttpError(400, 'Укажите SSH-пароль или приватный ключ');
     }
     if (body.reset_host_key === true) fields.host_key = null;
+    if (body.panel_forward !== undefined) {
+      if (typeof body.panel_forward !== 'boolean') throw new HttpError(400, 'panel_forward — true или false');
+      fields.panel_forward = body.panel_forward ? 1 : 0;
+      if (body.panel_forward) {
+        const port = panelPort();
+        const sshPort = Number(fields.ssh_port ?? existing?.ssh_port ?? 22);
+        if (sshPort === port) throw new HttpError(400, `Порт панели ${port} совпадает с SSH-портом моста`);
+        const busy = existing && db.prepare('SELECT 1 FROM bridge_links WHERE bridge_id = ? AND listen_port = ?').get(existing.id, port);
+        if (busy) throw new HttpError(409, `Порт ${port} на мосту уже занят пересылкой ноды — пересылку панели включить нельзя`);
+      }
+    }
     return fields;
   }
 
@@ -324,7 +372,7 @@ export class BridgeService {
         const bridge = loadBridge(id);
         db.prepare("UPDATE bridges SET status = 'installing', last_error = NULL WHERE id = ?").run(id);
         try {
-          const rules = buildBridgeRules(ruleLinks(id));
+          const rules = rulesFor(db.prepare('SELECT * FROM bridges WHERE id = ?').get(id));
           const script = [`export RULES_B64=${shellQuote(Buffer.from(rules).toString('base64'))}`, readDeployScript()].join('\n');
           const creds = credentials(bridge);
           const result = await SshService.executeCommand(
@@ -375,7 +423,7 @@ export class BridgeService {
       return { success: false, error: 'Мост не установлен' };
     }
     try {
-      const rules = buildBridgeRules(ruleLinks(id));
+      const rules = rulesFor(db.prepare('SELECT * FROM bridges WHERE id = ?').get(id));
       const creds = credentials(bridge);
       const write = `umask 077 && mkdir -p /etc/dementia-bridge && cat > /etc/dementia-bridge/rules.sh.new && mv -f /etc/dementia-bridge/rules.sh.new /etc/dementia-bridge/rules.sh && sh /etc/dementia-bridge/rules.sh`;
       const result = await SshService.executeCommand(creds, `${SshService.sudo(creds)}sh -c ${shellQuote(write)}`, { input: rules, timeoutMs: 60000 });
@@ -423,9 +471,9 @@ export class BridgeService {
     const wanted = new Map<number, LinkMode>();
     for (const item of links) {
       const serverId = Number((item as any)?.server_id);
-      const mode = ((item as any)?.mode ?? 'auto') as LinkMode;
+      const mode = ((item as any)?.mode ?? DEFAULT_LINK_MODE) as LinkMode;
       if (!Number.isInteger(serverId) || serverId <= 0) throw new HttpError(400, 'Некорректный идентификатор ноды');
-      if (!LINK_MODES.includes(mode)) throw new HttpError(400, 'Режим моста: auto, always или off');
+      if (!LINK_MODES.includes(mode)) throw new HttpError(400, 'Режим моста: main, auto, always или off');
       wanted.set(serverId, mode);
     }
 
@@ -450,7 +498,8 @@ export class BridgeService {
         }
         const used = (db.prepare('SELECT listen_port FROM bridge_links WHERE bridge_id = ?').all(id) as any[]).map((r) => r.listen_port);
         const server = db.prepare('SELECT awg_port FROM servers WHERE id = ?').get(serverId) as any;
-        const exclude = [...used, bridge.ssh_port];
+        // Порт панели занят пересылкой панели, если она включена на этом мосту
+        const exclude = [...used, bridge.ssh_port, ...(bridge.panel_forward ? [panelPort()] : [])];
         const port = exclude.includes(server.awg_port) ? stubPortCandidates(exclude, null, 1)[0] : server.awg_port;
         db.prepare('INSERT INTO bridge_links (bridge_id, server_id, listen_port, mode) VALUES (?, ?, ?, ?)').run(id, serverId, port, mode);
       }
@@ -483,7 +532,7 @@ export class BridgeService {
       if (installing.has(bridge.id)) continue;
       let expected: string;
       try {
-        expected = buildBridgeRules(ruleLinks(bridge.id));
+        expected = rulesFor(bridge);
       } catch (err: any) {
         db.prepare('UPDATE bridges SET last_error = ? WHERE id = ?').run(err.message, bridge.id);
         continue;
@@ -494,8 +543,11 @@ export class BridgeService {
       }
       if (Date.now() - (lastHealth.get(bridge.id) ?? 0) < HEALTH_INTERVAL_MS) continue;
       lastHealth.set(bridge.id, Date.now());
-      await runExclusive(queueKey(bridge.id), () => this.checkHealth(bridge.id, expectedRuleCount(ruleLinks(bridge.id)))).catch(() => {});
+      await runExclusive(queueKey(bridge.id), () => this.checkHealth(bridge.id, expectedRuleCount(ruleLinks(bridge.id), panelForwardOf(bridge)))).catch(() => {});
     }
+    // Мост ушёл в offline или вернулся — A-записи резервного домена подписок следуют за ним (без изменений Cloudflare не трогается)
+    const { FailoverService } = await import('./failover.service.js');
+    await FailoverService.reconcile().catch(() => {});
   }
 
   private static async checkHealth(id: number, expectedRules: number): Promise<void> {
@@ -661,16 +713,20 @@ export class BridgeService {
     const routes = new Map<number, BridgeRoute>();
     if (!country || !COUNTRY.test(country)) return routes;
     const rows = db.prepare(`
-      SELECT l.server_id, l.listen_port, b.id AS bridge_id, b.name AS bridge_name, b.host
+      SELECT l.server_id, l.listen_port, l.mode, b.id AS bridge_id, b.name AS bridge_name, b.host
       FROM bridge_links l
       JOIN bridges b ON b.id = l.bridge_id
       LEFT JOIN bridge_state st ON st.server_id = l.server_id AND st.country = b.country
       WHERE b.country = ? AND b.status = 'online' AND COALESCE(l.check_ok, 1) = 1
-        AND (l.mode = 'always' OR (l.mode = 'auto' AND st.active = 1))
+        AND (l.mode IN ('main', 'always') OR (l.mode = 'auto' AND st.active = 1))
       ORDER BY b.id
     `).all(country) as any[];
     for (const r of rows) {
-      if (!routes.has(r.server_id)) routes.set(r.server_id, { bridge_id: r.bridge_id, bridge_name: r.bridge_name, host: r.host, port: r.listen_port });
+      if (!routes.has(r.server_id)) {
+        routes.set(r.server_id, {
+          bridge_id: r.bridge_id, bridge_name: r.bridge_name, host: r.host, port: r.listen_port, keepDirect: r.mode === 'main',
+        });
+      }
     }
     return routes;
   }

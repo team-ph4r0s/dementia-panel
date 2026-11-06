@@ -3,6 +3,7 @@ import { db } from '../db/index.js';
 import { requireAuth } from '../middleware/auth.middleware.js';
 import { asyncHandler, HttpError, parseId } from '../utils/http.js';
 import { BridgeService } from '../services/bridge.service.js';
+import { ensurePanelOriginIp, FailoverService } from '../services/failover.service.js';
 
 /**
  * Мосты в странах пользователей (docs/bridges.md). Только для администратора.
@@ -29,12 +30,40 @@ bridgesRouter.post('/', asyncHandler(async (req, res) => {
   res.status(201).json({ ...result, bridge: BridgeService.get(id) });
 }));
 
-// PUT /api/bridges/:id — имя, адрес, SSH-доступ, страна
-bridgesRouter.put('/:id', (req, res) => {
-  const id = parseId(req.params.id);
-  BridgeService.update(id, req.body ?? {});
-  res.json(BridgeService.get(id));
+// Резервный домен подписок (docs/bridges.md#failover): GET — состояние, POST — {domain, include_panel?, origin_ip?, token?, email?},
+// DELETE — выключить. Маршруты объявлены до /:id
+bridgesRouter.get('/failover', (req, res) => {
+  res.json(FailoverService.status());
 });
+
+bridgesRouter.post('/failover', asyncHandler(async (req, res) => {
+  res.json(await FailoverService.configure(req.body ?? {}));
+}));
+
+bridgesRouter.delete('/failover', asyncHandler(async (req, res) => {
+  res.json(await FailoverService.disable());
+}));
+
+// PUT /api/bridges/:id — имя, адрес, SSH-доступ, страна, пересылка панели (panel_forward)
+bridgesRouter.put('/:id', asyncHandler(async (req, res) => {
+  const id = parseId(req.params.id);
+  const body = req.body ?? {};
+  const before = BridgeService.get(id);
+  // Пересылке панели нужен IPv4 сервера панели — определяется до записи, ошибка ничего не меняет
+  if (body.panel_forward === true) await ensurePanelOriginIp(body.origin_ip);
+  BridgeService.update(id, body);
+  const after = BridgeService.get(id);
+  let applyError: string | undefined;
+  if (Boolean(after.panel_forward) !== Boolean(before.panel_forward) && after.status !== 'uninstalled') {
+    const result = await BridgeService.requestApply(id);
+    if (!result.success) {
+      BridgeService.update(id, { panel_forward: Boolean(before.panel_forward) });
+      throw new HttpError(502, `Мост не принял правила: ${result.error}. Пересылка панели возвращена как была.`);
+    }
+  }
+  await FailoverService.reconcile().catch((err: any) => { applyError = err.message; });
+  res.json({ ...BridgeService.get(id), ...(applyError ? { warning: applyError } : {}) });
+}));
 
 // PUT /api/bridges/:id/links — { links: [{ server_id, mode }] }: ноды моста и режим для каждой
 bridgesRouter.put('/:id/links', asyncHandler(async (req, res) => {
@@ -75,5 +104,6 @@ bridgesRouter.delete('/:id', asyncHandler(async (req, res) => {
     }
   }
   db.prepare('DELETE FROM bridges WHERE id = ?').run(id);
+  await FailoverService.reconcile().catch(() => {});
   res.json({ success: true });
 }));

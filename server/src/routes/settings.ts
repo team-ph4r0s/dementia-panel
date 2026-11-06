@@ -3,6 +3,7 @@ import net from 'node:net';
 import { getSetting, setSetting, transaction } from '../db/index.js';
 import { requireAuth } from '../middleware/auth.middleware.js';
 import { HttpError } from '../utils/http.js';
+import { FailoverService } from '../services/failover.service.js';
 
 export const settingsRouter = Router();
 
@@ -10,6 +11,8 @@ settingsRouter.use(requireAuth);
 
 export interface PanelSettings {
   public_url: string;
+  /** База ссылок подписок: резервный домен (FailoverService), если включён, иначе пусто — ссылки от public_url */
+  subscription_url: string;
   client_dns: string;
   client_mtu: number;
 }
@@ -17,6 +20,7 @@ export interface PanelSettings {
 function readSettings(): PanelSettings {
   return {
     public_url: getSetting('public_url') || '',
+    subscription_url: FailoverService.subscriptionBaseUrl() || '',
     client_dns: getSetting('client_dns') || '1.1.1.1, 8.8.8.8',
     client_mtu: Number(getSetting('client_mtu')) || 1280,
   };

@@ -29,7 +29,7 @@ export interface SslStatus {
   email: string | null;
 }
 
-const TLS_SETTINGS = ['ssl_enabled', 'ssl_mode', 'ssl_domain', 'ssl_expires_at', 'ssl_email', 'cf_token'] as const;
+const TLS_SETTINGS = ['ssl_enabled', 'ssl_mode', 'ssl_domain', 'ssl_expires_at', 'ssl_email', 'cf_token', 'ssl_alt_names'] as const;
 let tlsQueue: Promise<unknown> = Promise.resolve();
 
 type CertificateListener = () => void;
@@ -147,6 +147,16 @@ export class SslService {
       } catch (err) {
         console.error('Ошибка применения нового сертификата:', err);
       }
+    }
+  }
+
+  /** Дополнительные имена сертификата панели (резервный домен подписок) */
+  static altNames(): string[] {
+    try {
+      const parsed = JSON.parse(getSetting('ssl_alt_names') || '[]');
+      return Array.isArray(parsed) ? parsed.filter((n): n is string => typeof n === 'string') : [];
+    } catch {
+      return [];
     }
   }
 
@@ -272,8 +282,14 @@ export class SslService {
       }
     }
 
-    // 3. Request ACME certificate via DNS-01
-    const { cert, key } = await this.obtainDns01Certificate(cleanDomain, cleanEmail, cfToken, matchedZone.id);
+    // 3. Request ACME certificate via DNS-01. Дополнительные имена (резервный домен подписок, FailoverService) — в том же
+    // сертификате: продление их сохраняет. Имя без зоны в аккаунте пропускается, чтобы не сорвать выпуск основного
+    const extra = this.altNames()
+      .filter((name) => name !== cleanDomain)
+      .map((name) => ({ name, zone: zones.filter((z) => name === z.name || name.endsWith('.' + z.name)).sort((a, b) => b.name.length - a.name.length)[0] }))
+      .filter((entry) => entry.zone)
+      .map((entry) => ({ name: entry.name, zoneId: entry.zone!.id }));
+    const { cert, key } = await this.obtainDns01Certificate(cleanDomain, cleanEmail, cfToken, matchedZone.id, extra);
 
     this.saveCertificate(cert, key, 'letsencrypt_cf', cleanDomain, {
       ssl_email: cleanEmail,
@@ -286,12 +302,22 @@ export class SslService {
    * Сертификат Let's Encrypt для имени через DNS-01 в зоне Cloudflare — без сохранения: его использует и сертификат панели,
    * и вход через CDN на нодах VLESS (CdnService). TXT-записи удаляются после проверки.
    */
-  static async obtainDns01Certificate(domain: string, email: string, cfToken: string, zoneId: string): Promise<{ cert: string; key: string }> {
+  static async obtainDns01Certificate(
+    domain: string,
+    email: string,
+    cfToken: string,
+    zoneId: string,
+    extra: { name: string; zoneId: string }[] = []
+  ): Promise<{ cert: string; key: string }> {
     const cleanDomain = validateDomain(domain);
     const cleanEmail = validateEmail(email);
+    const zoneOf = new Map(extra.map((e) => [validateDomain(e.name), e.zoneId]));
     const client = await this.getAcmeClient();
-    const [key, csr] = await acme.crypto.createCsr({ commonName: cleanDomain });
+    const [key, csr] = await acme.crypto.createCsr(
+      zoneOf.size ? { commonName: cleanDomain, altNames: [cleanDomain, ...zoneOf.keys()] } : { commonName: cleanDomain }
+    );
     const createdRecordIds = new Map<string, string>();
+    const zonesByToken = new Map<string, string>();
 
     const cert = await client.auto({
       csr,
@@ -300,7 +326,9 @@ export class SslService {
       challengePriority: ['dns-01'],
       challengeCreateFn: async (authz, challenge, keyAuthorization) => {
         if (challenge.type !== 'dns-01') return;
-        const cfData = await cfFetch(cfToken, `/zones/${zoneId}/dns_records`, {
+        const challengeZone = zoneOf.get(authz.identifier.value) ?? zoneId;
+        zonesByToken.set(challenge.token, challengeZone);
+        const cfData = await cfFetch(cfToken, `/zones/${challengeZone}/dns_records`, {
           method: 'POST',
           body: JSON.stringify({
             type: 'TXT',
@@ -319,7 +347,7 @@ export class SslService {
       challengeRemoveFn: async (authz, challenge) => {
         const recId = createdRecordIds.get(challenge.token);
         if (recId) {
-          await cfFetch(cfToken, `/zones/${zoneId}/dns_records/${recId}`, { method: 'DELETE' }).catch(() => {});
+          await cfFetch(cfToken, `/zones/${zonesByToken.get(challenge.token) ?? zoneId}/dns_records/${recId}`, { method: 'DELETE' }).catch(() => {});
         }
       },
     });

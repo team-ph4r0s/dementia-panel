@@ -501,6 +501,11 @@ const migrations: Array<() => void> = [
       update.run(`/${crypto.randomBytes(8).toString('hex')}`, row.id);
     }
   },
+  // v17: мост пересылает порт панели (резервный путь к панели и подпискам, docs/bridges.md#panel); резервный домен подписок —
+  // в settings (failover_*), режим привязки `main` — значение bridge_links.mode без изменения схемы
+  () => {
+    addColumn('bridges', 'panel_forward INTEGER NOT NULL DEFAULT 0');
+  },
 ];
 
 /** Версия схемы, которую умеет эта сборка панели (число миграций) */

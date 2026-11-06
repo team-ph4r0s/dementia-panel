@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Bridge, ProbeResult, Server, Subscriber } from '../types';
-import { buildTopology, circularMean, neighbours, spreadAngles, UNKNOWN_COUNTRY } from './model';
+import { buildTopology, circularMean, linkInUse, neighbours, spreadAngles, UNKNOWN_COUNTRY } from './model';
 
 const server = (id: number, patch: Partial<Server> = {}): Server =>
   ({
@@ -165,5 +165,15 @@ describe('вспомогательные функции', () => {
     const n = neighbours(t.edges, 'panel');
     expect([...n.nodes].sort()).toEqual(['panel', 'server:1', 'server:2']);
     expect(n.edges.size).toBe(2);
+  });
+});
+
+describe('linkInUse: привязка моста выдаётся пользователям', () => {
+  it('main и always — всегда, auto — только при «нужен мост», off — никогда', () => {
+    expect(linkInUse({ mode: 'main', active: false })).toBe(true);
+    expect(linkInUse({ mode: 'always', active: false })).toBe(true);
+    expect(linkInUse({ mode: 'auto', active: false })).toBe(false);
+    expect(linkInUse({ mode: 'auto', active: true })).toBe(true);
+    expect(linkInUse({ mode: 'off', active: true })).toBe(false);
   });
 });

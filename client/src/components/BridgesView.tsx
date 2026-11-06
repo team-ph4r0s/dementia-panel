@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Plus, Waypoints, RefreshCw, Pencil, Trash2, Terminal, Loader2, Save, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react';
+import { Plus, Waypoints, RefreshCw, Pencil, Trash2, Terminal, Loader2, Save, CheckCircle2, XCircle, AlertTriangle, LayoutDashboard } from 'lucide-react';
 import type { Bridge, BridgeLinkMode, Server } from '../types';
 import { api } from '../api';
 import { countryFlag, countryName } from '../utils';
 import { BridgeModal } from './BridgeModal';
+import { FailoverCard } from './bridges/FailoverCard';
 import { useFeedback } from './ui/feedback-context';
 
 const STATUS: Record<Bridge['status'], { label: string; className: string }> = {
@@ -15,6 +16,7 @@ const STATUS: Record<Bridge['status'], { label: string; className: string }> = {
 };
 
 const MODES: { value: BridgeLinkMode; label: string }[] = [
+  { value: 'main', label: 'Основной — мост + запасной прямой' },
   { value: 'auto', label: 'Авто — при недоступности' },
   { value: 'always', label: 'Всегда через мост' },
   { value: 'off', label: 'Не использовать' },
@@ -82,7 +84,7 @@ const BridgeLinks: React.FC<{ bridge: Bridge; servers: Server[]; onChanged: () =
                         checked={Boolean(mode)}
                         onChange={(e) => {
                           const next = { ...modes };
-                          if (e.target.checked) next[s.id] = 'auto';
+                          if (e.target.checked) next[s.id] = 'main';
                           else delete next[s.id];
                           setModes(next);
                           setDirty(true);
@@ -147,7 +149,7 @@ const BridgeLinks: React.FC<{ bridge: Bridge; servers: Server[]; onChanged: () =
 
 const LinkState: React.FC<{ bridge: Bridge; link: Bridge['links'][number] }> = ({ bridge, link }) => {
   const flag = countryFlag(bridge.country);
-  const via = link.mode === 'always' || (link.mode === 'auto' && link.active);
+  const via = link.mode === 'main' || link.mode === 'always' || (link.mode === 'auto' && link.active);
   const broken = link.check_ok === false;
   return (
     <div className="space-y-0.5">
@@ -165,6 +167,7 @@ const LinkState: React.FC<{ bridge: Bridge; link: Bridge['links'][number] }> = (
         <span className="inline-flex items-center gap-1 text-warn" title={link.changed_at ? `с ${new Date(link.changed_at).toLocaleString()}` : undefined}>
           <Waypoints className="w-3.5 h-3.5" /> {flag} через мост
           {link.mode === 'auto' && <span className="text-faint">({link.reason === 'clients' ? 'обрыв у клиентов' : 'недоступна из страны'})</span>}
+          {link.mode === 'main' && <span className="text-faint">+ запасной напрямую</span>}
         </span>
       ) : (
         <span className="inline-flex items-center gap-1 text-ok">
@@ -181,13 +184,15 @@ const LinkState: React.FC<{ bridge: Bridge; link: Bridge['links'][number] }> = (
 /**
  * Раздел «Мосты» (docs/bridges.md): серверы в странах пользователей, через которые подписка выдаёт ноды, недоступные напрямую.
  */
-export const BridgesView: React.FC<{ servers: Server[] }> = ({ servers }) => {
+export const BridgesView: React.FC<{ servers: Server[]; onSubscriptionUrlChange?: (url: string | null) => void }> = ({ servers, onSubscriptionUrlChange }) => {
   const { confirm } = useFeedback();
   const [bridges, setBridges] = useState<Bridge[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [modal, setModal] = useState<{ open: boolean; bridge: Bridge | null }>({ open: false, bridge: null });
   const [busy, setBusy] = useState<number | null>(null);
   const [notice, setNotice] = useState<{ type: 'success' | 'error'; text: string; log?: string } | null>(null);
+  // Перечитать резервный домен после изменения «Панели через мост»
+  const [failoverKey, setFailoverKey] = useState(0);
 
   const load = useCallback(async () => {
     try {
@@ -229,6 +234,20 @@ export const BridgesView: React.FC<{ servers: Server[] }> = ({ servers }) => {
       setNotice({ type: result.success ? 'success' : 'error', text: result.success ? `SSH-подключение к «${b.name}» работает.` : result.message ?? 'SSH недоступен' });
     });
 
+  const handlePanelForward = async (b: Bridge) => {
+    const enable = !b.panel_forward;
+    if (enable && !(await confirm({
+      title: 'Пересылать панель через мост?',
+      message: `Мост «${b.name}» будет пересылать порт панели на сервер панели (TCP как есть, TLS и сертификат — панели). Через него будут доступны интерфейс панели и подписки, а адрес моста попадёт в резервный домен подписок.`,
+    }))) return;
+    act(b.id, async () => {
+      const updated = await api.updateBridge(b.id, { panel_forward: enable });
+      setNotice({ type: 'success', text: enable ? `Панель пересылается через «${b.name}».` : `Пересылка панели через «${b.name}» выключена.` });
+      if ((updated as Bridge & { warning?: string }).warning) setNotice({ type: 'error', text: (updated as Bridge & { warning?: string }).warning! });
+      setFailoverKey((k) => k + 1);
+    });
+  };
+
   const handleDelete = async (b: Bridge) => {
     if (!(await confirm({ message: `Удалить мост «${b.name}»? Пользователи, получавшие ноды через него, получат прямые адреса при обновлении подписки.`, danger: true, confirmLabel: 'Удалить' }))) return;
     const teardown = b.status !== 'uninstalled' && (await confirm({ title: 'Убрать правила пересылки?', message: 'Убрать правила пересылки с сервера моста? «Не убирать» — удалить только из панели.', confirmLabel: 'Убрать правила', cancelLabel: 'Не убирать' }));
@@ -248,10 +267,10 @@ export const BridgesView: React.FC<{ servers: Server[] }> = ({ servers }) => {
         <div className="space-y-1 max-w-3xl">
           <h1 className="font-display text-2xl font-extrabold text-ink tracking-tight">Мосты</h1>
           <p className="text-sm text-muted">
-            Мост — сервер в стране пользователей, через который они подключаются к зарубежной ноде, когда напрямую она недоступна.
-            Мост только пересылает трафик AmneziaWG: шифрование сквозное, ключей пользователей на нём нет. Подписка пользователя,
-            у которого задана страна, сама выдаст адрес моста этой страны, если проверка доступности из неё не проходит или у клиентов
-            этой страны одновременно оборвались подключения к ноде.
+            Мост — сервер в стране пользователей, через который они подключаются к зарубежным нодам. Мост только пересылает трафик
+            (AmneziaWG, VLESS, порт панели): шифрование сквозное, ключей пользователей на нём нет. В режиме «Основной» пользователь
+            страны моста получает ноду через мост первой записью и запасную прямую следом. Мост может пересылать и саму панель —
+            тогда подписки обновляются, даже если адрес панели или Cloudflare в стране режут.
           </p>
         </div>
         <button
@@ -261,6 +280,8 @@ export const BridgesView: React.FC<{ servers: Server[] }> = ({ servers }) => {
           <Plus className="w-4 h-4" /> Мост
         </button>
       </div>
+
+      <FailoverCard refreshKey={failoverKey} onChanged={(url) => onSubscriptionUrlChange?.(url)} />
 
       {notice && (
         <div className={`p-3 rounded-xl border border-line text-xs ${notice.type === 'success' ? 'bg-ok-soft text-ok' : 'bg-bad-soft text-bad'}`}>
@@ -312,6 +333,15 @@ export const BridgesView: React.FC<{ servers: Server[] }> = ({ servers }) => {
                     <button onClick={() => handleInstall(b)} disabled={busy !== null} className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-line bg-soft hover:bg-soft-2 text-ink disabled:opacity-40">
                       <RefreshCw className="w-3.5 h-3.5" /> {b.status === 'uninstalled' || b.status === 'error' ? 'Установить' : 'Переустановить'}
                     </button>
+                    <button
+                      onClick={() => void handlePanelForward(b)}
+                      disabled={busy !== null}
+                      aria-pressed={Boolean(b.panel_forward)}
+                      title="Пересылать порт панели через мост: резервный путь к панели и подпискам"
+                      className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-line disabled:opacity-40 ${b.panel_forward ? 'bg-violet/15 text-violet' : 'bg-soft hover:bg-soft-2 text-ink'}`}
+                    >
+                      <LayoutDashboard className="w-3.5 h-3.5" /> {b.panel_forward ? 'Панель через мост: вкл' : 'Панель через мост'}
+                    </button>
                     <button onClick={() => handleTest(b)} disabled={busy !== null} className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-line bg-soft hover:bg-soft-2 text-ink disabled:opacity-40">
                       <Terminal className="w-3.5 h-3.5" /> Тест SSH
                     </button>
@@ -331,7 +361,8 @@ export const BridgesView: React.FC<{ servers: Server[] }> = ({ servers }) => {
       )}
 
       <p className="text-xs text-faint max-w-4xl">
-        «Авто»: мост выдаётся пользователям страны моста, если две проверки подряд показали, что из этой страны нода недоступна, или если у
+        «Основной» (по умолчанию): пользователь страны моста получает ноду через мост первой записью и прямую — запасной, переключиться
+        можно в приложении. «Авто»: мост выдаётся пользователям страны моста, если две проверки подряд показали, что из этой страны нода недоступна, или если у
         нескольких клиентов этой страны одновременно оборвались подключения, а у остальных нет. Возврат на прямой адрес — после трёх
         удачных проверок и не раньше чем через 12 часов. «Всегда через мост» — для случаев, которые проверки не видят (например, нестабильный
         маршрут у части операторов связи). Изменение адреса доходит до пользователя при обновлении подписки в приложении; выданные вручную
