@@ -69,9 +69,11 @@ describe('CORE VLESS', () => {
       policy: { levels: { 0: { statsUserUplink: true, statsUserDownlink: true } } },
       routing: { rules: [
         { inboundTag: ['api'], outboundTag: 'api' },
-        { ip: ['geoip:private'], outboundTag: 'block' },
+        { ip: expect.arrayContaining(['10.0.0.0/8', '192.168.0.0/16', 'fc00::/7']), outboundTag: 'block' },
       ] },
     });
+    // geoip.dat может отсутствовать в образе: ссылки на geoip/geosite не допускаются
+    expect(JSON.stringify(config)).not.toMatch(/geoip:|geosite:/);
     expect(config.inbounds.find((inbound: any) => inbound.tag === 'api')).toMatchObject({
       listen: '127.0.0.1', port: XRAY_API_PORT, protocol: 'dokodemo-door',
     });

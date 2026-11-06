@@ -25,15 +25,20 @@
 
 | Формат | Как выбирается | Тело |
 |---|---|---|
-| Incy (по умолчанию) | `?format=awg`/`incy` или запрос, для которого не выбраны HTML и mihomo | base64 списка строк `awg://<base64url(.conf)>#<имя>` ([спецификация](https://docs.incy.cc/en/subscription-format/)) |
-| JSON Incy | `?format=json` | `{"type":"amneziawg","version":1,"servers":[{"name","config":"<base64url .conf>"}]}` |
-| mihomo | `?format=clash`/`mihomo` или UA `mihomo`, `clash-meta`, `clash-verge`, `flclash`, `clashmi`, `clash.party` | JSON (валидный YAML): `proxies` (`type: wireguard` + `amnezia-wg-option`), группа `Dementia`, `rules: MATCH,Dementia` |
+| Incy (по умолчанию) | `?format=awg`/`incy` или запрос, для которого не выбраны HTML, mihomo и v2ray | base64 смешанного списка `awg://<base64url(.conf)>#<имя>` и `vless://…#<имя>` ([спецификация](https://docs.incy.cc/en/subscription-format/)) |
+| JSON Incy | `?format=json` | `{"type":"amneziawg","version":1,"servers":[…]}`; AWG — `{name,config}`, VLESS — `{name,protocol:"vless",link}` |
+| mihomo | `?format=clash`/`mihomo` или UA `mihomo`, `clash-meta`, `clash-verge`, `flclash`, `clashmi`, `clash.party` | JSON (валидный YAML): AWG `type: wireguard` + `amnezia-wg-option`, VLESS `type: vless` + `reality-opts`, группа `Dementia`, `rules: MATCH,Dementia` |
+| v2ray | `?format=v2ray` или UA `v2rayN`, `v2rayNG`, `Hiddify`, `Streisand`, `Happ`, `NekoBox` | base64 списка только `vless://…`; записи AWG пропускаются |
+
+VLESS-ссылка имеет вид `vless://<uuid>@<host>:<port>?type=tcp&security=reality&pbk=…&fp=…&sni=…&sid=…&flow=…&encryption=none#<имя>`.
+Публичный ключ Reality кодируется в base64url, `sid` — первый shortId ноды, пустой `flow` не добавляется. Клиенты VLESS без
+`client_uuid` не попадают в подписку. Мост подменяет хост и порт VLESS так же, как `Endpoint` у AWG.
 
 В `[Peer]` строка `PresharedKey` (в mihomo — `pre-shared-key`) пишется только если у клиента или сервера есть PSK.
 `AllowedIPs = 0.0.0.0/0, ::/0` — намеренно: у нод нет IPv6, и маршрут `::/0` в туннель не даёт IPv6-трафику клиента идти
 мимо VPN (утечка реального адреса); так же настроены конфиги приложения AmneziaVPN. Не убирайте `::/0`.
 
-### Приложения по платформам
+### Приложения AWG по платформам
 
 Справочник показывается в панели («Оформление подписки» и окно ссылки подписки пользователя); данные —
 `client/src/awgClients.ts`. Проверено в октябре 2026 — при изменениях в приложениях обновляйте файл и эту таблицу.
@@ -54,6 +59,17 @@
 - AmneziaVPN поддерживает AWG 3.x с версии 5.0.1.5; приложения Amnezia подписки по ссылке не принимают.
 - Не подходят: Happ, v2rayN, v2rayNG (только Xray), Karing (нет AmneziaWG), Clash Mi (ядро без AmneziaWG), Hiddify
   (AmneziaWG заявлен, но формат подписок панели не принимает).
+
+### Приложения VLESS по платформам
+
+HTML-страница подписки содержит ссылку на формат `v2ray` и этот список приложений. Они получают base64-список VLESS-ссылок
+по основному адресу через распознавание User-Agent либо по `?format=v2ray`.
+
+| Платформа | Приложения |
+|---|---|
+| Android | v2rayNG, Hiddify |
+| iPhone / iPad | Streisand, Happ |
+| Windows / macOS / Linux | Hiddify, v2rayN |
 
 ## Заголовки
 

@@ -2,6 +2,12 @@ import crypto from 'node:crypto';
 import { formatEndpointHost } from '../utils/net.js';
 import { toXrayKey, VlessParams, vlessParamsFromRow, XRAY_API_PORT, XRAY_INBOUND_TAG } from '../utils/vless-params.js';
 
+/** Частные сети явным списком: geoip.dat в образе не требуется (без него Xray не запустился бы) */
+const PRIVATE_NETWORKS = [
+  '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16', '172.16.0.0/12', '192.168.0.0/16',
+  '::1/128', 'fc00::/7', 'fe80::/10',
+];
+
 /**
  * VLESS + Reality (Xray-core): аналог AwgService для нод с `protocol = 'vless'`.
  *
@@ -67,10 +73,10 @@ export class XrayService {
       ],
       outbounds: [{ protocol: 'freedom', tag: 'direct' }, { protocol: 'blackhole', tag: 'block' }],
       routing: {
-        domainStrategy: 'IPIfNonMatch',
+        domainStrategy: 'AsIs',
         rules: [
           { type: 'field', inboundTag: ['api'], outboundTag: 'api' },
-          { type: 'field', ip: ['geoip:private'], outboundTag: 'block' },
+          { type: 'field', ip: PRIVATE_NETWORKS, outboundTag: 'block' },
         ],
       },
     }, null, 2);
@@ -81,16 +87,45 @@ export class XrayService {
    * Хост — `formatEndpointHost(host)` (IPv6 в скобках); `endpointHost` подменяет адрес (мосты, BridgeService.routesFor).
    * Имя кодируется encodeURIComponent.
    */
-  static buildVlessLink(_server: any, _client: any, _name: string, _endpointHost?: string, _endpointPort?: number): string {
-    void formatEndpointHost;
-    throw new Error('XrayService.buildVlessLink: не реализовано');
+  static buildVlessLink(server: any, client: any, name: string, endpointHost?: string, endpointPort?: number): string {
+    const params = vlessParamsFromRow(server);
+    const query = [
+      ['type', 'tcp'],
+      ['security', 'reality'],
+      ['pbk', toXrayKey(server.server_public_key)],
+      ['fp', params.xray_fingerprint],
+      ['sni', params.reality_sni],
+      ['sid', params.reality_short_ids[0] ?? ''],
+      ...(params.xray_flow ? [['flow', params.xray_flow]] : []),
+      ['encryption', 'none'],
+    ].map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join('&');
+    const host = formatEndpointHost(endpointHost || server.host);
+    const port = endpointPort ?? server.awg_port;
+    return `vless://${client.client_uuid}@${host}:${port}?${query}#${encodeURIComponent(name)}`;
   }
 
   /**
    * Прокси mihomo: `{name, type: 'vless', server, port, uuid, network: 'tcp', tls: true, udp: true, flow,
    * servername, client-fingerprint, reality-opts: {public-key, short-id}}`.
    */
-  static buildMihomoProxy(_server: any, _client: any, _name: string, _endpointHost?: string, _endpointPort?: number): Record<string, unknown> {
-    throw new Error('XrayService.buildMihomoProxy: не реализовано');
+  static buildMihomoProxy(server: any, client: any, name: string, endpointHost?: string, endpointPort?: number): Record<string, unknown> {
+    const params = vlessParamsFromRow(server);
+    return {
+      name,
+      type: 'vless',
+      server: endpointHost || server.host,
+      port: endpointPort ?? server.awg_port,
+      uuid: client.client_uuid,
+      network: 'tcp',
+      tls: true,
+      udp: true,
+      ...(params.xray_flow ? { flow: params.xray_flow } : {}),
+      servername: params.reality_sni,
+      'client-fingerprint': params.xray_fingerprint,
+      'reality-opts': {
+        'public-key': toXrayKey(server.server_public_key),
+        'short-id': params.reality_short_ids[0] ?? '',
+      },
+    };
   }
 }

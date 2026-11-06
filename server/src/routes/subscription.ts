@@ -1,6 +1,7 @@
 import { Router, type Request } from 'express';
 import { db } from '../db/index.js';
 import { AwgService } from '../services/awg.service.js';
+import { XrayService } from '../services/xray.service.js';
 import { SubscriptionService } from '../services/subscription.service.js';
 import { buildSubscriptionHeaders, readSubscriptionSettings } from '../services/subscription-settings.service.js';
 import { contentDisposition } from '../utils/http.js';
@@ -47,7 +48,7 @@ export function mihomoAmneziaOption(server: any): Record<string, unknown> {
 
 export const subscriptionRouter = Router();
 
-type Format = 'awg' | 'json' | 'clash';
+type Format = 'awg' | 'json' | 'clash' | 'v2ray';
 
 function isBrowserNavigation(req: Request): boolean {
   return req.query.format === undefined
@@ -65,7 +66,9 @@ export function detectFormat(query: unknown, userAgent: string | undefined): For
   if (query === 'json') return 'json';
   if (query === 'clash' || query === 'mihomo') return 'clash';
   if (query === 'awg' || query === 'incy') return 'awg';
+  if (query === 'v2ray') return 'v2ray';
   if (userAgent && /mihomo|clash[\s.-]?meta|clash[\s-]?verge|flclash|clashmi|clash\.party/i.test(userAgent)) return 'clash';
+  if (userAgent && /v2rayn|v2rayng|hiddify|streisand|(?:^|[\s/])happ(?:[\s/;.()-]|$)|nekobox/i.test(userAgent)) return 'v2ray';
   return 'awg';
 }
 
@@ -78,6 +81,7 @@ export function buildClashConfig(entries: { name: string; server: any; client: a
     let unique = name;
     for (let i = 2; used.has(unique); i++) unique = `${name} ${i}`;
     used.add(unique);
+    if (server.protocol === 'vless') return XrayService.buildMihomoProxy(server, client, unique);
     const psk = client.preshared_key || server.preshared_key;
     return {
       name: unique,
@@ -118,9 +122,10 @@ export function buildClashConfig(entries: { name: string; server: any; client: a
 /**
  * GET /sub/:token — публичная подписка.
  *
- * - по умолчанию: формат Incy (https://docs.incy.cc/en/subscription-format/) — `awg://<base64url(.conf)>#<имя>`, список в base64;
- * - `?format=json`: JSON-контейнер Incy `{type: "amneziawg", servers: [{name, config}]}`;
- * - `?format=clash` или User-Agent клиента mihomo: YAML-конфигурация mihomo с amnezia-wg-option.
+ * - по умолчанию: формат Incy — смешанный base64-список ссылок `awg://` и `vless://`;
+ * - `?format=json`: JSON-контейнер Incy с AWG-конфигами и VLESS-ссылками;
+ * - `?format=clash` или User-Agent клиента mihomo: YAML-конфигурация mihomo;
+ * - `?format=v2ray` или User-Agent VLESS-клиента: base64-список только ссылок `vless://`.
  */
 subscriptionRouter.get('/:token', (req, res) => {
   const { token } = req.params;
@@ -158,6 +163,7 @@ subscriptionRouter.get('/:token', (req, res) => {
   const peers = active
     ? (db.prepare(`
         SELECT c.*, s.name AS server_name, s.sub_name, s.host, s.awg_port, s.server_public_key, s.preshared_key AS server_psk,
+          s.protocol, s.reality_sni, s.reality_dest, s.reality_short_ids, s.xray_flow, s.xray_fingerprint,
           s.awg_version, s.jc, s.jmin, s.jmax, s.s1, s.s2, s.s3, s.s4, s.h1, s.h2, s.h3, s.h4,
           s.i1, s.i2, s.i3, s.i4, s.i5, s.header_protection_key, s.extra_params
         FROM clients c
@@ -173,7 +179,7 @@ subscriptionRouter.get('/:token', (req, res) => {
   const marks = ProbeService.getNameMarks();
   // Ноды, недоступные из страны пользователя, выдаются через мост этой страны: меняется только Endpoint (docs/bridges.md)
   const routes = BridgeService.routesFor(subscriber.country);
-  const entries = peers.map((p) => {
+  const entries = peers.filter((p) => p.protocol !== 'vless' || p.client_uuid).map((p) => {
     const route = routes.get(p.server_id);
     return {
       name: [p.sub_name || p.server_name, marks.get(p.server_id), route ? `🌉 ${countryFlag(subscriber.country)}` : null].filter(Boolean).join(' · '),
@@ -201,15 +207,17 @@ subscriptionRouter.get('/:token', (req, res) => {
     return res.type('text/yaml; charset=utf-8').send(buildClashConfig(entries, dns, settings.mtu));
   }
 
-  const servers = entries.map((e) => ({
-    name: e.name,
-    config: Buffer.from(AwgService.generateClientConfig(e.server, e.client, settings)).toString('base64url'),
-  }));
-
   if (format === 'json') {
+    const servers = entries.map((e) => e.server.protocol === 'vless'
+      ? { name: e.name, protocol: 'vless', link: XrayService.buildVlessLink(e.server, e.client, e.name) }
+      : { name: e.name, config: Buffer.from(AwgService.generateClientConfig(e.server, e.client, settings)).toString('base64url') });
     return res.json({ type: 'amneziawg', version: 1, servers });
   }
 
-  const links = servers.map((s) => `awg://${s.config}#${encodeURIComponent(s.name)}`);
+  const links = entries.filter((e) => format !== 'v2ray' || e.server.protocol === 'vless').map((e) => {
+    if (e.server.protocol === 'vless') return XrayService.buildVlessLink(e.server, e.client, e.name);
+    const config = Buffer.from(AwgService.generateClientConfig(e.server, e.client, settings)).toString('base64url');
+    return `awg://${config}#${encodeURIComponent(e.name)}`;
+  });
   res.type('text/plain; charset=utf-8').send(Buffer.from(links.join('\n')).toString('base64'));
 });
