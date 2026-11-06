@@ -37,7 +37,7 @@ const GUEST_READABLE: RegExp[] = [
 
 /** Поля, которые гость не видит ни в одном ответе (токены подписок дают рабочие конфиги с приватными ключами) */
 const GUEST_HIDDEN_FIELDS = new Set([
-  'token', 'token_hash', 'preshared_key', 'client_private_key', 'server_private_key',
+  'token', 'token_hash', 'preshared_key', 'client_private_key', 'server_private_key', 'client_uuid',
   'ssh_password', 'ssh_key', 'password', 'private_key', 'stub_token',
 ]);
 

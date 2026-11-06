@@ -452,6 +452,31 @@ const migrations: Array<() => void> = [
   () => {
     addColumn('servers', 'country TEXT');
   },
+  // v15: протокол ноды (awg | vless). Для VLESS + Reality порт — awg_port (TCP), ключи Reality x25519 —
+  // server_private_key/server_public_key (base64, как у AWG); клиент VLESS — client_uuid без IP и ключей
+  () => {
+    addColumn('servers', "protocol TEXT NOT NULL DEFAULT 'awg'");
+    addColumn('servers', 'reality_sni TEXT');
+    addColumn('servers', 'reality_dest TEXT');
+    addColumn('servers', 'reality_short_ids TEXT'); // JSON-массив hex-строк
+    addColumn('servers', 'xray_flow TEXT');
+    addColumn('servers', 'xray_fingerprint TEXT');
+    addColumn('clients', 'client_uuid TEXT');
+    // У клиентов VLESS нет IP и публичного ключа (пустые строки): уникальность — только для непустых значений
+    db.exec(`
+      DROP INDEX IF EXISTS idx_clients_server_ip;
+      CREATE UNIQUE INDEX idx_clients_server_ip ON clients(server_id, client_ip) WHERE client_ip <> '';
+      CREATE UNIQUE INDEX idx_clients_server_uuid ON clients(server_id, client_uuid) WHERE client_uuid IS NOT NULL;
+    `);
+    // Индекс ключей мог не создаться в v6 из-за старых дублей — тогда его не создаём и сейчас
+    const hadPubkeyIndex = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_clients_server_pubkey'").get();
+    if (hadPubkeyIndex) {
+      db.exec(`
+        DROP INDEX idx_clients_server_pubkey;
+        CREATE UNIQUE INDEX idx_clients_server_pubkey ON clients(server_id, client_public_key) WHERE client_public_key <> '';
+      `);
+    }
+  },
 ];
 
 /** Версия схемы, которую умеет эта сборка панели (число миграций) */

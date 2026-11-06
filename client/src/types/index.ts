@@ -43,6 +43,8 @@ export interface Subscriber {
 
 export type ServerStatus = 'uninstalled' | 'installing' | 'online' | 'offline' | 'error';
 
+export type NodeProtocol = 'awg' | 'vless';
+
 export interface Server {
   country?: string | null;
   id: number;
@@ -53,6 +55,8 @@ export interface Server {
   has_ssh_password: boolean;
   has_ssh_key: boolean;
   host_key: string | null;
+  /** Протокол ноды: AmneziaWG или VLESS + Reality (Xray). Для VLESS awg_port — TCP-порт Xray */
+  protocol: NodeProtocol;
   awg_port: number;
   deployed_port: number | null;
   subnet: string;
@@ -79,6 +83,12 @@ export interface Server {
   i5: string | null;
   header_protection_key: string | null;
   extra_params: Record<string, string>;
+  /** Только для protocol = 'vless' */
+  reality_sni?: string;
+  reality_dest?: string;
+  reality_short_ids?: string[];
+  xray_flow?: 'xtls-rprx-vision' | '';
+  xray_fingerprint?: string;
   /** Контейнер на ноде: панели (dementia) или найденный контейнер приложения Amnezia */
   container_name: string;
   managed_by: 'demension' | 'amnezia' | 'partner';

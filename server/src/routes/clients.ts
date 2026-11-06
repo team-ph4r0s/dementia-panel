@@ -14,7 +14,7 @@ export const clientsRouter = Router();
  */
 export function serializeClient(c: any) {
   if (!c) return c;
-  const { client_private_key, rx_counter, tx_counter, ...rest } = c;
+  const { client_private_key, client_uuid, rx_counter, tx_counter, ...rest } = c;
   return {
     ...rest,
     external: Boolean(c.external),

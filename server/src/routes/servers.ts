@@ -11,6 +11,7 @@ import { LATEST_AWG_VERSION, paramsFromRow, paramsToColumns } from '../utils/awg
 import { AmneziaKeyError, decodeAmneziaKey, splitAmneziaKeys } from '../utils/amnezia-key.js';
 import { ProbeService } from '../services/probe.service.js';
 import { EventService } from '../services/event.service.js';
+import { nodeProtocol, vlessParamsFromRow } from '../utils/vless-params.js';
 
 export const serversRouter = Router();
 
@@ -31,6 +32,8 @@ export function serializeServer(s: any) {
   return {
     ...rest,
     ...params,
+    protocol: nodeProtocol(s),
+    ...(nodeProtocol(s) === 'vless' ? vlessParamsFromRow(s) : {}),
     latest_awg_version: LATEST_AWG_VERSION,
     remote_panel_name: remotePanel?.name ?? null,
     remote_panel_status: remotePanel?.status ?? null,
