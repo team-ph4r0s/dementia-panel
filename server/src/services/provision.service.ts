@@ -12,6 +12,18 @@ import { EventService } from './event.service.js';
 import { MigrationService } from './migration.service.js';
 import { HttpError } from '../utils/http.js';
 import {
+  nodeProtocol,
+  XRAY_IMAGE,
+  XRAY_CONTAINER,
+  XRAY_CONF_DIR,
+  XRAY_CONF_PATH,
+  XRAY_API_PORT,
+  DEFAULT_VLESS_PORT,
+  generateVlessParams,
+  vlessParamsFromRow,
+} from '../utils/vless-params.js';
+import { XrayService } from './xray.service.js';
+import {
   newStubToken,
   parseStubHits,
   parseStubPort,
@@ -127,6 +139,18 @@ function readDeployScript(): string {
   throw new Error('Установочный скрипт deploy-awg.sh не найден');
 }
 
+function readDeployXrayScript(): string {
+  const candidates = [
+    path.resolve(__dirname, '../scripts/deploy-xray.sh'),
+    path.resolve(process.cwd(), 'src/scripts/deploy-xray.sh'),
+    path.resolve(process.cwd(), 'dist/scripts/deploy-xray.sh'),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return fs.readFileSync(candidate, 'utf-8');
+  }
+  throw new Error('Установочный скрипт deploy-xray.sh не найден');
+}
+
 /**
  * Разбор вывода скрипта сканирования (маркеры ---CONTAINER / ---CONF / ---TOOL / ---CLIENTS / ---DEMENTIA)
  */
@@ -201,14 +225,94 @@ export function parseNodeInfo(output: string): NodeInfo {
   const line = (key: string) => new RegExp(`^${key} (.*)$`, 'm').exec(output)?.[1]?.trim() ?? '';
   const go = /amneziawg-go\s+v?(\d[\w.+-]{0,40})/.exec(line('GO'))?.[1] ?? null;
   const tools = /(amneziawg-tools|wireguard-tools)\s+v?(\d[\w.+-]{0,40})/.exec(line('TOOLS'));
+  const xray = /Xray\s+v?(\d[\w.+-]{0,40})/i.exec(line('XRAY'));
   const image = /^[\w./:@-]{1,200}$/.test(line('IMAGE')) ? line('IMAGE') : null;
   const created = line('CREATED');
   return {
     awg_go: go,
-    awg_tools: tools ? `${tools[1]} ${tools[2]}` : null,
+    awg_tools: tools ? `${tools[1]} ${tools[2]}` : (xray ? `Xray ${xray[1]}` : null),
     image,
     image_created: /^\d{4}-\d{2}-\d{2}T/.test(created) && !Number.isNaN(Date.parse(created)) ? new Date(created).toISOString() : null,
   };
+}
+
+export interface XrayStatItem {
+  email: string;
+  uplink: number;
+  downlink: number;
+}
+
+/**
+ * Разбор вывода `xray api statsquery -s 127.0.0.1:10085 -reset`.
+ * Вывод ноды — недоверенные данные: строгая фильтрация формата имён user>>><email_or_uuid>>>>traffic>>>uplink|downlink
+ * и числовых значений байтов.
+ */
+export function parseXrayStats(output: string): XrayStatItem[] {
+  const map = new Map<string, { uplink: number; downlink: number }>();
+  if (!output || typeof output !== 'string') return [];
+
+  const getOrCreate = (email: string) => {
+    let entry = map.get(email);
+    if (!entry) {
+      entry = { uplink: 0, downlink: 0 };
+      map.set(email, entry);
+    }
+    return entry;
+  };
+
+  const parseItem = (name: unknown, val: unknown) => {
+    if (typeof name !== 'string') return;
+    const match = /^user>>>([a-zA-Z0-9_-]{1,64})>>>traffic>>>(uplink|downlink)$/.exec(name.trim());
+    if (!match) return;
+    const email = match[1];
+    const bytes = typeof val === 'number' ? val : parseInt(String(val), 10);
+    if (!Number.isSafeInteger(bytes) || bytes <= 0) return;
+
+    const entry = getOrCreate(email);
+    if (match[2] === 'uplink') {
+      entry.uplink += bytes;
+    } else {
+      entry.downlink += bytes;
+    }
+  };
+
+  let parsedJson = false;
+  try {
+    const trimmed = output.trim();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      const data = JSON.parse(trimmed);
+      const items = Array.isArray(data?.stat) ? data.stat : Array.isArray(data) ? data : null;
+      if (items) {
+        for (const item of items) {
+          parseItem(item?.name, item?.value);
+        }
+        parsedJson = true;
+      }
+    }
+  } catch {
+    // Не JSON — продолжаем разбор регулярным выражением
+  }
+
+  if (!parsedJson) {
+    const re = /user>>>([a-zA-Z0-9_-]{1,64})>>>traffic>>>(uplink|downlink)[\s":=]+(\d+)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(output)) !== null) {
+      const email = m[1];
+      const dir = m[2];
+      const bytes = parseInt(m[3], 10);
+      if (Number.isSafeInteger(bytes) && bytes > 0) {
+        const entry = getOrCreate(email);
+        if (dir === 'uplink') entry.uplink += bytes;
+        else entry.downlink += bytes;
+      }
+    }
+  }
+
+  return Array.from(map.entries()).map(([email, traffic]) => ({
+    email,
+    uplink: traffic.uplink,
+    downlink: traffic.downlink,
+  }));
 }
 
 export class ProvisionService {
@@ -263,6 +367,15 @@ export class ProvisionService {
   }
 
   private static container(server: any) {
+    if (nodeProtocol(server) === 'vless') {
+      return {
+        name: String(server.container_name || XRAY_CONTAINER),
+        iface: '',
+        confPath: String(server.conf_path || XRAY_CONF_PATH),
+        tool: 'xray' as any,
+        quick: '',
+      };
+    }
     const tool = server.awg_tool === 'wg' ? 'wg' : 'awg';
     return {
       name: String(server.container_name || PANEL_CONTAINER),
@@ -278,6 +391,12 @@ export class ProvisionService {
    * Для контейнера панели /opt/amnezia/awg смонтирован с хоста, для контейнера Amnezia — живёт внутри.
    */
   private static writeConfigCommand(credentials: SshCredentials, server: any): string {
+    if (nodeProtocol(server) === 'vless') {
+      const tmp = `${XRAY_CONF_PATH}.new`;
+      return `${SshService.sudo(credentials)}sh -c ${shellQuote(
+        `umask 077 && mkdir -p ${XRAY_CONF_DIR} && cat > ${tmp} && chmod 600 ${tmp} && mv -f ${tmp} ${XRAY_CONF_PATH}`
+      )}`;
+    }
     const c = this.container(server);
     const inner = `umask 077 && cat > ${c.confPath}.new && mv -f ${c.confPath}.new ${c.confPath}`;
     return `${SshService.sudo(credentials)}docker exec -i ${shellQuote(c.name)} sh -c ${shellQuote(inner)}`;
@@ -337,6 +456,13 @@ export class ProvisionService {
   static async scanAndAdopt(serverId: number): Promise<ScanResult> {
     return runExclusive(serverId, async () => {
       const server = loadLocalServer(serverId);
+      if (nodeProtocol(server) === 'vless') {
+        return {
+          found: false,
+          containers: [],
+          message: 'Подключение без установки поддерживается только для нод AmneziaWG',
+        };
+      }
       const detected = await this.detectContainers(server);
       const containers = detected.map((d) => ({ name: d.name, image: d.image, running: d.running, managedBy: d.managedBy }));
 
@@ -480,6 +606,9 @@ export class ProvisionService {
   private static async doInstall(serverId: number, onLog?: (chunk: string) => void): Promise<OperationResult> {
     const server = loadServer(serverId);
     const log = (text: string) => onLog?.(text);
+    if (nodeProtocol(server) === 'vless') {
+      return this.doInstallVless(serverId, server, onLog);
+    }
 
     // Проверка до любых изменений: чужой контейнер не трогаем, статус сервера не меняется
     try {
@@ -584,6 +713,162 @@ export class ProvisionService {
     }
   }
 
+  private static async doInstallVless(serverId: number, server: any, onLog?: (chunk: string) => void): Promise<OperationResult> {
+    const log = (text: string) => onLog?.(text);
+    const port = Number(server.awg_port || DEFAULT_VLESS_PORT);
+    const credentials = this.getCredentials(server);
+
+    // Проверка до любых изменений: если на TCP-порту уже слушает кто-то, кроме нашего контейнера, — ошибка
+    try {
+      const checkScript = [
+        `port=${shellQuote(port)}`,
+        `c=${shellQuote(XRAY_CONTAINER)}`,
+        `marker=${shellQuote(`${XRAY_CONF_DIR}/dementia.env`)}`,
+        'if docker ps -a --format "{{.Names}}" 2>/dev/null | grep -Eq "^${c}\$"; then',
+        '  if [ ! -f "$marker" ]; then echo "FOREIGN_CONTAINER"; exit 0; fi',
+        'fi',
+        'listening=0',
+        'if command -v ss >/dev/null 2>&1; then',
+        '  if ss -tln 2>/dev/null | grep -Eq "[: ]${port}\\b"; then listening=1; fi',
+        'elif command -v netstat >/dev/null 2>&1; then',
+        '  if netstat -tln 2>/dev/null | grep -Eq "[: ]${port}\\b"; then listening=1; fi',
+        'elif (echo > "/dev/tcp/127.0.0.1/${port}") >/dev/null 2>&1; then',
+        '  listening=1',
+        'fi',
+        'if [ "$listening" -eq 0 ]; then echo "OK"; exit 0; fi',
+        'if [ -f "$marker" ] && [ "$(docker inspect -f \'{{.State.Running}}\' "$c" 2>/dev/null)" = "true" ]; then',
+        '  echo "OK"; exit 0',
+        'fi',
+        'echo "PORT_IN_USE"',
+      ].join('\n');
+
+      const check = await SshService.executeCommand(
+        credentials,
+        `${SshService.sudo(credentials)}sh -c ${shellQuote(checkScript)}`,
+        { timeoutMs: 30000 }
+      );
+      if (check.code !== 0) {
+        const hint = /sudo: a (terminal|password) is required/.test(check.stderr) ? ' (нужен sudo без пароля)' : '';
+        throw new Error(`Не удалось проверить сервер${hint}: ${check.stderr.trim() || `код ${check.code}`}`);
+      }
+      if (check.stdout.includes('FOREIGN_CONTAINER')) {
+        const error = `На сервере уже существует контейнер ${XRAY_CONTAINER}, но он не принадлежит панели. Удалите его вручную перед установкой.`;
+        log(`\r\n❌ Ошибка: ${error}\r\n`);
+        return { success: false, error };
+      }
+      if (check.stdout.includes('PORT_IN_USE')) {
+        const error = `TCP-порт ${port} уже занят другой службой или контейнером на сервере. Освободите порт перед установкой.`;
+        log(`\r\n❌ Ошибка: ${error}\r\n`);
+        return { success: false, error };
+      }
+    } catch (err: any) {
+      db.prepare("UPDATE servers SET status = 'error', last_error = ? WHERE id = ?").run(err.message, serverId);
+      log(`\r\n❌ Ошибка: ${err.message}\r\n`);
+      return { success: false, error: err.message };
+    }
+
+    db.prepare("UPDATE servers SET status = 'installing', last_error = NULL WHERE id = ?").run(serverId);
+    log(`=== Запуск установки Xray (VLESS) на ${server.name} (${server.host}) ===\r\n`);
+
+    try {
+      let privKey = server.server_private_key;
+      let pubKey = server.server_public_key;
+      if (!privKey) {
+        const pair = AwgService.generateKeyPair();
+        privKey = pair.privateKey;
+        pubKey = pair.publicKey;
+      } else if (!pubKey) {
+        pubKey = AwgService.derivePublicKey(privKey);
+      }
+
+      const params = (!server.reality_sni || !server.reality_dest || !server.reality_short_ids)
+        ? generateVlessParams()
+        : vlessParamsFromRow(server);
+
+      const fullServer = {
+        ...server,
+        server_private_key: privKey,
+        server_public_key: pubKey,
+        awg_port: port,
+        ...params,
+      };
+
+      const conf = XrayService.generateServerConfig(fullServer, this.getServerClients(serverId));
+      const script = [
+        `export VLESS_PORT=${shellQuote(port)}`,
+        `export XRAY_CONF_B64=${shellQuote(Buffer.from(conf).toString('base64'))}`,
+        `export XRAY_IMAGE=${shellQuote(XRAY_IMAGE)}`,
+        `export XRAY_CONTAINER=${shellQuote(XRAY_CONTAINER)}`,
+        `export XRAY_CONF_DIR=${shellQuote(XRAY_CONF_DIR)}`,
+        readDeployXrayScript(),
+      ].join('\n');
+
+      log('Подключение по SSH и запуск скрипта развертывания Xray...\r\n');
+      const result = await SshService.executeCommand(
+        credentials,
+        `${SshService.sudo(credentials)}env PANEL_IP="\${SSH_CLIENT%% *}" bash -c 'script=$(cat); exec bash -c "$script" deploy-xray'`,
+        { input: script, onData: log, timeoutMs: 20 * 60 * 1000 }
+      );
+
+      if (result.code !== 0) {
+        const hint = /sudo: a (terminal|password) is required/.test(result.stderr)
+          ? ' Пользователю нужен sudo без пароля (NOPASSWD) или используйте root.'
+          : '';
+        throw new Error(`Скрипт завершился с кодом ошибки ${result.code}.${hint}`);
+      }
+      if (!result.stdout.includes('---DEMENTIA_OK---')) {
+        throw new Error('Скрипт не подтвердил успешный запуск Xray');
+      }
+
+      db.prepare(`
+        UPDATE servers
+        SET status = 'online',
+            server_public_key = ?,
+            server_private_key = ?,
+            awg_port = ?,
+            deployed_port = ?,
+            container_name = ?,
+            conf_path = ?,
+            managed_by = 'demension',
+            reality_sni = ?,
+            reality_dest = ?,
+            reality_short_ids = ?,
+            xray_flow = ?,
+            xray_fingerprint = ?,
+            needs_sync = 0,
+            needs_apply = 0,
+            fail_count = 0,
+            last_error = NULL,
+            last_seen = datetime('now'),
+            node_info_at = NULL
+        WHERE id = ?
+      `).run(
+        pubKey,
+        privKey,
+        port,
+        port,
+        XRAY_CONTAINER,
+        XRAY_CONF_PATH,
+        params.reality_sni,
+        params.reality_dest,
+        JSON.stringify(params.reality_short_ids),
+        params.xray_flow,
+        params.xray_fingerprint,
+        serverId
+      );
+
+      appliedBaseline.set(serverId, { ...(db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as any) });
+      log('\r\n=== Xray (VLESS) успешно установлен и готов к работе! ===\r\n');
+      EventService.log('info', 'server.installed', `Xray (VLESS) установлен на ноде «${server.name}»`, { kind: 'server', id: serverId });
+      return { success: true };
+    } catch (err: any) {
+      db.prepare("UPDATE servers SET status = 'error', last_error = ? WHERE id = ?").run(err.message, serverId);
+      EventService.log('error', 'server.install_failed', `Не удалось установить Xray на ноду «${server.name}»: ${err.message}`, { kind: 'server', id: serverId });
+      log(`\r\n❌ Ошибка: ${err.message}\r\n`);
+      return { success: false, error: err.message };
+    }
+  }
+
   // ==============================================================================
   // Синхронизация пиров и применение параметров
   // ==============================================================================
@@ -631,6 +916,9 @@ export class ProvisionService {
     if (server.needs_apply) {
       return this.doApply(serverId);
     }
+    if (nodeProtocol(server) === 'vless') {
+      return this.doSyncVless(serverId, server);
+    }
 
     try {
       const conf = AwgService.generateServerConfig(server, this.getServerClients(serverId));
@@ -642,6 +930,27 @@ export class ProvisionService {
           `umask 077; ${c.quick} strip ${c.confPath} > /tmp/awg.stripped && ${c.tool} syncconf ${c.iface} /tmp/awg.stripped; rc=$?; rm -f /tmp/awg.stripped; exit $rc`
         )}`,
       ].join(' && ');
+
+      const result = await SshService.executeCommand(credentials, command, { input: conf, timeoutMs: 60000 });
+      if (result.code !== 0) {
+        throw new Error(`Ошибка синхронизации конфигурации: ${result.stderr.trim() || `код ${result.code}`}`);
+      }
+      db.prepare('UPDATE servers SET needs_sync = 0, last_error = NULL WHERE id = ?').run(serverId);
+      return { success: true };
+    } catch (err: any) {
+      db.prepare('UPDATE servers SET last_error = ? WHERE id = ?').run(err.message, serverId);
+      return { success: false, error: err.message };
+    }
+  }
+
+  private static async doSyncVless(serverId: number, server: any): Promise<OperationResult> {
+    try {
+      const conf = XrayService.generateServerConfig(server, this.getServerClients(serverId));
+      const credentials = this.getCredentials(server);
+      const c = this.container(server);
+      const writeCmd = this.writeConfigCommand(credentials, server);
+      const restartCmd = `${SshService.sudo(credentials)}docker restart ${shellQuote(c.name)}`;
+      const command = `${writeCmd} && ${restartCmd}`;
 
       const result = await SshService.executeCommand(credentials, command, { input: conf, timeoutMs: 60000 });
       if (result.code !== 0) {
@@ -695,6 +1004,9 @@ export class ProvisionService {
     if (server.deployed_port !== server.awg_port) {
       return this.doInstall(serverId);
     }
+    if (nodeProtocol(server) === 'vless') {
+      return this.doApplyVless(serverId, server);
+    }
 
     try {
       const conf = AwgService.generateServerConfig(server, this.getServerClients(serverId));
@@ -726,6 +1038,28 @@ export class ProvisionService {
     }
   }
 
+  private static async doApplyVless(serverId: number, server: any): Promise<OperationResult> {
+    try {
+      const conf = XrayService.generateServerConfig(server, this.getServerClients(serverId));
+      const credentials = this.getCredentials(server);
+      const c = this.container(server);
+      const writeCmd = this.writeConfigCommand(credentials, server);
+      const restartCmd = `${SshService.sudo(credentials)}docker restart ${shellQuote(c.name)}`;
+      const command = `${writeCmd} && ${restartCmd}`;
+
+      const result = await SshService.executeCommand(credentials, command, { input: conf, timeoutMs: 120000 });
+      if (result.code !== 0) {
+        throw new Error(`Ошибка применения параметров: ${result.stderr.trim() || `код ${result.code}`}`);
+      }
+      db.prepare('UPDATE servers SET needs_apply = 0, needs_sync = 0, last_error = NULL WHERE id = ?').run(serverId);
+      appliedBaseline.set(serverId, { ...server });
+      return { success: true };
+    } catch (err: any) {
+      db.prepare('UPDATE servers SET last_error = ? WHERE id = ?').run(err.message, serverId);
+      return { success: false, error: err.message };
+    }
+  }
+
   /** Запоминает работающие на ноде параметры перед первой правкой (если неприменённых изменений нет) */
   static noteAppliedBaseline(server: any): void {
     if (!appliedBaseline.has(server.id) && !server.needs_apply) appliedBaseline.set(server.id, { ...server });
@@ -737,13 +1071,25 @@ export class ProvisionService {
   }
 
   /**
-   * Остановить и удалить контейнер AmneziaWG на ноде
+   * Остановить и удалить контейнер AmneziaWG или Xray на ноде
    */
   static async teardown(serverId: number): Promise<OperationResult> {
     return runExclusive(serverId, async () => {
       const server = loadLocalServer(serverId);
       try {
         const credentials = this.getCredentials(server);
+        if (nodeProtocol(server) === 'vless') {
+          const marker = `${XRAY_CONF_DIR}/dementia.env`;
+          const cName = server.container_name || XRAY_CONTAINER;
+          const cmd = `docker rm -f ${shellQuote(cName)} >/dev/null 2>&1; if [ -f ${shellQuote(marker)} ]; then rm -rf ${shellQuote(XRAY_CONF_DIR)}; fi; echo done`;
+          const result = await SshService.executeCommand(
+            credentials,
+            `${SshService.sudo(credentials)}sh -c ${shellQuote(cmd)}`,
+            { timeoutMs: 120000 }
+          );
+          if (result.code !== 0) throw new Error(result.stderr.trim() || `код ${result.code}`);
+          return { success: true };
+        }
         const c = this.container(server);
         const cleanup = server.managed_by === 'demension' ? `; rm -rf ${AWG_DIR}` : '';
         // Заглушка проверки доступности удаляется вместе с AmneziaWG
@@ -771,6 +1117,9 @@ export class ProvisionService {
   static ensureProbeStub(serverId: number): Promise<number> {
     return runExclusive(serverId, async () => {
       const server = loadLocalServer(serverId);
+      if (nodeProtocol(server) === 'vless') {
+        throw new Error('Проверки доступности не поддерживаются для VLESS-нод');
+      }
       if (server.status === 'uninstalled' || server.status === 'installing' || installing.has(serverId)) {
         throw new Error('Сервер не установлен');
       }
@@ -798,6 +1147,9 @@ export class ProvisionService {
   static readProbeHits(serverId: number): Promise<StubHit[]> {
     return runExclusive(serverId, async () => {
       const server = loadLocalServer(serverId);
+      if (nodeProtocol(server) === 'vless') {
+        throw new Error('Проверки доступности не поддерживаются для VLESS-нод');
+      }
       const credentials = this.getCredentials(server);
       const result = await SshService.executeCommand(credentials, `${SshService.sudo(credentials)}sh -c ${shellQuote(stubReadScript())}`, {
         timeoutMs: 30000,
@@ -825,17 +1177,31 @@ export class ProvisionService {
 
     try {
       const credentials = this.getCredentials(server);
+      const isVless = nodeProtocol(server) === 'vless';
       const c = this.container(server);
-      const result = await SshService.executeCommand(
-        credentials,
-        `${SshService.sudo(credentials)}docker exec ${shellQuote(c.name)} ${c.tool} show ${c.iface} dump`,
-        { timeoutMs: 30000 }
-      );
-      if (result.code !== 0) {
-        throw new Error(`Интерфейс ${c.iface} недоступен: ${result.stderr.trim() || `код ${result.code}`}`);
-      }
 
-      this.applyDump(serverId, result.stdout);
+      if (isVless) {
+        const result = await SshService.executeCommand(
+          credentials,
+          `${SshService.sudo(credentials)}docker exec ${shellQuote(c.name)} xray api statsquery -s 127.0.0.1:10085 -reset`,
+          { timeoutMs: 30000 }
+        );
+        if (result.code !== 0) {
+          throw new Error(`Xray statsquery недоступен: ${result.stderr.trim() || `код ${result.code}`}`);
+        }
+        this.applyXrayStats(serverId, result.stdout);
+      } else {
+        const result = await SshService.executeCommand(
+          credentials,
+          `${SshService.sudo(credentials)}docker exec ${shellQuote(c.name)} ${c.tool} show ${c.iface} dump`,
+          { timeoutMs: 30000 }
+        );
+        if (result.code !== 0) {
+          throw new Error(`Интерфейс ${c.iface} недоступен: ${result.stderr.trim() || `код ${result.code}`}`);
+        }
+
+        this.applyDump(serverId, result.stdout);
+      }
 
       const wasOnline = server.status === 'online';
       db.prepare(`
@@ -871,18 +1237,26 @@ export class ProvisionService {
   }
 
   /**
-   * Версии ПО AmneziaWG на ноде: amneziawg-go, утилиты awg/wg и образ контейнера с датой сборки.
+   * Версии ПО на ноде: для AWG — amneziawg-go и awg/wg, для VLESS — xray version, а также образ с датой сборки.
    * Только чтение; ошибка не влияет на статус ноды (версии останутся прежними, повтор — при следующем опросе).
    */
   static async fetchNodeInfo(server: any): Promise<void> {
     const c = this.container(server);
-    const script = [
-      `c=${shellQuote(c.name)}`,
-      'echo "IMAGE $(docker inspect -f "{{.Config.Image}}" "$c" 2>/dev/null)"',
-      'echo "CREATED $(docker image inspect -f "{{.Created}}" "$(docker inspect -f "{{.Image}}" "$c" 2>/dev/null)" 2>/dev/null)"',
-      `echo "GO $(docker exec "$c" sh -c 'amneziawg-go --version 2>/dev/null | head -n 1')"`,
-      `echo "TOOLS $(docker exec "$c" sh -c 'awg --version 2>/dev/null || wg --version 2>/dev/null' | head -n 1)"`,
-    ].join('\n');
+    const isVless = nodeProtocol(server) === 'vless';
+    const script = isVless
+      ? [
+          `c=${shellQuote(c.name)}`,
+          'echo "IMAGE $(docker inspect -f "{{.Config.Image}}" "$c" 2>/dev/null)"',
+          'echo "CREATED $(docker image inspect -f "{{.Created}}" "$(docker inspect -f "{{.Image}}" "$c" 2>/dev/null)" 2>/dev/null)"',
+          `echo "XRAY $(docker exec "$c" sh -c 'xray version 2>/dev/null | head -n 1')"`,
+        ].join('\n')
+      : [
+          `c=${shellQuote(c.name)}`,
+          'echo "IMAGE $(docker inspect -f "{{.Config.Image}}" "$c" 2>/dev/null)"',
+          'echo "CREATED $(docker image inspect -f "{{.Created}}" "$(docker inspect -f "{{.Image}}" "$c" 2>/dev/null)" 2>/dev/null)"',
+          `echo "GO $(docker exec "$c" sh -c 'amneziawg-go --version 2>/dev/null | head -n 1')"`,
+          `echo "TOOLS $(docker exec "$c" sh -c 'awg --version 2>/dev/null || wg --version 2>/dev/null' | head -n 1)"`,
+        ].join('\n');
     try {
       const credentials = this.getCredentials(server);
       const result = await SshService.executeCommand(credentials, `${SshService.sudo(credentials)}sh -c ${shellQuote(script)}`, {
@@ -897,6 +1271,48 @@ export class ProvisionService {
     } catch {
       // нода могла стать недоступной между запросами — версии перечитаются позже
     }
+  }
+
+  /**
+   * Разбор вывода `xray api statsquery` с накоплением трафика.
+   * Вызов с флагом -reset сбрасывает счётчики в памяти Xray, поэтому полученные значения — дельта.
+   * uplink = отправлено клиентом (total_rx), downlink = получено клиентом (total_tx).
+   */
+  static applyXrayStats(serverId: number, output: string): void {
+    const stats = parseXrayStats(output);
+    if (stats.length === 0) return;
+
+    const selectById = db.prepare('SELECT id FROM clients WHERE id = ? AND server_id = ?');
+    const selectByUuid = db.prepare('SELECT id FROM clients WHERE client_uuid = ? AND server_id = ?');
+    const update = db.prepare(`
+      UPDATE clients
+      SET total_rx = total_rx + ?,
+          total_tx = total_tx + ?,
+          last_handshake = CASE WHEN (? > 0 OR ? > 0) THEN ? ELSE last_handshake END
+      WHERE id = ?
+    `);
+
+    const now = new Date().toISOString();
+
+    transaction(() => {
+      for (const stat of stats) {
+        if (stat.uplink <= 0 && stat.downlink <= 0) continue;
+        let client: { id: number } | undefined;
+        const matchId = /^c(\d+)$/.exec(stat.email);
+        if (matchId) {
+          const clientId = parseInt(matchId[1], 10);
+          if (Number.isSafeInteger(clientId) && clientId > 0) {
+            client = selectById.get(clientId, serverId) as { id: number } | undefined;
+          }
+        } else if (/^[0-9a-fA-F-]{36}$/.test(stat.email)) {
+          client = selectByUuid.get(stat.email, serverId) as { id: number } | undefined;
+        }
+
+        if (!client) continue;
+
+        update.run(stat.uplink, stat.downlink, stat.uplink, stat.downlink, now, client.id);
+      }
+    });
   }
 
   /**

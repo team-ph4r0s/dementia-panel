@@ -45,12 +45,13 @@ export class NodeUpdateService {
     return {
       settings: this.settings(), running: this.running, active_server: this.activeServer,
       nodes: db.prepare(`SELECT u.*, s.name FROM node_updates u JOIN servers s ON s.id = u.server_id
-        WHERE s.remote_panel_id IS NULL AND s.managed_by = 'demension' ORDER BY s.id`).all(),
+        WHERE s.remote_panel_id IS NULL AND s.managed_by = 'demension' AND (s.protocol IS NULL OR s.protocol = 'awg') ORDER BY s.id`).all(),
     };
   }
 
   private static eligible(s: any): boolean {
     return Boolean(s && !s.remote_panel_id && s.managed_by === 'demension' && s.status === 'online' &&
+      (s.protocol === null || s.protocol === undefined || s.protocol === 'awg') &&
       s.container_name === 'amnezia-awg' && s.iface === 'awg0' && s.awg_tool === 'awg' &&
       s.conf_path === '/opt/amnezia/awg/awg0.conf' && s.deployed_port === s.awg_port && !s.needs_apply && !s.needs_sync);
   }

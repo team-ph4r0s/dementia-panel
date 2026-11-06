@@ -60,7 +60,7 @@ npm run dev:server            # бэкенд :3001 (tsx watch)
 npm run dev:client            # фронтенд :3000, прокси /api, /sub, /ws на :3001
 cd server && npx tsc --noEmit && npm test     # проверка типов и тесты сервера (≈ 1–2 мин)
 cd client && npx tsc -b && npm run lint && npx vite build
-npx shellcheck -S error install.sh server/src/scripts/deploy-awg.sh server/src/scripts/deploy-bridge.sh server/src/scripts/update-panel.sh server/test/docker/nodes.sh server/test/docker/entrypoint.sh
+npx shellcheck -S error install.sh server/src/scripts/deploy-awg.sh server/src/scripts/deploy-xray.sh server/src/scripts/deploy-bridge.sh server/src/scripts/update-panel.sh server/test/docker/nodes.sh server/test/docker/entrypoint.sh
 server/test/docker/nodes.sh up                # реальные ноды в Docker для real-*.test.ts (без них эти тесты пропускаются)
 server/test/install/run.sh                    # install.sh целиком в чистом Ubuntu + перенос панели между двумя контейнерами + обновление с предыдущего релиза (Docker, ≈ 20 мин) — гонять при любой правке install.sh
 ```
