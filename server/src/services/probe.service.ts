@@ -517,7 +517,7 @@ export class ProbeService {
       if (missing.length) errors.push(`нет проверяющих узлов в странах: ${missing.join(', ')}`);
       if (nodeIds.length === 0) throw new Error('для выбранных стран нет проверяющих узлов');
 
-      const servers = db.prepare("SELECT id, name, host, status, probe_port, stub_port, remote_panel_id FROM servers WHERE status != 'uninstalled' ORDER BY id").all() as {
+      const servers = db.prepare("SELECT id, name, host, status, probe_port, stub_port, remote_panel_id FROM servers WHERE status != 'uninstalled' AND (protocol IS NULL OR protocol = 'awg') ORDER BY id").all() as {
         id: number;
         name: string;
         host: string;
