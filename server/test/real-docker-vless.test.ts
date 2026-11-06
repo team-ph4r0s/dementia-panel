@@ -54,7 +54,7 @@ describe.skipIf(!dockerNodeAvailable)('Нода VLESS на реальном Dock
       inbounds: [{ listen: '127.0.0.1', port: 10808, protocol: 'socks', settings: { udp: false } }],
       outbounds: [{
         protocol: 'vless',
-        settings: { vnext: [{ address: '127.0.0.1', port: s.awg_port, users: [{ id: uuid, encryption: 'none', flow: p.xray_flow }] }] },
+        settings: { vnext: [{ address: '127.0.0.1', port: s.awg_port, users: [{ id: uuid, encryption: 'none', flow: m.effectiveFlow(p) }] }] },
         streamSettings: {
           ...stream,
           security: 'reality',
@@ -103,6 +103,7 @@ describe.skipIf(!dockerNodeAvailable)('Нода VLESS на реальном Dock
       vlessParamsToColumns: vless.vlessParamsToColumns,
       generateVlessParams: vless.generateVlessParams,
       toXrayKey: vless.toXrayKey,
+      effectiveFlow: vless.effectiveFlow,
     };
     serverId = helpers.insertServer({
       name: 'Docker VLESS', host: '127.0.0.1', status: 'uninstalled', deployedPort: null, sshPassword: 'rootpass123', awgPort: 443,

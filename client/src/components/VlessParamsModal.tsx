@@ -192,7 +192,7 @@ export function VlessParamsModal({ server, onClose, onUpdated }: VlessParamsModa
             </label>
             <p id="xhttp-hint" className="text-xs text-muted">
               XHTTP передаёт данные HTTP-запросами — устойчивее к анализу потока, чем TCP, но медленнее. Путь и режим общие с входом
-              через CDN. Нужны свежие клиенты (Xray 25+, mihomo 1.19+).
+              через CDN. Flow (Vision) с XHTTP не используется. Нужны свежие клиенты (Xray 25+, mihomo 1.19+).
             </p>
             <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-line">
               <button

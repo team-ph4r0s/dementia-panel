@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { formatEndpointHost } from '../utils/net.js';
 import {
-  toXrayKey, VlessParams, vlessParamsFromRow, XRAY_API_PORT, XRAY_CDN_INBOUND_TAG, XRAY_INBOUND_TAG,
+  effectiveFlow, toXrayKey, VlessParams, vlessParamsFromRow, XRAY_API_PORT, XRAY_CDN_INBOUND_TAG, XRAY_INBOUND_TAG,
 } from '../utils/vless-params.js';
 import { decryptSecret } from './secrets.service.js';
 
@@ -56,7 +56,8 @@ export class XrayService {
     const params = this.params(server);
     const active = clients
       .filter((client) => client.client_uuid && client.enabled && !client.owner_blocked && client.subscriber_active !== 0);
-    const users = active.map((client) => ({ id: client.client_uuid, flow: params.xray_flow, email: `c${client.id}`, level: 0 }));
+    const flow = effectiveFlow(params);
+    const users = active.map((client) => ({ id: client.client_uuid, flow, email: `c${client.id}`, level: 0 }));
     const sniffing = { enabled: true, destOverride: ['http', 'tls', 'quic'] };
     const realityStream = params.xray_transport === 'xhttp'
       ? { network: 'xhttp', xhttpSettings: { path: params.xhttp_path, mode: 'auto' } }
@@ -149,7 +150,7 @@ export class XrayService {
       ['fp', params.xray_fingerprint],
       ['sni', params.reality_sni],
       ['sid', params.reality_short_ids[0] ?? ''],
-      ...(params.xray_flow ? [['flow', params.xray_flow]] : []),
+      ...(effectiveFlow(params) ? [['flow', effectiveFlow(params)]] : []),
       ['encryption', 'none'],
     ].map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join('&');
     const host = formatEndpointHost(endpointHost || server.host);
@@ -176,7 +177,7 @@ export class XrayService {
         : {}),
       tls: true,
       udp: true,
-      ...(params.xray_flow ? { flow: params.xray_flow } : {}),
+      ...(effectiveFlow(params) ? { flow: effectiveFlow(params) } : {}),
       servername: params.reality_sni,
       'client-fingerprint': params.xray_fingerprint,
       'reality-opts': {

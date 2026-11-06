@@ -269,7 +269,7 @@ CI на `main`. Подробно — [docs/releases.md](docs/releases.md).
     проверяется `xray run -test` до замены и перезапуска. `deploy-xray.sh` не трогает `amnezia-*` и `/opt/amnezia`, чужой `dementia-xray` без метки не удаляет.
     VLESS-ноды не передаются партнёрам и не участвуют в проверке из стран и обновлении образов. `teardown` удаляет `dementia-xray`
     только при метке `/opt/dementia-xray/dementia.env`. Транспорт (`tcp`/`xhttp`) меняет только явное действие — «Сгенерировать новые» его
-    сохраняет. Вход через CDN (`CdnService`) — второй inbound `vless-cdn` с сертификатом из БД прямо в config.json; `cdn_key` шифруется и не
+    сохраняет; с XHTTP flow пустой (`effectiveFlow`: Vision без VLESS Encryption работает только на RAW). Вход через CDN (`CdnService`) — второй inbound `vless-cdn` с сертификатом из БД прямо в config.json; `cdn_key` шифруется и не
     отдаётся (как приватные ключи, инвариант 1), запись в подписке «· CDN» — отдельная, мост её не меняет. Подробно — docs/vless.md.
 
 ## Чек-лист перед коммитом

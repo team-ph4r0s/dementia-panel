@@ -170,6 +170,15 @@ export function validateVlessParams(p: VlessParams): string | null {
   return null;
 }
 
+/**
+ * Flow, который действительно работает с транспортом ноды. Vision (`xtls-rprx-vision`) в Xray работает только поверх TLS/REALITY
+ * напрямую (RAW); на XHTTP он допустим лишь с VLESS Encryption, а у нас `decryption: none` — иначе подключение рвётся с
+ * «XTLS only supports TLS and REALITY directly». Поэтому с XHTTP flow пустой; сохранённый `xray_flow` вернётся при переходе на TCP.
+ */
+export function effectiveFlow(p: Pick<VlessParams, 'xray_flow' | 'xray_transport'>): VlessFlow {
+  return p.xray_transport === 'xhttp' ? '' : p.xray_flow;
+}
+
 /** Ключ x25519 из base64 (как хранится в БД) в base64url без `=` (формат Xray) */
 export function toXrayKey(base64: string): string {
   return Buffer.from(base64, 'base64').toString('base64url');

@@ -98,7 +98,9 @@ describe('параметры XHTTP', () => {
     const config = JSON.parse(XrayService.generateServerConfig(row(id), [{ id: 5, client_uuid: UUID, enabled: 1 }]));
     const inbound = config.inbounds.find((i: any) => i.tag === XRAY_INBOUND_TAG);
     expect(inbound.streamSettings).toMatchObject({ network: 'xhttp', security: 'reality', xhttpSettings: { path: '/abc123', mode: 'auto' } });
-    expect(inbound.settings.clients).toEqual([{ id: UUID, flow: 'xtls-rprx-vision', email: 'c5', level: 0 }]);
+    // Vision на XHTTP без VLESS Encryption Xray не поддерживает: flow пустой, сохранённый вернётся при переходе на TCP
+    expect(inbound.settings.clients).toEqual([{ id: UUID, flow: '', email: 'c5', level: 0 }]);
+    expect(row(id).xray_flow).toBe('xtls-rprx-vision');
     expect(config.inbounds.find((i: any) => i.tag === XRAY_CDN_INBOUND_TAG)).toBeUndefined();
   });
 
@@ -108,9 +110,11 @@ describe('параметры XHTTP', () => {
     expect(Object.fromEntries(url.searchParams)).toMatchObject({
       type: 'xhttp', path: '/abc123', host: 'dl.google.com', mode: 'packet-up', security: 'reality', sni: 'dl.google.com',
     });
+    expect(url.searchParams.has('flow')).toBe(false);
     expect(XrayService.buildMihomoProxy(row(id), { client_uuid: UUID }, 'Нода')).toMatchObject({
       network: 'xhttp', 'xhttp-opts': { path: '/abc123', host: 'dl.google.com', mode: 'packet-up' }, 'reality-opts': expect.any(Object),
     });
+    expect(XrayService.buildMihomoProxy(row(id), { client_uuid: UUID }, 'Нода').flow).toBeUndefined();
   });
 
   it('«Сгенерировать новые» не меняет транспорт и режим', async () => {

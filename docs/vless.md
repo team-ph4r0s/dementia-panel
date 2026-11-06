@@ -51,7 +51,9 @@ Reality-вход ноды работает поверх одного из тра
 - **XHTTP** — данные идут HTTP-запросами по пути `xhttp_path` (случайный, генерируется вместе с параметрами). Длинный поток не выглядит
   одной TCP-сессией с «рандомными» данными, поэтому XHTTP лучше переживает анализ поведения (заморозки сессий после 15–20 КБ в РФ).
   Сервер принимает любой режим (`mode: auto`), а режим из `xhttp_mode` идёт в ссылку и mihomo: `auto` (клиент выбирает сам: через
-  Reality — `stream-one`), `packet-up` (самый совместимый, для мостов и CDN), `stream-up`, `stream-one`. Vision с XHTTP допустим.
+  Reality — `stream-one`), `packet-up` (самый совместимый, для мостов и CDN), `stream-up`, `stream-one`.
+  **Vision с XHTTP выключается** (`effectiveFlow`): в Xray он работает поверх XHTTP только с VLESS Encryption, а у нас `decryption: none` —
+  иначе подключение рвётся с «XTLS only supports TLS and REALITY directly». Сохранённый `xray_flow` вернётся при переходе на TCP.
 
 Смена транспорта — перезапуск контейнера (`requestApply`, откат как у параметров). Ссылка XHTTP:
 `…?type=xhttp&path=…&host=<sni>&mode=…&security=reality&…`, mihomo — `network: xhttp` + `xhttp-opts: {path, host, mode}`. Нужны клиенты
