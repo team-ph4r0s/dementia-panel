@@ -67,7 +67,9 @@ describe('CORE VLESS', () => {
       log: { loglevel: 'warning' },
       api: { tag: 'api', services: ['HandlerService', 'StatsService'] },
       policy: { levels: { 0: { statsUserUplink: true, statsUserDownlink: true } } },
-      routing: { rules: [
+      // IPIfNonMatch: правило частных сетей действует и для доменов, которые в них резолвятся (localtest.me → 127.0.0.1),
+      // иначе клиент VPN достаёт API Xray на 127.0.0.1 и службы хоста ноды
+      routing: { domainStrategy: 'IPIfNonMatch', rules: [
         { inboundTag: ['api'], outboundTag: 'api' },
         { ip: expect.arrayContaining(['10.0.0.0/8', '192.168.0.0/16', 'fc00::/7']), outboundTag: 'block' },
       ] },

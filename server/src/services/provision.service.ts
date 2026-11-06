@@ -392,10 +392,20 @@ export class ProvisionService {
    */
   private static writeConfigCommand(credentials: SshCredentials, server: any): string {
     if (nodeProtocol(server) === 'vless') {
-      const tmp = `${XRAY_CONF_PATH}.new`;
-      return `${SshService.sudo(credentials)}sh -c ${shellQuote(
-        `umask 077 && mkdir -p ${XRAY_CONF_DIR} && cat > ${tmp} && chmod 600 ${tmp} && mv -f ${tmp} ${XRAY_CONF_PATH}`
-      )}`;
+      // Новый конфиг проверяется `xray run -test` образом работающего контейнера до замены: иначе непринятый конфиг
+      // (например, после смены формата в новом Xray) уронил бы ноду после restart, а прежний был бы уже перезаписан.
+      // Расширение .json обязательно: формат Xray определяет по нему (config.json.new отвергается)
+      const tmp = `${XRAY_CONF_DIR}/config.new.json`;
+      const script = [
+        'set -e',
+        `umask 077 && mkdir -p ${XRAY_CONF_DIR} && cat > ${tmp} && chmod 600 ${tmp}`,
+        `img=$(docker inspect -f '{{.Image}}' ${shellQuote(this.container(server).name)}) || { rm -f ${tmp}; exit 1; }`,
+        `if ! docker run --rm --user 0:0 --network none -v ${XRAY_CONF_DIR}:/etc/xray:ro "$img" run -test -c /etc/xray/config.new.json >&2; then`,
+        `  rm -f ${tmp}; echo 'Xray отклонил конфигурацию, работающий контейнер не тронут' >&2; exit 1`,
+        'fi',
+        `mv -f ${tmp} ${XRAY_CONF_PATH}`,
+      ].join('\n');
+      return `${SshService.sudo(credentials)}sh -c ${shellQuote(script)}`;
     }
     const c = this.container(server);
     const inner = `umask 077 && cat > ${c.confPath}.new && mv -f ${c.confPath}.new ${c.confPath}`;

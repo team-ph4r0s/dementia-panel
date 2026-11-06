@@ -264,7 +264,8 @@ CI на `main`. Подробно — [docs/releases.md](docs/releases.md).
     ProvisionService через ту же очередь; конфиг Xray целиком из БД (`XrayService.generateServerConfig`). `client_uuid` — секрет как приватный
     ключ: не отдаётся в API/гостю, только в ссылке, QR и подписке. Порт VLESS — `awg_port` (TCP), ключи Reality — `server_*_key`.
     Образ Xray — distroless без оболочки: в контейнере только `/usr/local/bin/xray …` без `sh -c`, контейнер с `--user 0:0`; конфиг
-    без `geoip:`/`geosite:`. `deploy-xray.sh` не трогает `amnezia-*` и `/opt/amnezia`, чужой `dementia-xray` без метки не удаляет.
+    без `geoip:`/`geosite:`, маршрутизация `IPIfNonMatch` (с `AsIs` блокировку частных сетей обходит домен на 127.0.0.1); новый конфиг
+    проверяется `xray run -test` до замены и перезапуска. `deploy-xray.sh` не трогает `amnezia-*` и `/opt/amnezia`, чужой `dementia-xray` без метки не удаляет.
     VLESS-ноды не передаются партнёрам и не участвуют в проверке из стран и обновлении образов. Подробно — docs/vless.md.
 
 ## Чек-лист перед коммитом

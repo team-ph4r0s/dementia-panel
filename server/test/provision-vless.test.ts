@@ -240,12 +240,34 @@ describe('синхронизация VLESS-ноды (doSync)', () => {
 
     const call = ssh.calls[0];
     expect(call.input).toBe('{"inbounds":[{"tag":"vless"}]}');
-    expect(call.command).toContain('chmod 600 /opt/dementia-xray/config.json.new');
-    expect(call.command).toContain('mv -f /opt/dementia-xray/config.json.new /opt/dementia-xray/config.json');
+    expect(call.command).toContain('chmod 600 /opt/dementia-xray/config.new.json');
+    expect(call.command).toContain('mv -f /opt/dementia-xray/config.new.json /opt/dementia-xray/config.json');
     expect(call.command).toContain("docker restart 'dementia-xray'");
+    // Конфиг проверяется Xray до замены и до перезапуска (иначе непринятый конфиг роняет ноду)
+    const test = call.command.indexOf('run -test -c /etc/xray/config.new.json');
+    expect(test).toBeGreaterThan(-1);
+    expect(test).toBeLessThan(call.command.indexOf('mv -f /opt/dementia-xray/config.new.json'));
+    expect(call.command.indexOf('mv -f')).toBeLessThan(call.command.indexOf('docker restart'));
     // Не должен использовать awg syncconf
     expect(call.command).not.toContain('syncconf');
     expect(getServer(serverId).needs_sync).toBe(0);
+  });
+
+  it('если Xray отклонил конфиг, контейнер не перезапускается, а ошибка сохраняется', async () => {
+    const serverId = insertVlessServer({ status: 'online', port: 443 });
+    insertVlessClient(serverId, { name: 'client-1' });
+    db.prepare('UPDATE servers SET needs_sync = 1 WHERE id = ?').run(serverId);
+
+    // Отказ проверки так, как его вернул бы ssh: скрипт записи завершился кодом 1, restart в цепочке `&&` не выполнен
+    const ssh = stubSsh(() => ({ code: 1, stderr: 'Xray отклонил конфигурацию, работающий контейнер не тронут' }));
+    const res = await ProvisionService.syncPeers(serverId);
+
+    expect(res.success).toBe(false);
+    expect(res.error).toContain('Xray отклонил конфигурацию');
+    const command = ssh.calls[0].command;
+    // Проверка и замена конфига — внутри одного sh -c, перезапуск — после него через `&&`
+    expect(command).toMatch(/run -test -c \/etc\/xray\/config\.new\.json[\s\S]*exit 1[\s\S]*mv -f[\s\S]*' && (sudo )?docker restart/);
+    expect(getServer(serverId).needs_sync).toBe(1);
   });
 });
 

@@ -29,6 +29,7 @@ export class XrayService {
    *   clients: `{id: client_uuid, flow, email: 'c<client.id>'}` — email нужен для статистики трафика по клиенту;
    * - api-inbound dokodemo-door на 127.0.0.1:XRAY_API_PORT (HandlerService, StatsService), policy со статистикой
    *   uplink/downlink пользователей, outbounds freedom + blackhole, routing api → api;
+   * - routing `IPIfNonMatch`: запросы в частные сети блокируются и по IP, и по домену, который в них резолвится;
    * - клиенты без client_uuid или неактивные (enabled/subscriber_active, как в AwgService.generateServerConfig) не попадают.
    */
   static generateServerConfig(server: any, clients: any[]): string {
@@ -73,7 +74,10 @@ export class XrayService {
       ],
       outbounds: [{ protocol: 'freedom', tag: 'direct' }, { protocol: 'blackhole', tag: 'block' }],
       routing: {
-        domainStrategy: 'AsIs',
+        // IPIfNonMatch: домен из запроса клиента резолвится и сверяется с IP-правилами. С AsIs правило частных сетей
+        // обходилось доменом, указывающим на 127.0.0.1 (localtest.me и т.п.), — клиент VPN достучался бы до API Xray
+        // на 127.0.0.1:XRAY_API_PORT и до служб самого хоста
+        domainStrategy: 'IPIfNonMatch',
         rules: [
           { type: 'field', inboundTag: ['api'], outboundTag: 'api' },
           { type: 'field', ip: PRIVATE_NETWORKS, outboundTag: 'block' },
