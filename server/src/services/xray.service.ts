@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { formatEndpointHost } from '../utils/net.js';
-import { VlessParams, vlessParamsFromRow } from '../utils/vless-params.js';
+import { VlessParams, toXrayKey, vlessParamsFromRow } from '../utils/vless-params.js';
 
 /**
  * VLESS + Reality (Xray-core): аналог AwgService для нод с `protocol = 'vless'`.
@@ -34,16 +34,45 @@ export class XrayService {
    * Хост — `formatEndpointHost(host)` (IPv6 в скобках); `endpointHost` подменяет адрес (мосты, BridgeService.routesFor).
    * Имя кодируется encodeURIComponent.
    */
-  static buildVlessLink(_server: any, _client: any, _name: string, _endpointHost?: string, _endpointPort?: number): string {
-    void formatEndpointHost;
-    throw new Error('XrayService.buildVlessLink: не реализовано');
+  static buildVlessLink(server: any, client: any, name: string, endpointHost?: string, endpointPort?: number): string {
+    const params = vlessParamsFromRow(server);
+    const query = [
+      ['type', 'tcp'],
+      ['security', 'reality'],
+      ['pbk', toXrayKey(server.server_public_key)],
+      ['fp', params.xray_fingerprint],
+      ['sni', params.reality_sni],
+      ['sid', params.reality_short_ids[0] ?? ''],
+      ...(params.xray_flow ? [['flow', params.xray_flow]] : []),
+      ['encryption', 'none'],
+    ].map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join('&');
+    const host = formatEndpointHost(endpointHost || server.host);
+    const port = endpointPort ?? server.awg_port;
+    return `vless://${client.client_uuid}@${host}:${port}?${query}#${encodeURIComponent(name)}`;
   }
 
   /**
    * Прокси mihomo: `{name, type: 'vless', server, port, uuid, network: 'tcp', tls: true, udp: true, flow,
    * servername, client-fingerprint, reality-opts: {public-key, short-id}}`.
    */
-  static buildMihomoProxy(_server: any, _client: any, _name: string, _endpointHost?: string, _endpointPort?: number): Record<string, unknown> {
-    throw new Error('XrayService.buildMihomoProxy: не реализовано');
+  static buildMihomoProxy(server: any, client: any, name: string, endpointHost?: string, endpointPort?: number): Record<string, unknown> {
+    const params = vlessParamsFromRow(server);
+    return {
+      name,
+      type: 'vless',
+      server: endpointHost || server.host,
+      port: endpointPort ?? server.awg_port,
+      uuid: client.client_uuid,
+      network: 'tcp',
+      tls: true,
+      udp: true,
+      ...(params.xray_flow ? { flow: params.xray_flow } : {}),
+      servername: params.reality_sni,
+      'client-fingerprint': params.xray_fingerprint,
+      'reality-opts': {
+        'public-key': toXrayKey(server.server_public_key),
+        'short-id': params.reality_short_ids[0] ?? '',
+      },
+    };
   }
 }

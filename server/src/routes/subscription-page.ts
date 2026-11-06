@@ -69,7 +69,7 @@ export function renderSubscriptionPage(page: SubscriptionPage): string {
   </style>
 </head>
 <body>
-  <header class="shell"><strong>DEMENTIA PANEL</strong><span class="label">AmneziaWG / Подписка</span></header>
+  <header class="shell"><strong>DEMENTIA PANEL</strong><span class="label">AmneziaWG / VLESS / Подписка</span></header>
   <main class="shell">
     <section class="hero" aria-labelledby="profile-title">
       <div>
@@ -78,9 +78,12 @@ export function renderSubscriptionPage(page: SubscriptionPage): string {
         <p>Скопируйте адрес этой страницы и добавьте его в VPN-клиент как ссылку на подписку.</p>
         <nav aria-label="Форматы подписки">
           <a class="primary" href="?format=awg" download>Скачать Incy / AWG</a>
+          <a href="?format=v2ray" download>VLESS / v2ray</a>
           <a href="?format=clash" download>mihomo</a>
           <a href="?format=json" download>JSON</a>
         </nav>
+        <p><strong>Приложения для VLESS:</strong><br>
+          Android — v2rayNG, Hiddify; iPhone / iPad — Streisand, Happ; ПК — Hiddify, v2rayN.</p>
       </div>
       <section class="card" aria-labelledby="status-title">
         <h2 id="status-title">Параметры подписки</h2>
