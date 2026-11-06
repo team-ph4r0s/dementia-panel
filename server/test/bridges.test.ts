@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { db, initDatabase, setSetting } from '../src/db/index.js';
-import { BRIDGE_HOLD_MS, BridgeService, buildBridgeRules, parseHealth } from '../src/services/bridge.service.js';
+import { BRIDGE_HOLD_MS, BridgeService, buildBridgeRules, expectedRuleCount, parseHealth } from '../src/services/bridge.service.js';
 import { decryptSecret } from '../src/services/secrets.service.js';
 import { createAdminApi } from './helpers/api.js';
 import { getServer, insertClient, insertServer, insertSubscriber } from './helpers/db.js';
@@ -60,6 +60,20 @@ describe('правила пересылки', () => {
     expect(rules).toContain("forward udp 40001 'de.example.com' 51820");
     expect(rules).not.toContain("forward tcp 40001");
     expect(rules).toContain('echo "---RULES 3"');
+  });
+
+  it('нода VLESS пересылается только по TCP на свой порт, без заглушки', () => {
+    const links = [
+      { listen_port: 443, host: '203.0.113.10', awg_port: 443, stub_port: 34567, protocol: 'vless' },
+      { listen_port: 51820, host: '203.0.113.9', awg_port: 51820, stub_port: null, protocol: 'awg' },
+    ];
+    const rules = buildBridgeRules(links);
+    expect(rules).toContain("forward tcp 443 '203.0.113.10' 443");
+    expect(rules).not.toContain("forward udp 443");
+    expect(rules).not.toContain('34567');
+    expect(rules).toContain("forward udp 51820 '203.0.113.9' 51820");
+    expect(rules).toContain('echo "---RULES 2"');
+    expect(expectedRuleCount(links)).toBe(2);
   });
 
   it('адрес ноды проверяется до подстановки в скрипт; IPv6 не поддерживается', () => {
