@@ -11,6 +11,7 @@ Dementia Panel — агентлесс-панель управления нода
 | [docs/architecture.md](docs/architecture.md) | Компоненты, структура кода, потоки данных, фоновые задачи |
 | [docs/database.md](docs/database.md) | Схема БД, миграции, смысл каждого поля |
 | [docs/node-management.md](docs/node-management.md) | Установка, синхронизация, применение параметров, сканирование и импорт, мониторинг |
+| [docs/vless.md](docs/vless.md) | Второй протокол VLESS + Reality (Xray): контракт данных, установка, подписки, ограничения |
 | [docs/awg-protocol.md](docs/awg-protocol.md) | Параметры обфускации AmneziaWG 1.x / 3.x, ограничения, генерация |
 | [docs/subscriptions.md](docs/subscriptions.md) | Форматы подписок (Incy, mihomo, JSON), заголовки, оформление, лимиты |
 | [docs/partners.md](docs/partners.md) | Партнёрский доступ к нодам между панелями: модель и API `/api/federation/v1` |
@@ -35,6 +36,7 @@ server/            Node.js 22.13+ / Express 4 / TypeScript, SQLite через no
   src/services/      бизнес-логика (SSH, провижининг, подписки, партнёры, HTTPS…)
   src/utils/         чистые функции (сети, параметры AWG, ключи Amnezia, HTTP-утилиты)
   src/scripts/deploy-awg.sh  скрипт развёртывания ноды (передаётся по SSH через stdin)
+  src/scripts/deploy-xray.sh   установка ноды VLESS (контейнер Xray dementia-xray, через stdin)
   src/scripts/deploy-bridge.sh  установка моста (iptables DNAT, без Docker; тоже через stdin)
   src/scripts/update-panel.sh  обновление панели из интерфейса (systemd-run → install.sh релиза, откат при сбое)
   src/cli/reset-admin.ts     сброс логина/пароля администратора
@@ -257,6 +259,13 @@ CI на `main`. Подробно — [docs/releases.md](docs/releases.md).
     основной listener сохраняется, дополнительный использует тот же TLS/API/WSS. Изменения TLS/домена сериализуйте через `SslService.exclusive`.
     Не выдавайте сохранённый `cf_token` браузеру (только флаг); при повторном выпуске сертификата не сбрасывайте `proxied`.
     `CF-Connecting-IP` принимается только от реальных сетей Cloudflare, не от произвольного `X-Forwarded-For`. Подробности — docs/cloudflare.md.
+
+47. **VLESS повторяет контракт AWG и не трогает AmneziaWG.** Протокол ноды — `servers.protocol` (`nodeProtocol()`), ветвление — в
+    ProvisionService через ту же очередь; конфиг Xray целиком из БД (`XrayService.generateServerConfig`). `client_uuid` — секрет как приватный
+    ключ: не отдаётся в API/гостю, только в ссылке, QR и подписке. Порт VLESS — `awg_port` (TCP), ключи Reality — `server_*_key`.
+    Образ Xray — distroless без оболочки: в контейнере только `/usr/local/bin/xray …` без `sh -c`, контейнер с `--user 0:0`; конфиг
+    без `geoip:`/`geosite:`. `deploy-xray.sh` не трогает `amnezia-*` и `/opt/amnezia`, чужой `dementia-xray` без метки не удаляет.
+    VLESS-ноды не передаются партнёрам и не участвуют в проверке из стран и обновлении образов. Подробно — docs/vless.md.
 
 ## Чек-лист перед коммитом
 

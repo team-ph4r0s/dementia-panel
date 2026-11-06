@@ -1183,7 +1183,7 @@ export class ProvisionService {
       if (isVless) {
         const result = await SshService.executeCommand(
           credentials,
-          `${SshService.sudo(credentials)}docker exec ${shellQuote(c.name)} xray api statsquery -s 127.0.0.1:10085 -reset`,
+          `${SshService.sudo(credentials)}docker exec ${shellQuote(c.name)} /usr/local/bin/xray api statsquery -s 127.0.0.1:${XRAY_API_PORT} -reset`,
           { timeoutMs: 30000 }
         );
         if (result.code !== 0) {
@@ -1248,7 +1248,8 @@ export class ProvisionService {
           `c=${shellQuote(c.name)}`,
           'echo "IMAGE $(docker inspect -f "{{.Config.Image}}" "$c" 2>/dev/null)"',
           'echo "CREATED $(docker image inspect -f "{{.Created}}" "$(docker inspect -f "{{.Image}}" "$c" 2>/dev/null)" 2>/dev/null)"',
-          `echo "XRAY $(docker exec "$c" sh -c 'xray version 2>/dev/null | head -n 1')"`,
+          // Образ Xray — distroless без оболочки: бинарник вызывается напрямую
+          'echo "XRAY $(docker exec "$c" /usr/local/bin/xray version 2>/dev/null | head -n 1)"',
         ].join('\n')
       : [
           `c=${shellQuote(c.name)}`,

@@ -29,6 +29,7 @@ SQLite (`node:sqlite`, Node ≥ 22.13), файл `data/dementia.db`, режим 
 | v12 | Гостевой доступ: `sessions.role` (`admin` / `guest`); логин и хэш пароля гостя — в `settings` (`guest_*`) |
 | v13 | Проверка и обновление Docker-образов нод: `node_updates` |
 | v14 | Необязательная метка страны для глобуса: `servers.country` |
+| v15 | Протокол ноды VLESS: `servers.protocol` (`awg`/`vless`), `reality_sni`, `reality_dest`, `reality_short_ids`, `xray_flow`, `xray_fingerprint`; `clients.client_uuid`; индексы IP и публичного ключа клиента — частичные (только непустые значения), `idx_clients_server_uuid` — см. [vless.md](vless.md) |
 
 ## Таблицы
 

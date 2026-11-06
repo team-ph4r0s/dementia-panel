@@ -37,6 +37,12 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+# Контейнер с нашим именем, но без метки панели — чужой: ничего не меняем (проверка до любых изменений на хосте)
+if command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' | grep -Fxq "$CONTAINER_NAME" && [ ! -f "$XRAY_DIR/dementia.env" ]; then
+  echo "Ошибка: контейнер $CONTAINER_NAME уже существует, но метки панели $XRAY_DIR/dementia.env нет — удалите его вручную."
+  exit 1
+fi
+
 # Detect package manager
 if command -v apt-get >/dev/null 2>&1; then
   PM="apt"
@@ -99,17 +105,19 @@ mkdir -p "$XRAY_DIR"
 chmod 700 "$XRAY_DIR"
 echo "$XRAY_CONF_B64" | base64 -d > "$XRAY_DIR/config.json.new"
 chmod 600 "$XRAY_DIR/config.json.new"
+# Образ distroless запускается не от root: конфиг 600 и порты < 1024 требуют --user 0:0
+if ! docker run --rm --user 0:0 -v "$XRAY_DIR:/etc/xray:ro" "$IMAGE_NAME" run -test -c /etc/xray/config.json.new; then
+  rm -f "$XRAY_DIR/config.json.new"
+  echo "Ошибка: Xray отклонил сгенерированную конфигурацию, работающий контейнер не тронут."
+  exit 1
+fi
 mv -f "$XRAY_DIR/config.json.new" "$XRAY_DIR/config.json"
 printf 'VLESS_PORT=%s\nXRAY_IMAGE=%s\n' "$VLESS_PORT" "$IMAGE_NAME" > "$XRAY_DIR/dementia.env.new"
 chmod 600 "$XRAY_DIR/dementia.env.new"
 mv -f "$XRAY_DIR/dementia.env.new" "$XRAY_DIR/dementia.env"
 
-# Удалять можно только свой контейнер с меткой; контейнеры AmneziaWG никогда не трогаем
-if docker ps -a --format '{{.Names}}' | grep -Eq "^${CONTAINER_NAME}\$"; then
-  if [ ! -f "$XRAY_DIR/dementia.env" ]; then
-    echo "Ошибка: контейнер $CONTAINER_NAME уже существует, но метка $XRAY_DIR/dementia.env отсутствует!"
-    exit 1
-  fi
+# Удаляется только свой контейнер (метка проверена на шаге 1); контейнеры AmneziaWG не трогаем
+if docker ps -a --format '{{.Names}}' | grep -Fxq "$CONTAINER_NAME"; then
   echo "Остановка и удаление старого контейнера $CONTAINER_NAME..."
   docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 fi
@@ -119,6 +127,7 @@ docker run -d \
   --name "$CONTAINER_NAME" \
   --restart always \
   --network host \
+  --user 0:0 \
   -v "$XRAY_DIR:/etc/xray" \
   "$IMAGE_NAME" \
   run -c /etc/xray/config.json >/dev/null
@@ -188,7 +197,7 @@ port_listening() {
 
 # Ожидание поднятия порта (до 20 с)
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-  if port_listening; then
+  if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null)" = "true" ] && port_listening; then
     echo "================================================================="
     echo "🎉 УСПЕХ: Xray (VLESS) успешно запущен и слушает порт $VLESS_PORT!"
     echo "================================================================="

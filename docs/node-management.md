@@ -125,3 +125,18 @@ AmneziaWG он не трогает. Мосты в странах пользов�
 `DELETE /servers/:id?teardown=1` удаляет контейнер на ноде (и `/opt/amnezia/awg` для контейнера панели), а также заглушку проверки
 `dementia-probe` с `/opt/dementia-probe`. Привязки ноды к мостам удаляются каскадно, правила мостов перестраиваются фоновым опросом.
 При ошибке — 502, если не передан `force=1`. Без teardown VPN на ноде продолжает работать.
+
+## VLESS
+
+Ноды с `protocol = 'vless'` ([vless.md](vless.md)) обслуживаются теми же методами `ProvisionService` и той же очередью; ветвление — по `nodeProtocol(server)`.
+
+- **Установка** (`doInstallVless`): до изменений проверяется, что контейнер `dementia-xray` без метки `/opt/dementia-xray/dementia.env` не существует и TCP-порт
+  не занят чужой службой. `deploy-xray.sh` (через stdin): Docker, `docker pull ghcr.io/xtls/xray-core:latest`, проверка конфига `xray run -test` до замены
+  контейнера, контейнер `--restart always --network host --user 0:0` с каталогом `/opt/dementia-xray` в `/etc/xray`, открытие TCP-порта, fail2ban, ожидание
+  работающего контейнера и порта. Успех — маркер `---DEMENTIA_OK---`, затем `deployed_port = awg_port`.
+- **Синхронизация и применение**: config.json пишется на хост (`umask 077`, атомарный `mv`), затем `docker restart`. Смена порта — переустановка.
+- **Статистика**: `docker exec dementia-xray /usr/local/bin/xray api statsquery -s 127.0.0.1:10085 -reset`; разбор — `parseXrayStats` (строгий формат имён
+  `user>>>c<id>>>>traffic>>>uplink|downlink`), uplink → `total_rx`, downlink → `total_tx`.
+- **Сведения о ноде**: `xray version` и образ. Образ distroless: в контейнере нет `sh`, команды вызывают бинарник напрямую.
+- **Удаление**: только контейнер `dementia-xray` и каталог `/opt/dementia-xray` (если на нём метка панели); AmneziaWG и `/opt/amnezia` не затрагиваются.
+- Сканирование, обновление образов (`NodeUpdateService`) и заглушка проверки из стран для VLESS-нод не выполняются.

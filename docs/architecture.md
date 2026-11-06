@@ -34,6 +34,7 @@
 | `services/ssh.service.ts` | SSH: TOFU-проверка ключа хоста, таймауты, stdin, `sudo -n` для не-root |
 | `services/provision.service.ts` | Всё про ноды: установка, синхронизация, применение, сканирование и импорт, мониторинг |
 | `services/awg.service.ts` | Ключи, генерация серверных/клиентских конфигов, выделение IP |
+| `services/xray.service.ts`, `utils/vless-params.ts` | VLESS + Reality: config.json Xray из БД, ссылки `vless://`, прокси mihomo, параметры Reality, см. [vless.md](vless.md) |
 | `services/subscription*.ts` | Лимиты подписчиков и оформление подписки |
 | `services/partner.service.ts` | Партнёрский доступ — сторона владельца нод |
 | `services/federation-client.service.ts` | Партнёрский доступ — сторона получателя |

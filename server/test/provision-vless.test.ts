@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { db, initDatabase } from '../src/db/index.js';
 import { XrayService } from '../src/services/xray.service.js';
@@ -55,7 +58,7 @@ function insertVlessServer(overrides: Partial<any> = {}): number {
 }
 
 function insertVlessClient(serverId: number, overrides: Partial<any> = {}): { id: number; uuid: string } {
-  const uuid = overrides.uuid ?? '11111111-2222-3333-4444-555555555555';
+  const uuid = overrides.uuid ?? crypto.randomUUID();
   const result = db.prepare(`
     INSERT INTO clients (server_id, subscriber_id, name, client_ip, client_public_key, client_private_key, client_uuid, enabled)
     VALUES (?, ?, ?, '', '', '', ?, ?)
@@ -203,9 +206,9 @@ describe('установка VLESS-ноды (installServer)', () => {
 
     const deployCall = ssh.calls.find((c) => c.command.includes('deploy-xray'));
     expect(deployCall).toBeDefined();
-    expect(deployCall?.input).toContain('export VLESS_PORT=443');
-    expect(deployCall?.input).toContain('export XRAY_CONTAINER=dementia-xray');
-    expect(deployCall?.input).toContain('export XRAY_CONF_DIR=/opt/dementia-xray');
+    expect(deployCall?.input).toContain("export VLESS_PORT='443'");
+    expect(deployCall?.input).toContain("export XRAY_CONTAINER='dementia-xray'");
+    expect(deployCall?.input).toContain("export XRAY_CONF_DIR='/opt/dementia-xray'");
     expect(deployCall?.input).toContain('export XRAY_IMAGE=');
     expect(deployCall?.input).toContain('export XRAY_CONF_B64=');
 
@@ -277,7 +280,7 @@ describe('применение параметров VLESS-ноды (doApply)', (
 
     const deployCall = ssh.calls.find((c) => c.command.includes('deploy-xray'));
     expect(deployCall).toBeDefined();
-    expect(deployCall?.input).toContain('export VLESS_PORT=8443');
+    expect(deployCall?.input).toContain("export VLESS_PORT='8443'");
     expect(getServer(serverId).deployed_port).toBe(8443);
   });
 });
@@ -362,9 +365,11 @@ describe('удаление ноды (teardown)', () => {
     expect(ssh.calls).toHaveLength(1);
 
     const cmd = ssh.calls[0].command;
-    expect(cmd).toContain("docker rm -f 'dementia-xray'");
+    // Команда целиком обёрнута в shellQuote, поэтому внутренние кавычки экранированы как '\''
+    expect(cmd).toContain(String.raw`docker rm -f '\''dementia-xray'\''`);
     expect(cmd).toContain('/opt/dementia-xray/dementia.env');
-    expect(cmd).toContain("rm -rf '/opt/dementia-xray'");
+    expect(cmd).toContain(String.raw`rm -rf '\''/opt/dementia-xray'\''`);
+    expect(cmd).not.toContain('amnezia');
     // Ни в коем случае не трогать amnezia-* или /opt/amnezia
     expect(cmd).not.toContain('amnezia');
     expect(cmd).not.toContain('dementia-probe');
@@ -378,7 +383,7 @@ describe('удаление ноды (teardown)', () => {
     expect(res.success).toBe(true);
 
     const cmd = ssh.calls[0].command;
-    expect(cmd).toContain("docker rm -f 'amnezia-awg'");
+    expect(cmd).toContain('docker rm -f amnezia-awg');
     expect(cmd).toContain('/opt/amnezia/awg');
     expect(cmd).toContain('dementia-probe');
   });
@@ -421,5 +426,35 @@ describe('сбор информации о ноде (fetchNodeInfo)', () => {
     expect(updated.node_awg_tools).toBe('Xray 1.8.24');
     expect(updated.node_image).toBe('teddysun/xray:latest');
     expect(updated.node_image_created).toBe('2026-03-01T12:00:00.000Z');
+  });
+});
+
+describe('deploy-xray.sh', () => {
+  const script = fs.readFileSync(path.resolve(__dirname, '../src/scripts/deploy-xray.sh'), 'utf-8');
+
+  it('чужой контейнер проверяется до записи метки и конфига, конфиг проверяется Xray до замены контейнера', () => {
+    const foreignCheck = script.indexOf('метки панели');
+    expect(foreignCheck).toBeGreaterThan(0);
+    expect(foreignCheck).toBeLessThan(script.indexOf('dementia.env.new'));
+    expect(foreignCheck).toBeLessThan(script.indexOf('config.json.new'));
+    expect(script.indexOf('run -test -c /etc/xray/config.json.new')).toBeLessThan(script.indexOf('docker rm -f "$CONTAINER_NAME"'));
+  });
+
+  it('образ distroless запускается от root (конфиг 600, порт 443) и не трогает AmneziaWG', () => {
+    expect(script).toMatch(/docker run -d[\s\S]*--user 0:0/);
+    expect(script).not.toMatch(/\/opt\/amnezia|docker rm[^\n]*amnezia/);
+  });
+});
+
+describe('команды на VLESS-ноде без оболочки в контейнере', () => {
+  it('версия Xray и статистика вызывают бинарник напрямую', async () => {
+    const serverId = insertVlessServer({ status: 'online' });
+    const ssh = stubSsh(() => ({ stdout: 'XRAY Xray 25.1.1 (Xray, Penetrates Everything.)\n' }));
+    await ProvisionService.fetchNodeInfo(getServer(serverId));
+    await ProvisionService.fetchServerStats(serverId);
+    const commands = ssh.calls.map((call) => call.command).join('\n');
+    expect(commands).toContain('/usr/local/bin/xray version');
+    expect(commands).toContain('/usr/local/bin/xray api statsquery');
+    expect(commands).not.toMatch(/exec [^\n]*sh -c[^\n]*xray/);
   });
 });
