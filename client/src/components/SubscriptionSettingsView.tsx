@@ -258,17 +258,21 @@ export const SubscriptionSettingsView: React.FC<{ subscribers: Subscriber[]; pub
                         <ArrowDown className="w-3.5 h-3.5" />
                       </button>
                     </div>
-                    <div className="w-40 flex-shrink-0 min-w-0">
-                      <p className="text-xs font-medium text-ink truncate">{s.name}</p>
-                      <p className="text-xs font-mono text-faint truncate">{s.host}</p>
+                    {/* На телефоне имя в панели — над полем, иначе поле сжимается до нескольких символов */}
+                    <div className="flex-1 min-w-0 flex flex-col sm:flex-row sm:items-center gap-1.5 sm:gap-2">
+                      <div className="sm:w-40 sm:flex-shrink-0 min-w-0">
+                        <p className="text-xs font-medium text-ink truncate">{s.name}</p>
+                        <p className="text-xs font-mono text-faint truncate">{s.host}</p>
+                      </div>
+                      <input
+                        value={s.sub_name || ''}
+                        maxLength={64}
+                        aria-label={`Имя «${s.name}» в подписке`}
+                        onChange={(e) => renameServer(s.id, e.target.value)}
+                        placeholder={s.name}
+                        className={inputClass}
+                      />
                     </div>
-                    <input
-                      value={s.sub_name || ''}
-                      maxLength={64}
-                      onChange={(e) => renameServer(s.id, e.target.value)}
-                      placeholder={s.name}
-                      className={inputClass}
-                    />
                   </div>
                 ))}
               </div>

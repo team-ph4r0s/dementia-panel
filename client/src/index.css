@@ -256,8 +256,23 @@ body {
   animation: dementia-fade-in 0.2s ease-out;
 }
 
+/* Боковое меню разделов на телефоне выезжает слева */
+@keyframes dementia-slide-in-left {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.animate-in.slide-in-from-left {
+  animation: dementia-slide-in-left 0.2s ease-out;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .animate-in.fade-in {
+  .animate-in.fade-in,
+  .animate-in.slide-in-from-left {
     animation: none;
   }
   .btn-press {

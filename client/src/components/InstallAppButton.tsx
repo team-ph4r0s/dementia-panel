@@ -14,7 +14,8 @@ const Step: React.FC<{ n: number; children: React.ReactNode }> = ({ n, children 
  * Кнопка «Установить приложение» в шапке. Chrome/Edge — системный диалог установки; iOS и Android без такого диалога — окно с шагами
  * (в iOS установки из браузера кнопкой нет, только «Поделиться → На экран „Домой“»). Скрыта, когда панель уже открыта как приложение.
  */
-export const InstallAppButton: React.FC = () => {
+/** wide — пункт бокового меню на телефоне: во всю ширину и с подписью */
+export const InstallAppButton: React.FC<{ wide?: boolean }> = ({ wide = false }) => {
   const app = useInstallApp();
   const [guideOpen, setGuideOpen] = useState(false);
   if (!app.visible) return null;
@@ -33,10 +34,12 @@ export const InstallAppButton: React.FC = () => {
         onClick={onClick}
         title="Установить панель как приложение"
         aria-label="Установить панель как приложение"
-        className="flex items-center gap-1.5 px-3 py-2 text-ink bg-card border border-line rounded-lg hover:bg-soft transition"
+        className={wide
+          ? 'w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-ink hover:bg-soft border border-line transition'
+          : 'flex items-center gap-1.5 px-3 py-2 text-ink bg-card border border-line rounded-lg hover:bg-soft transition'}
       >
         <Smartphone className="w-4 h-4 text-brand" />
-        <span className="hidden lg:inline text-xs font-medium">Приложение</span>
+        <span className={wide ? '' : 'hidden lg:inline text-xs font-medium'}>{wide ? 'Установить как приложение' : 'Приложение'}</span>
       </button>
 
       {guideOpen && (

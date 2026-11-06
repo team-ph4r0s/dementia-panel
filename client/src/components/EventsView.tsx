@@ -49,11 +49,14 @@ export const EventsView: React.FC = () => {
           return (
             <div key={event.id} className="py-3 flex items-start gap-3">
               <span className={`p-1.5 rounded-lg shrink-0 ${colors[event.level]}`}><Icon className="w-4 h-4" /></span>
-              <div className="min-w-0 flex-1">
-                <div className="text-sm text-ink break-words">{event.message}</div>
-                <div className="text-xs text-faint mt-1 font-mono">{event.type}{event.entity_kind ? ` · ${event.entity_kind} #${event.entity_id}` : ''}</div>
+              {/* На телефоне время — под сообщением: колонка справа отнимала треть ширины */}
+              <div className="min-w-0 flex-1 sm:flex sm:items-start sm:gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm text-ink break-words">{event.message}</div>
+                  <div className="text-xs text-faint mt-1 font-mono break-words">{event.type}{event.entity_kind ? ` · ${event.entity_kind} #${event.entity_id}` : ''}</div>
+                </div>
+                <time className="block mt-1 sm:mt-0 text-xs text-muted whitespace-nowrap">{new Date(`${event.created_at}Z`).toLocaleString('ru-RU')}</time>
               </div>
-              <time className="text-xs text-muted whitespace-nowrap">{new Date(`${event.created_at}Z`).toLocaleString('ru-RU')}</time>
               <span className="sr-only">{labels[event.level]}</span>
             </div>
           );

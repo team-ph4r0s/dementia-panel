@@ -17,13 +17,18 @@ const TopologyGlobe = lazy(() => import('./TopologyGlobe').then(({ TopologyGlobe
 type ViewMode = 'map' | 'globe' | 'list';
 const VIEW_KEY = 'dementia.servers.view.v1';
 
+/** Узкий экран (телефон, планшет): карта там тесная, поэтому по умолчанию — список */
+const isNarrow = () => typeof window !== 'undefined' && Boolean(window.matchMedia?.('(max-width: 1023px)').matches);
+
 function readMode(): ViewMode {
+  let stored: string | null = null;
   try {
-    const stored = window.localStorage.getItem(VIEW_KEY);
-    return stored === 'list' || stored === 'globe' ? stored : 'map';
+    stored = window.localStorage.getItem(VIEW_KEY);
   } catch {
-    return 'map';
+    // без localStorage — значение по умолчанию
   }
+  if (stored === 'list' || stored === 'globe' || stored === 'map') return stored;
+  return isNarrow() ? 'list' : 'map';
 }
 
 interface ServersViewProps {

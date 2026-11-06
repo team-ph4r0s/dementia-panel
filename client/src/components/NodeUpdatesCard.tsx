@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import type { NodeUpdateSettings, NodeUpdatesOverview } from '../types';
+import { ChevronDown } from 'lucide-react';
 import { useFeedback } from './ui/feedback-context';
 
 export function NodeUpdatesCard({ onChanged }: { onChanged: () => void }) {
@@ -8,6 +9,9 @@ export function NodeUpdatesCard({ onChanged }: { onChanged: () => void }) {
   const [settings, setSettings] = useState<NodeUpdateSettings | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  /** null — по умолчанию (см. open ниже), иначе выбор пользователя */
+  const [expanded, setExpanded] = useState<boolean | null>(null);
+  const [narrow] = useState(() => Boolean(window.matchMedia?.('(max-width: 1023px)').matches));
   const { confirm, toast } = useFeedback();
   const load = useCallback(async () => {
     try {
@@ -43,13 +47,29 @@ export function NodeUpdatesCard({ onChanged }: { onChanged: () => void }) {
   };
   const button = 'px-3 py-2 rounded-lg border border-line bg-soft text-ink text-xs btn-press disabled:opacity-50';
   const available = overview?.nodes.filter((n) => n.available).length ?? 0;
+  // На узком экране карточка свёрнута до строки статуса, пока нет обновлений и обслуживания: ноды важнее
+  const open = expanded ?? (!narrow || available > 0 || Boolean(overview?.running));
   return <section className="bg-card border border-line rounded-2xl p-4 space-y-3" aria-label="Обновления AmneziaWG">
-    <div className="flex flex-wrap items-center gap-3">
-      <h3 className="font-semibold text-sm text-ink">Обновления AmneziaWG</h3>
-      <span className="text-xs text-muted">{overview?.running ? 'Выполняется обслуживание нод…' : `Доступно обновлений: ${available}`}</span>
-      <button className={button} disabled={busy || overview?.running || !overview} onClick={() => start('check')}>Проверить образы</button>
-      <button className={button} disabled={busy || overview?.running || !available} onClick={() => start('update')}>Обновить все</button>
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+      <h3 className="font-semibold text-sm text-ink">{narrow ? 'Обновления AWG' : 'Обновления AmneziaWG'}</h3>
+      <span className="text-xs text-muted">{overview?.running ? 'Выполняется обслуживание нод…' : `${narrow ? 'Доступно' : 'Доступно обновлений'}: ${available}`}</span>
+      {narrow && (
+        <button
+          data-guest-ok
+          onClick={() => setExpanded(!open)}
+          aria-expanded={open}
+          className="ml-auto flex items-center gap-1 text-xs text-muted hover:text-ink"
+        >
+          {open ? 'Свернуть' : 'Подробнее'}
+          <ChevronDown className={`w-4 h-4 transition ${open ? 'rotate-180' : ''}`} />
+        </button>
+      )}
+      {open && <div className="flex flex-wrap gap-2 w-full sm:w-auto">
+        <button className={button} disabled={busy || overview?.running || !overview} onClick={() => start('check')}>Проверить образы</button>
+        <button className={button} disabled={busy || overview?.running || !available} onClick={() => start('update')}>Обновить все</button>
+      </div>}
     </div>
+    {open && <>
     <p className="text-xs text-muted">Проверка раз в сутки. Обновляются только контейнеры панели; клиенты, ключи и параметры сохраняются. Во время замены VPN кратковременно недоступен.</p>
     {settings && <div className="flex flex-wrap items-center gap-3 text-xs text-ink">
       <label className="flex items-center gap-2"><input type="checkbox" checked={settings.auto_update} onChange={(e) => setSettings({ ...settings, auto_update: e.target.checked })} />Автообновление</label>
@@ -64,5 +84,6 @@ export function NodeUpdatesCard({ onChanged }: { onChanged: () => void }) {
     {overview?.nodes.filter((n) => n.available || n.error || n.updated_at).map((n) => <p key={n.server_id} className={`text-xs ${n.error ? 'text-bad' : n.available ? 'text-warn' : 'text-muted'}`}>
       {n.name}: {n.error || (n.available ? 'доступно обновление' : `обновлено ${new Date(n.updated_at!).toLocaleString('ru-RU')}`)}
     </p>)}
+    </>}
   </section>;
 }

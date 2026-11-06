@@ -61,73 +61,70 @@ const BridgeLinks: React.FC<{ bridge: Bridge; servers: Server[]; onChanged: () =
 
   return (
     <div className="space-y-2 min-w-0">
-      <div className="border border-line rounded-xl overflow-x-auto">
-        <table className="w-full min-w-[560px] text-xs text-left">
-          <thead className="bg-paper text-muted">
-            <tr>
-              <th className="p-2.5 font-medium">Нода</th>
-              <th className="p-2.5 font-medium">Порт моста</th>
-              <th className="p-2.5 font-medium">Режим</th>
-              <th className="p-2.5 font-medium">Сейчас</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-line bg-paper">
-            {linkable.map((s) => {
-              const link = bridge.links.find((l) => l.server_id === s.id);
-              const mode = modes[s.id];
-              return (
-                <tr key={s.id} className={mode ? '' : 'opacity-60'}>
-                  <td className="p-2.5">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(mode)}
-                        onChange={(e) => {
-                          const next = { ...modes };
-                          if (e.target.checked) next[s.id] = 'main';
-                          else delete next[s.id];
-                          setModes(next);
-                          setDirty(true);
-                        }}
-                      />
-                      <span className="text-ink font-medium">{s.name}</span>
-                    </label>
-                    <div className="text-xs font-mono text-faint pl-6">{s.host}:{s.awg_port}</div>
-                  </td>
-                  <td className="p-2.5 font-mono text-muted">{link ? link.listen_port : mode ? 'будет выбран' : '—'}</td>
-                  <td className="p-2.5">
-                    {mode && (
-                      <select
-                        value={mode}
-                        onChange={(e) => {
-                          setModes({ ...modes, [s.id]: e.target.value as BridgeLinkMode });
-                          setDirty(true);
-                        }}
-                        className={selectClass}
-                      >
-                        {MODES.map((m) => (
-                          <option key={m.value} value={m.value}>
-                            {m.label}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                  </td>
-                  <td className="p-2.5">
-                    {link && <LinkState bridge={bridge} link={link} />}
-                  </td>
-                </tr>
-              );
-            })}
-            {linkable.length === 0 && (
-              <tr>
-                <td colSpan={4} className="p-3 text-faint">
-                  Нод пока нет.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+      {/* Строки привязок: на широком экране — колонки таблицы, на телефоне — карточки без горизонтальной прокрутки */}
+      <div className="border border-line rounded-xl bg-paper divide-y divide-line text-xs" role="list" aria-label={`Ноды моста ${bridge.name}`}>
+        <div className="hidden md:grid grid-cols-[minmax(0,1.4fr)_7rem_minmax(0,1.3fr)_minmax(0,1.2fr)] gap-3 px-3 py-2.5 text-muted font-medium" aria-hidden="true">
+          <span>Нода</span>
+          <span>Порт моста</span>
+          <span>Режим</span>
+          <span>Сейчас</span>
+        </div>
+        {linkable.map((s) => {
+          const link = bridge.links.find((l) => l.server_id === s.id);
+          const mode = modes[s.id];
+          return (
+            <div
+              key={s.id}
+              role="listitem"
+              className={`grid grid-cols-1 md:grid-cols-[minmax(0,1.4fr)_7rem_minmax(0,1.3fr)_minmax(0,1.2fr)] gap-2 md:gap-3 px-3 py-3 md:items-center ${mode ? '' : 'opacity-60'}`}
+            >
+              <div className="min-w-0">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="w-4 h-4"
+                    checked={Boolean(mode)}
+                    onChange={(e) => {
+                      const next = { ...modes };
+                      if (e.target.checked) next[s.id] = 'main';
+                      else delete next[s.id];
+                      setModes(next);
+                      setDirty(true);
+                    }}
+                  />
+                  <span className="text-ink font-medium truncate">{s.name}</span>
+                </label>
+                <div className="text-xs font-mono text-faint pl-6 truncate">
+                  {s.host}:{s.awg_port}
+                  {/* На телефоне порт моста — в той же строке, отдельной колонки нет */}
+                  {link && <span className="md:hidden"> → мост :{link.listen_port}</span>}
+                </div>
+              </div>
+              <div className="hidden md:block font-mono text-muted">{link ? link.listen_port : mode ? 'будет выбран' : '—'}</div>
+              <div className={mode ? 'pl-6 md:pl-0' : 'hidden md:block'}>
+                {mode && (
+                  <select
+                    aria-label={`Режим моста для ${s.name}`}
+                    value={mode}
+                    onChange={(e) => {
+                      setModes({ ...modes, [s.id]: e.target.value as BridgeLinkMode });
+                      setDirty(true);
+                    }}
+                    className={`${selectClass} w-full md:w-auto`}
+                  >
+                    {MODES.map((m) => (
+                      <option key={m.value} value={m.value}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+              <div className={link ? 'pl-6 md:pl-0' : 'hidden md:block'}>{link && <LinkState bridge={bridge} link={link} />}</div>
+            </div>
+          );
+        })}
+        {linkable.length === 0 && <p className="p-3 text-faint">Нод пока нет.</p>}
       </div>
       {error && <p className="text-xs text-bad">{error}</p>}
       {dirty && (
@@ -281,8 +278,6 @@ export const BridgesView: React.FC<{ servers: Server[]; onSubscriptionUrlChange?
         </button>
       </div>
 
-      <FailoverCard refreshKey={failoverKey} onChanged={(url) => onSubscriptionUrlChange?.(url)} />
-
       {notice && (
         <div className={`p-3 rounded-xl border border-line text-xs ${notice.type === 'success' ? 'bg-ok-soft text-ok' : 'bg-bad-soft text-bad'}`}>
           {notice.text}
@@ -359,6 +354,9 @@ export const BridgesView: React.FC<{ servers: Server[]; onSubscriptionUrlChange?
           })}
         </div>
       )}
+
+      {/* Резервный домен — после самих мостов: им пользуются, когда мосты уже есть */}
+      <FailoverCard refreshKey={failoverKey} onChanged={(url) => onSubscriptionUrlChange?.(url)} />
 
       <p className="text-xs text-faint max-w-4xl">
         «Основной» (по умолчанию): пользователь страны моста получает ноду через мост первой записью и прямую — запасной, переключиться
