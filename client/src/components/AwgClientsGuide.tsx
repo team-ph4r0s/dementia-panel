@@ -42,6 +42,12 @@ export const AwgClientsGuide: React.FC<{ compact?: boolean }> = ({ compact = fal
         ))}
       </div>
 
+      <div className="rounded-xl bg-paper border border-line p-3 text-xs space-y-1">
+        <h3 className="font-semibold text-ink">Приложения для VLESS Reality</h3>
+        <p className="text-muted">Android — v2rayNG или Hiddify. iOS — Streisand или Happ. Windows — v2rayN.</p>
+        <p className="text-muted">Добавьте подписку или импортируйте ссылку vless:// либо QR-код клиента.</p>
+      </div>
+
       {groups.map(({ mode, title, hint, icon: Icon }) => {
         const list = clients.filter((c) => c.mode === mode);
         return (

@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
 import { X, UserPlus, Smartphone } from 'lucide-react';
 import { api } from '../api';
-import type { Client } from '../types';
+import type { Client, NodeProtocol } from '../types';
 import { ModalShell } from './ui/Modal';
 
 interface AddClientModalProps {
   isOpen: boolean;
   serverId: number | null;
   serverName: string;
+  protocol?: NodeProtocol;
   onClose: () => void;
   onClientAdded: (client: Client) => void;
 }
@@ -16,6 +17,7 @@ export const AddClientModal: React.FC<AddClientModalProps> = ({
   isOpen,
   serverId,
   serverName,
+  protocol = 'awg',
   onClose,
   onClientAdded,
 }) => {
@@ -52,7 +54,7 @@ export const AddClientModal: React.FC<AddClientModalProps> = ({
           <div className="flex items-center gap-2">
             <UserPlus className="w-5 h-5 text-ok" />
             <div>
-              <h2 className="text-base font-semibold text-ink">Новый клиент AmneziaWG</h2>
+              <h2 className="text-base font-semibold text-ink">Новый клиент {protocol === 'vless' ? 'VLESS' : 'AmneziaWG'}</h2>
               <p className="text-xs text-muted">{serverName}</p>
             </div>
           </div>

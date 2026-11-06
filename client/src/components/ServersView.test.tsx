@@ -1,11 +1,17 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import type { Bridge, Server, Subscriber } from '../types';
 import { FeedbackProvider } from './ui/Feedback';
 import { ServersView } from './ServersView';
+import { AddServerModal } from './AddServerModal';
+import { VlessParamsModal } from './VlessParamsModal';
+import { api } from '../api';
 
 vi.mock('../api', () => ({
   api: {
+    createServer: vi.fn(),
+    updateServer: vi.fn(),
+    randomizeParams: vi.fn(),
     getNodeUpdates: vi.fn().mockResolvedValue({ settings: { auto_update: false, hour_utc: 3 }, running: false, active_server: null, nodes: [] }),
     getProbes: vi.fn().mockResolvedValue({
       settings: { enabled: false, countries: [], interval_minutes: 30, show_in_name: false, show_in_description: false },
@@ -29,6 +35,7 @@ const subscribers = [{ id: 1, name: 'Маша', country: 'ru', server_ids: [1], 
 
 function setup(servers = [server(1), server(2, { status: 'offline', last_error: 'timeout' })]) {
   const onSelectServer = vi.fn();
+  const onEditParams = vi.fn();
   render(
     <FeedbackProvider>
       <ServersView
@@ -39,7 +46,7 @@ function setup(servers = [server(1), server(2, { status: 'offline', last_error: 
         selectedServerId={servers[0]?.id ?? null}
         onSelectServer={onSelectServer}
         onInstallServer={vi.fn()}
-        onEditParams={vi.fn()}
+        onEditParams={onEditParams}
         onServerDeleted={vi.fn()}
         onEditServer={vi.fn()}
         onServerChanged={vi.fn()}
@@ -51,7 +58,7 @@ function setup(servers = [server(1), server(2, { status: 'offline', last_error: 
       />
     </FeedbackProvider>
   );
-  return { onSelectServer };
+  return { onSelectServer, onEditParams };
 }
 
 const click = (el: Element) => {
@@ -116,5 +123,80 @@ describe('ServersView', () => {
     fireEvent.click(screen.getByLabelText('страны'));
     expect(screen.queryByRole('button', { name: /Страна RU/ })).toBeNull();
     expect(screen.getByRole('button', { name: /Нода node-1/ })).toBeInTheDocument();
+  });
+});
+
+describe('VLESS Reality', () => {
+  const node = server(1, {
+    protocol: 'vless', awg_port: 443, status: 'uninstalled', awg_version: 1, latest_awg_version: 3,
+    reality_sni: 'www.microsoft.com', reality_dest: 'www.microsoft.com:443', reality_short_ids: ['abcd'],
+    xray_flow: 'xtls-rprx-vision', xray_fingerprint: 'chrome',
+  });
+
+  it.each([
+    { protocol: 'awg', port: 51820, label: 'Порт протокола (UDP)' },
+    { protocol: 'vless', port: 443, label: 'Порт (TCP)' },
+  ])('передаёт протокол $protocol при создании ноды', async ({ protocol, port, label }) => {
+    vi.mocked(api.createServer).mockClear().mockResolvedValueOnce(node);
+    const onServerAdded = vi.fn();
+    render(
+      <FeedbackProvider>
+        <AddServerModal isOpen onClose={vi.fn()} onServerAdded={onServerAdded} />
+      </FeedbackProvider>,
+    );
+    fireEvent.change(screen.getByLabelText('Протокол'), { target: { value: protocol } });
+    expect(screen.getByLabelText(label)).toHaveValue(port);
+    if (protocol === 'vless') {
+      expect(screen.queryByText('Подсеть клиентов')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Из AmneziaVPN/ })).not.toBeInTheDocument();
+    }
+    fireEvent.change(screen.getByPlaceholderText('например: Frankfurt-01'), { target: { value: 'node' } });
+    fireEvent.change(screen.getByPlaceholderText('194.87.12.34'), { target: { value: '203.0.113.10' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить сервер' }));
+    expect(api.createServer).toHaveBeenCalledWith(expect.objectContaining({ protocol, awg_port: port }));
+    expect(vi.mocked(api.createServer).mock.lastCall?.[0].subnet).toBe(protocol === 'awg' ? '10.8.0.1/24' : undefined);
+    await waitFor(() => expect(onServerAdded).toHaveBeenCalledWith(node));
+  });
+
+  it('показывает Reality и TCP в инспекторе ноды, скрывает действия AmneziaWG', () => {
+    window.localStorage.clear();
+    const { onEditParams } = setup([node]);
+    click(screen.getByRole('button', { name: /Нода node-1/ }));
+    const inspector = within(screen.getByTestId('inspector'));
+    expect(inspector.getByText('VLESS', { exact: true })).toBeInTheDocument();
+    expect(inspector.getByText('443/tcp')).toBeInTheDocument();
+    expect(inspector.getByText('www.microsoft.com')).toBeInTheDocument();
+    expect(inspector.getByRole('button', { name: 'Установить VLESS Reality' })).toBeInTheDocument();
+    for (const name of [/Перейти на/, /Сканировать/, /Параметры AWG/]) {
+      expect(inspector.queryByRole('button', { name })).not.toBeInTheDocument();
+    }
+    fireEvent.click(inspector.getByRole('button', { name: 'Параметры Reality' }));
+    expect(onEditParams).toHaveBeenCalledWith(node);
+  });
+
+  it('подставляет сгенерированные параметры и сохраняет shortId массивом', async () => {
+    vi.mocked(api.randomizeParams).mockResolvedValueOnce({ ...node, reality_short_ids: ['1234'] });
+    vi.mocked(api.updateServer).mockResolvedValueOnce(node);
+    const onClose = vi.fn();
+    render(
+      <FeedbackProvider>
+        <VlessParamsModal server={node} onClose={onClose} onUpdated={vi.fn()} />
+      </FeedbackProvider>,
+    );
+    const shortIds = screen.getByLabelText(/shortId/);
+    expect(shortIds).toHaveValue('abcd');
+    fireEvent.click(screen.getByRole('button', { name: 'Сгенерировать новые' }));
+    expect(api.randomizeParams).toHaveBeenCalledWith(node.id);
+    await waitFor(() => expect(shortIds).toHaveValue('1234'));
+    fireEvent.change(shortIds, { target: { value: ' 1234, ABCD ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+    expect(api.updateServer).toHaveBeenCalledWith(node.id, {
+      reality_sni: 'www.microsoft.com',
+      reality_dest: 'www.microsoft.com:443',
+      reality_short_ids: ['1234', 'abcd'],
+      xray_flow: 'xtls-rprx-vision',
+      xray_fingerprint: 'chrome',
+    });
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 });

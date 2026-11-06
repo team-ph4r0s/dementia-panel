@@ -78,7 +78,7 @@ export const SubscriptionModal: React.FC<SubscriptionModalProps> = ({
           <div className="flex items-center gap-2.5">
             <Link2 className="w-5 h-5 text-ok" />
             <div>
-              <h2 className="text-base font-semibold text-ink">Подписка AmneziaWG</h2>
+              <h2 className="text-base font-semibold text-ink">Подписка</h2>
               <p className="text-xs text-muted">Пользователь: {subscriber.name}</p>
             </div>
           </div>

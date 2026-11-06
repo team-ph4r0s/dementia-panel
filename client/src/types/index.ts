@@ -166,7 +166,9 @@ export interface PanelUpdateStatus {
   log: string;
 }
 
-export interface ServerUpdate {
+export interface ServerUpdate extends Pick<Server,
+  'reality_sni' | 'reality_dest' | 'reality_short_ids' | 'xray_flow' | 'xray_fingerprint'
+> {
   name?: string;
   host?: string;
   ssh_port?: number;

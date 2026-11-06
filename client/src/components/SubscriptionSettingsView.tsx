@@ -349,7 +349,7 @@ export const SubscriptionSettingsView: React.FC<{ subscribers: Subscriber[]; pub
         <div>
           <h3 className="text-sm font-semibold text-ink flex items-center gap-2">
             <Smartphone className="w-4 h-4 text-info" />
-            <span>Приложения для подписки AmneziaWG</span>
+            <span>Приложения для подписок</span>
           </h3>
           <p className="text-xs text-muted mt-1">
             Что установить пользователю на каждом устройстве: приложения, которые принимают ссылку подписки (серверы обновляются

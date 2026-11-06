@@ -24,6 +24,8 @@ export const QrCodeModal: React.FC<QrCodeModalProps> = ({
 
   if (!isOpen || !qrData || !clientId) return null;
 
+  const vless = qrData.config.startsWith('vless://');
+
   const handleCopy = async () => {
     if (await copyToClipboard(qrData.config)) {
       setCopied(true);
@@ -34,7 +36,7 @@ export const QrCodeModal: React.FC<QrCodeModalProps> = ({
   };
 
   const handleDownload = () => {
-    api.downloadClientConfig(clientId, qrData.clientName).catch((err) => toast(err.message, 'error'));
+    api.downloadClientConfig(clientId, qrData.clientName, vless ? 'vless' : 'awg').catch((err) => toast(err.message, 'error'));
   };
 
   return (
@@ -64,18 +66,20 @@ export const QrCodeModal: React.FC<QrCodeModalProps> = ({
           <div className="p-3 bg-white rounded-2xl shadow-pop">
             <img
               src={qrData.qrcode}
-              alt="AmneziaWG QR Code"
+              alt={vless ? 'QR-код VLESS' : 'QR-код AmneziaWG'}
               className="w-64 h-64 object-contain rounded-lg"
             />
           </div>
           <p className="text-xs text-muted text-center">
-            Отсканируйте камерой смартфона в приложении <span className="text-ok font-medium">AmneziaWG</span> (для Amnezia VPN импортируйте .conf файл)
+            {vless ? 'Отсканируйте QR-код в приложении с поддержкой VLESS Reality.' : (
+              <>Отсканируйте камерой смартфона в приложении <span className="text-ok font-medium">AmneziaWG</span> (для Amnezia VPN импортируйте .conf файл)</>
+            )}
           </p>
 
           {/* Config Preview */}
           <div className="w-full">
             <div className="flex items-center justify-between mb-1.5 text-xs text-muted">
-              <span>Содержимое .conf</span>
+              <span>{vless ? 'Ссылка VLESS' : 'Содержимое .conf'}</span>
               <button
                 onClick={handleCopy}
                 className="flex items-center gap-1 text-ok hover:text-ok transition"
@@ -97,7 +101,7 @@ export const QrCodeModal: React.FC<QrCodeModalProps> = ({
               className="flex-1 flex items-center justify-center gap-2 bg-brand hover:bg-brand text-on-accent font-bold text-sm py-2.5 rounded-lg transition btn-press hover:text-on-accent"
             >
               <Download className="w-4 h-4" />
-              <span>Скачать .conf файл</span>
+              <span>{vless ? 'Скачать ссылку (.txt)' : 'Скачать .conf файл'}</span>
             </button>
           </div>
         </div>

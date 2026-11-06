@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import type { Server } from '../types';
 import { api } from '../api';
+import { ProtocolBadge } from './ProtocolBadge';
 import { ProbeBadges } from './ProbeBadges';
 import { useFeedback } from './ui/feedback-context';
 
@@ -58,6 +59,8 @@ export const NodeDetails: React.FC<NodeDetailsProps> = ({
   onEditServer,
   onServerChanged,
 }) => {
+  const vless = server.protocol === 'vless';
+  const protocolName = vless ? 'VLESS Reality' : 'AmneziaWG';
   const { toast, confirm, alert: showAlert } = useFeedback();
   const [busy, setBusy] = useState<'ssh' | 'sync' | 'scan' | 'apply' | 'upgrade' | null>(null);
 
@@ -108,14 +111,14 @@ export const NodeDetails: React.FC<NodeDetailsProps> = ({
   const handleSync = () =>
     run('sync', async () => {
       const res = await api.syncServer(server.id);
-      if (res.success) toast('Пиры успешно синхронизированы на сервере', 'success');
+      if (res.success) toast(vless ? 'Клиенты успешно синхронизированы на сервере' : 'Пиры успешно синхронизированы на сервере', 'success');
       else toast(`Ошибка синхронизации: ${res.error}`, 'error');
     });
 
   const handleApply = () =>
     run('apply', async () => {
       const res = await api.applyServer(server.id);
-      if (res.success) toast('Параметры применены, AmneziaWG перезапущен', 'success');
+      if (res.success) toast(vless ? 'Параметры Reality применены' : 'Параметры применены, AmneziaWG перезапущен', 'success');
       else toast(`Ошибка применения: ${res.error}`, 'error');
     });
 
@@ -124,9 +127,9 @@ export const NodeDetails: React.FC<NodeDetailsProps> = ({
     const teardown =
       server.status !== 'uninstalled' &&
       (await confirm({
-        title: 'Остановить AmneziaWG на сервере?',
+        title: `Остановить ${protocolName} на сервере?`,
         message:
-          'Остановить и удалить AmneziaWG на самом сервере?\n\n' +
+          `Остановить и удалить ${protocolName} на самом сервере?\n\n` +
           '«Остановить» — VPN на сервере будет отключён.\n' +
           '«Только из панели» — удалить только из панели (VPN на сервере продолжит работать для всех выданных конфигов).',
         danger: true,
@@ -162,9 +165,10 @@ export const NodeDetails: React.FC<NodeDetailsProps> = ({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <h2 className="text-lg font-bold text-ink tracking-tight break-all">{server.name}</h2>
+            <ProtocolBadge protocol={server.protocol} />
             <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold ${STATUS_CLASS[server.status]}`}>
               <span className="w-1.5 h-1.5 rounded-full bg-current" />
-              {STATUS_LABELS[server.status]}
+              {vless && server.status === 'online' ? 'VLESS активен' : STATUS_LABELS[server.status]}
             </span>
           </div>
           <div className="text-xs text-muted mt-0.5 font-mono break-all">{server.host}</div>
@@ -174,9 +178,11 @@ export const NodeDetails: React.FC<NodeDetailsProps> = ({
       <dl className="grid grid-cols-2 gap-2 text-xs">
         {[
           ['SSH', String(server.ssh_port)],
-          ['AWG', `${server.awg_port}/udp`],
-          ['Подсеть', server.subnet],
-          ['Версия', `${server.awg_version >= 3 ? '3' : '1'}.x`],
+          vless ? ['Порт', `${server.awg_port}/tcp`] : ['AWG', `${server.awg_port}/udp`],
+          ...(!vless ? [
+            ['Подсеть', server.subnet],
+            ['Версия', `${server.awg_version >= 3 ? '3' : '1'}.x`],
+          ] : []),
         ].map(([label, value]) => (
           <div key={label} className="bg-paper border border-line rounded-lg px-3 py-2">
             <dt className="text-faint">{label}</dt>
@@ -200,17 +206,17 @@ export const NodeDetails: React.FC<NodeDetailsProps> = ({
           <>
             <button onClick={() => onInstallServer(server)} className="flex items-center gap-2 bg-brand text-on-accent font-bold text-xs px-3.5 py-2 rounded-lg transition btn-press">
               <Play className="w-3.5 h-3.5 fill-current" />
-              <span>{server.status === 'uninstalled' ? 'Установить AmneziaWG' : 'Переустановить'}</span>
+              <span>{server.status === 'uninstalled' ? `Установить ${protocolName}` : 'Переустановить'}</span>
             </button>
-            <button onClick={() => onEditParams(server)} className={actionButton} title="Настроить заголовки и мусорные пакеты">
+            <button onClick={() => onEditParams(server)} className={actionButton} title={vless ? 'Настроить маскировку Reality' : 'Настроить заголовки и мусорные пакеты'}>
               <Settings2 className="w-3.5 h-3.5 text-brand" />
-              <span>Параметры AWG</span>
+              <span>{vless ? 'Параметры Reality' : 'Параметры AWG'}</span>
             </button>
             <button onClick={handleTestSsh} disabled={busy === 'ssh'} className={actionButton} title="Проверить SSH-соединение">
               <KeyRound className="w-3.5 h-3.5 text-info" />
               <span>{busy === 'ssh' ? 'Тест...' : 'Тест SSH'}</span>
             </button>
-            {(server.status === 'uninstalled' || server.status === 'error') && (
+            {!vless && (server.status === 'uninstalled' || server.status === 'error') && (
               <button onClick={handleScan} disabled={busy === 'scan'} className={actionButton} title="Найти уже установленный AmneziaWG и подключить без переустановки">
                 <ScanSearch className="w-3.5 h-3.5 text-info" />
                 <span>{busy === 'scan' ? 'Сканирование...' : 'Сканировать'}</span>
@@ -265,7 +271,7 @@ export const NodeDetails: React.FC<NodeDetailsProps> = ({
         </div>
       )}
 
-      {!partner && server.awg_version < server.latest_awg_version && (
+      {!vless && !partner && server.awg_version < server.latest_awg_version && (
         <div className="bg-info-soft border border-line rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 text-xs">
           <span className="text-info">
             Используются параметры обфускации устаревшего AmneziaWG 1.x. Актуальная версия — {server.latest_awg_version}.x (S3/S4, диапазоны заголовков, защита заголовков).
@@ -277,14 +283,14 @@ export const NodeDetails: React.FC<NodeDetailsProps> = ({
         </div>
       )}
 
-      {server.managed_by === 'amnezia' && (
+      {!vless && server.managed_by === 'amnezia' && (
         <div className="bg-paper border border-line rounded-xl p-3 text-xs text-muted">
           Подключён контейнер приложения Amnezia (<span className="font-mono">{server.container_name}</span>). Управляйте клиентами только из панели:
           изменения в приложении Amnezia будут перезаписаны при синхронизации. Смена порта или «Переустановить» заменит его контейнером панели с теми же ключами и клиентами.
         </div>
       )}
 
-      {!partner && server.status !== 'uninstalled' && (
+      {!vless && !partner && server.status !== 'uninstalled' && (
         <div className="bg-paper border border-line rounded-xl p-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted">
           <span className="font-medium text-ink">ПО ноды:</span>
           {server.node_info_at ? (
@@ -308,36 +314,49 @@ export const NodeDetails: React.FC<NodeDetailsProps> = ({
         </div>
       )}
 
-      {!partner && server.node_update?.available === 1 && (
+      {!vless && !partner && server.node_update?.available === 1 && (
         <p className="text-xs text-warn">Доступно обновление AmneziaWG — запустите его в разделе «Обновления AmneziaWG».</p>
       )}
 
-      <div className="bg-paper border border-line rounded-xl p-3 space-y-2 text-xs">
-        <div className="flex items-center gap-2 text-muted">
-          <Shield className="w-4 h-4 text-brand" />
-          <span className="font-medium text-ink">Параметры AmneziaWG</span>
-        </div>
-        <div className="flex flex-wrap items-center gap-2 font-mono">
-          <span className="px-2 py-0.5 rounded bg-card border border-line text-ink">
-            Jc: <strong className="text-brand">{server.jc}</strong>
-          </span>
-          <span className="px-2 py-0.5 rounded bg-card border border-line text-ink">
-            Junk: <strong className="text-brand">{server.jmin}-{server.jmax}B</strong>
-          </span>
-          <span className="px-2 py-0.5 rounded bg-card border border-line text-ink">
-            S1–S{server.s3 !== null ? 4 : 2}:{' '}
-            <strong className="text-info">{[server.s1, server.s2, server.s3, server.s4].filter((v) => v !== null).join('/')}B</strong>
-          </span>
-          <span className="px-2 py-0.5 rounded bg-card border border-line text-ink">
-            H1-H4: <strong className="text-accent">{server.h1.includes('-') ? 'диапазоны' : 'значения'}</strong>
-          </span>
-          {server.header_protection_key && (
+      {vless ? (
+        <dl className="grid grid-cols-2 gap-2 text-xs">
+          <div className="bg-paper border border-line rounded-lg px-3 py-2">
+            <dt className="text-faint">SNI</dt>
+            <dd className="font-mono text-ink break-all">{server.reality_sni || '—'}</dd>
+          </div>
+          <div className="bg-paper border border-line rounded-lg px-3 py-2">
+            <dt className="text-faint">Адрес маскировки</dt>
+            <dd className="font-mono text-ink break-all">{server.reality_dest || '—'}</dd>
+          </div>
+        </dl>
+      ) : (
+        <div className="bg-paper border border-line rounded-xl p-3 space-y-2 text-xs">
+          <div className="flex items-center gap-2 text-muted">
+            <Shield className="w-4 h-4 text-brand" />
+            <span className="font-medium text-ink">Параметры AmneziaWG</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 font-mono">
             <span className="px-2 py-0.5 rounded bg-card border border-line text-ink">
-              <strong className="text-warn">Защита заголовков</strong>
+              Jc: <strong className="text-brand">{server.jc}</strong>
             </span>
-          )}
+            <span className="px-2 py-0.5 rounded bg-card border border-line text-ink">
+              Junk: <strong className="text-brand">{server.jmin}-{server.jmax}B</strong>
+            </span>
+            <span className="px-2 py-0.5 rounded bg-card border border-line text-ink">
+              S1–S{server.s3 !== null ? 4 : 2}:{' '}
+              <strong className="text-info">{[server.s1, server.s2, server.s3, server.s4].filter((v) => v !== null).join('/')}B</strong>
+            </span>
+            <span className="px-2 py-0.5 rounded bg-card border border-line text-ink">
+              H1-H4: <strong className="text-accent">{server.h1.includes('-') ? 'диапазоны' : 'значения'}</strong>
+            </span>
+            {server.header_protection_key && (
+              <span className="px-2 py-0.5 rounded bg-card border border-line text-ink">
+                <strong className="text-warn">Защита заголовков</strong>
+              </span>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { X, Server, Key, Lock, Shield } from 'lucide-react';
 import { api } from '../api';
 import { AmneziaImportPanel } from './AmneziaImportPanel';
-import type { Server as ServerType, ServerUpdate } from '../types';
+import type { NodeProtocol, Server as ServerType, ServerUpdate } from '../types';
 import { useFeedback } from './ui/feedback-context';
 import { ModalShell } from './ui/Modal';
 
@@ -27,6 +27,7 @@ export const AddServerModal: React.FC<AddServerModalProps> = ({
 }) => {
   const { confirm } = useFeedback();
   const [mode, setMode] = useState<'manual' | 'amnezia'>('manual');
+  const [protocol, setProtocol] = useState<NodeProtocol>('awg');
   const [name, setName] = useState('');
   const [host, setHost] = useState('');
   const [sshPort, setSshPort] = useState('22');
@@ -40,6 +41,7 @@ export const AddServerModal: React.FC<AddServerModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [resetHostKey, setResetHostKey] = useState(false);
 
+  const vless = protocol === 'vless';
   const editing = Boolean(editingServer);
   const hasClients = (editingServer?.client_count || 0) > 0;
 
@@ -51,6 +53,7 @@ export const AddServerModal: React.FC<AddServerModalProps> = ({
   if (filledFor !== openKey) {
     setFilledFor(openKey);
     if (isOpen) {
+      setProtocol(editingServer?.protocol ?? 'awg');
       setName(editingServer?.name ?? '');
       setHost(editingServer?.host ?? '');
       setSshPort(String(editingServer?.ssh_port ?? 22));
@@ -83,7 +86,7 @@ export const AddServerModal: React.FC<AddServerModalProps> = ({
           ssh_port: parseInt(sshPort, 10),
           ssh_user: sshUser,
           awg_port: parseInt(awgPort, 10),
-          subnet,
+          ...(!vless && { subnet }),
         };
         // Пустое поле — оставить текущий секрет; смена способа требует нового значения
         const secret = authType === 'password' ? sshPassword : sshKey;
@@ -94,7 +97,7 @@ export const AddServerModal: React.FC<AddServerModalProps> = ({
         }
         if (resetHostKey) update.reset_host_key = true;
         if (update.awg_port !== editingServer.awg_port && editingServer.status !== 'uninstalled') {
-          if (!(await confirm('Смена порта пересоздаст контейнер AmneziaWG на сервере, а клиентам потребуется обновить конфигурацию. Продолжить?'))) {
+          if (!(await confirm(`Смена порта пересоздаст контейнер ${vless ? 'Xray' : 'AmneziaWG'} на сервере, а клиентам потребуется обновить конфигурацию. Продолжить?`))) {
             setLoading(false);
             return;
           }
@@ -112,8 +115,9 @@ export const AddServerModal: React.FC<AddServerModalProps> = ({
         ssh_user: sshUser,
         ssh_password: authType === 'password' ? sshPassword : undefined,
         ssh_key: authType === 'key' ? sshKey : undefined,
-        awg_port: parseInt(awgPort, 10) || 51820,
-        subnet,
+        protocol,
+        awg_port: parseInt(awgPort, 10) || (vless ? 443 : 51820),
+        ...(!vless && { subnet }),
       });
 
       onServerAdded(server);
@@ -143,8 +147,27 @@ export const AddServerModal: React.FC<AddServerModalProps> = ({
           </button>
         </div>
 
-        {/* Form */}
         {!editing && (
+          <label className="block px-6 pt-4 text-xs font-medium text-muted">
+            Протокол
+            <select
+              value={protocol}
+              onChange={(e) => {
+                const next = e.target.value as NodeProtocol;
+                setProtocol(next);
+                setAwgPort(next === 'vless' ? '443' : '51820');
+                setMode('manual');
+              }}
+              className="mt-1 w-full bg-paper border border-line rounded-lg px-3 py-2 text-sm text-ink"
+            >
+              <option value="awg">AmneziaWG</option>
+              <option value="vless">VLESS Reality</option>
+            </select>
+          </label>
+        )}
+
+        {/* Form */}
+        {!editing && !vless && (
           <div className="px-6 pt-4">
             <div className="grid grid-cols-2 gap-2 p-1 bg-paper border border-line rounded-xl">
               {(['manual', 'amnezia'] as const).map((m) => (
@@ -279,35 +302,42 @@ export const AddServerModal: React.FC<AddServerModalProps> = ({
           <div className="pt-2 border-t border-line">
             <div className="flex items-center gap-1.5 text-xs font-medium text-ok mb-2">
               <Shield className="w-3.5 h-3.5" />
-              <span>Параметры AmneziaWG</span>
+              <span>{vless ? 'Параметры VLESS Reality' : 'Параметры AmneziaWG'}</span>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-medium text-muted mb-1">
-                  Порт протокола (UDP)
+                <label htmlFor="server-vpn-port" className="block text-xs font-medium text-muted mb-1">
+                  {vless ? 'Порт (TCP)' : 'Порт протокола (UDP)'}
                 </label>
                 <input
                   type="number"
+                  id="server-vpn-port"
+                  min={vless ? 1 : undefined}
+                  max={vless ? 65535 : undefined}
+                  required={vless}
                   value={awgPort}
                   onChange={(e) => setAwgPort(e.target.value)}
                   className="w-full bg-paper border border-line rounded-xl px-3.5 py-2 text-ink focus:outline-none focus:border-brand transition text-sm"
                 />
               </div>
-              <div>
-                <label className="block text-xs font-medium text-muted mb-1">
-                  Подсеть клиентов
-                </label>
-                <input
-                  type="text"
-                  value={subnet}
-                  disabled={editing && hasClients}
-                  title={editing && hasClients ? 'Подсеть нельзя менять, пока на сервере есть клиенты' : undefined}
-                  onChange={(e) => setSubnet(e.target.value)}
-                  className="w-full bg-paper border border-line rounded-xl px-3.5 py-2 text-ink focus:outline-none focus:border-brand transition text-sm"
-                />
-              </div>
+              {!vless && (
+                <div>
+                  <label className="block text-xs font-medium text-muted mb-1">
+                    Подсеть клиентов
+                  </label>
+                  <input
+                    type="text"
+                    value={subnet}
+                    disabled={editing && hasClients}
+                    title={editing && hasClients ? 'Подсеть нельзя менять, пока на сервере есть клиенты' : undefined}
+                    onChange={(e) => setSubnet(e.target.value)}
+                    className="w-full bg-paper border border-line rounded-xl px-3.5 py-2 text-ink focus:outline-none focus:border-brand transition text-sm"
+                  />
+                </div>
+              )}
             </div>
-            {!editing && (
+            {vless && <p className="text-xs text-muted mt-2">TCP-порт должен быть свободен на сервере.</p>}
+            {!vless && !editing && (
               <p className="text-xs text-faint mt-2">
                 * Заголовки обфускации (H1-H4, Jc, S1, S2) будут сгенерированы автоматически случайным образом.
               </p>

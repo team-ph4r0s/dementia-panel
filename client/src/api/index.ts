@@ -1,6 +1,7 @@
 import type {
   Server,
   ServerUpdate,
+  NodeProtocol,
   Client,
   QrCodeData,
   Subscriber,
@@ -300,16 +301,16 @@ export const api = {
   },
 
   /**
-   * Скачивание .conf с заголовком Authorization (без токена в URL)
+   * Скачивание конфигурации с заголовком Authorization (без токена в URL)
    */
-  async downloadClientConfig(id: number, name: string): Promise<void> {
+  async downloadClientConfig(id: number, name: string, protocol: NodeProtocol = 'awg'): Promise<void> {
     const res = await fetchWithAuth(`${API_BASE}/clients/${id}/config`);
     if (!res.ok) throw new Error(await errorMessage(res, 'Ошибка скачивания конфигурации'));
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${name.replace(/[\\/:*?"<>|]/g, '_')}.conf`;
+    link.download = `${name.replace(/[\\/:*?"<>|]/g, '_')}.${protocol === 'vless' ? 'txt' : 'conf'}`;
     document.body.appendChild(link);
     link.click();
     link.remove();

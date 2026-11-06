@@ -3,6 +3,7 @@ import { Globe2, Map as MapIcon, List } from 'lucide-react';
 import type { Bridge, Client, Server, Subscriber } from '../types';
 import { nodeKey, type Selection } from '../topology/model';
 import { TopologyMap } from './TopologyMap';
+import { ProtocolBadge } from './ProtocolBadge';
 import { NodeDetails } from './NodeDetails';
 import { NetworkOverview } from './NetworkOverview';
 import { BridgeInspector, CountryInspector } from './TopologyInspectors';
@@ -155,6 +156,7 @@ export const ServersView: React.FC<ServersViewProps> = (props) => {
                   }`}
                 />
                 <span className="font-semibold">{s.name}</span>
+                <ProtocolBadge protocol={s.protocol} />
                 <span className="text-xs font-mono text-faint">{s.host}</span>
                 <ProbeBadges probes={s.probes} />
               </button>
@@ -180,6 +182,7 @@ export const ServersView: React.FC<ServersViewProps> = (props) => {
             <ClientList
               clients={clients}
               serverName={listServer.name}
+              protocol={listServer.protocol}
               serverOnline={listServer.status === 'online'}
               onAddClient={props.onAddClient}
               onShowQr={props.onShowQr}
@@ -236,6 +239,7 @@ export const ServersView: React.FC<ServersViewProps> = (props) => {
               <ClientList
                 clients={clients}
                 serverName={selectedServer.name}
+                protocol={selectedServer.protocol}
                 serverOnline={selectedServer.status === 'online'}
                 layout="cards"
                 onAddClient={props.onAddClient}

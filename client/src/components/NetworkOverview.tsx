@@ -32,7 +32,7 @@ function collectAttention(servers: Server[], bridges: Bridge[]): Attention[] {
     if (s.status !== 'uninstalled' && (s.needs_apply || s.needs_sync)) {
       items.push({ key: `sync-${s.id}`, level: 'warn', text: `${s.name}: изменения ещё не доставлены на ноду`, target });
     }
-    if (s.remote_panel_id === null && s.status !== 'uninstalled' && s.awg_version < s.latest_awg_version) {
+    if (s.remote_panel_id === null && s.status !== 'uninstalled' && s.protocol !== 'vless' && s.awg_version < s.latest_awg_version) {
       items.push({ key: `old-${s.id}`, level: 'info', text: `${s.name}: доступен AmneziaWG ${s.latest_awg_version}.x`, target });
     }
     for (const p of s.probes ?? []) {

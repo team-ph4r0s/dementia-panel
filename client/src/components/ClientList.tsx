@@ -13,7 +13,7 @@ import {
   Clock,
   Laptop,
 } from 'lucide-react';
-import type { Client } from '../types';
+import type { Client, NodeProtocol } from '../types';
 import { api } from '../api';
 import { formatBytes } from '../utils';
 import { useFeedback } from './ui/feedback-context';
@@ -23,6 +23,7 @@ interface ClientListProps {
   clients: Client[];
   serverName: string;
   serverOnline?: boolean;
+  protocol?: NodeProtocol;
   /** table — таблица на всю ширину, cards — узкие карточки (панель справа от карты) */
   layout?: 'table' | 'cards';
   onAddClient: () => void;
@@ -50,12 +51,14 @@ const STATUS_BADGE = {
 export const ClientList: React.FC<ClientListProps> = ({
   clients,
   serverName,
+  protocol = 'awg',
   layout = 'table',
   onAddClient,
   onShowQr,
   onClientUpdated,
   onClientDeleted,
 }) => {
+  const vless = protocol === 'vless';
   const { toast, confirm } = useFeedback();
   const [search, setSearch] = useState('');
   const [now, setNow] = useState(() => Date.now());
@@ -99,7 +102,7 @@ export const ClientList: React.FC<ClientListProps> = ({
 
   const handleDownload = async (client: Client) => {
     try {
-      await api.downloadClientConfig(client.id, client.name);
+      await api.downloadClientConfig(client.id, client.name, protocol);
     } catch (err: any) {
       toast(err.message, 'error');
     }
@@ -252,7 +255,7 @@ export const ClientList: React.FC<ClientListProps> = ({
         <button
           onClick={() => handleDownload(client)}
           disabled={keyless}
-          title={keyless ? keylessTitle : 'Скачать .conf'}
+          title={keyless ? keylessTitle : vless ? 'Скачать ссылку VLESS (.txt)' : 'Скачать .conf'}
           aria-label={`Скачать конфигурацию клиента ${client.name}`}
           className="p-1.5 text-muted hover:text-info hover:bg-soft rounded-lg transition border border-line disabled:opacity-40"
         >
@@ -335,17 +338,17 @@ export const ClientList: React.FC<ClientListProps> = ({
       <div className={`flex flex-col justify-between gap-3 ${layout === 'cards' ? '' : 'sm:flex-row sm:items-center'}`}>
         <div>
           <h3 className="text-base font-semibold text-ink flex items-center gap-2">
-            <span>Клиенты AmneziaWG</span>
+            <span>{vless ? 'Клиенты VLESS' : 'Клиенты AmneziaWG'}</span>
             <span className="text-xs font-mono text-muted bg-soft px-2 py-0.5 rounded-full border border-line">{clients.length}</span>
           </h3>
-          <p className="text-xs text-muted mt-0.5">Пиры и устройства сервера {serverName}</p>
+          <p className="text-xs text-muted mt-0.5">{vless ? 'Устройства сервера' : 'Пиры и устройства сервера'} {serverName}</p>
         </div>
 
         <div className="flex items-center gap-2">
           <div className={`relative ${layout === 'cards' ? 'flex-1' : ''}`} data-guest-ok>
             <input
               type="text"
-              placeholder="Имя или IP..."
+              placeholder={vless ? 'Имя...' : 'Имя или IP...'}
               aria-label="Поиск клиентов"
               value={search}
               onChange={(e) => {
@@ -401,7 +404,7 @@ export const ClientList: React.FC<ClientListProps> = ({
                   <input type="checkbox" checked={allShownSelected} onChange={toggleAllShown} aria-label="Выбрать всех показанных клиентов" />
                 </th>
                 {sortHeader('name')}
-                {sortHeader('ip')}
+                {vless ? <th className="pb-3 font-medium">Протокол</th> : sortHeader('ip')}
                 {sortHeader('status')}
                 {sortHeader('traffic')}
                 {sortHeader('activity')}
@@ -419,7 +422,7 @@ export const ClientList: React.FC<ClientListProps> = ({
                       {badges(client)}
                     </div>
                   </td>
-                  <td className="py-3 font-mono text-ink">{client.client_ip}</td>
+                  <td className="py-3 font-mono text-ink">{vless ? 'VLESS' : client.client_ip}</td>
                   <td className="py-3">{statusBadge(client)}</td>
                   <td className="py-3 text-ink">{traffic(client)}</td>
                   <td className="py-3 text-muted">
@@ -448,7 +451,7 @@ export const ClientList: React.FC<ClientListProps> = ({
               aria-label="Сортировка клиентов"
               className="bg-paper border border-line rounded-lg px-2 py-1 text-xs text-ink"
             >
-              {(Object.keys(SORT_LABELS) as ClientSortKey[]).map((key) => (
+              {(Object.keys(SORT_LABELS) as ClientSortKey[]).filter((key) => !vless || key !== 'ip').map((key) => (
                 <option key={key} value={key}>
                   {SORT_LABELS[key]}
                 </option>
@@ -474,7 +477,7 @@ export const ClientList: React.FC<ClientListProps> = ({
                   <span className="ml-auto">{statusBadge(client)}</span>
                 </div>
                 <div className="flex items-center justify-between gap-2 flex-wrap pl-6">
-                  <span className="font-mono text-ink">{client.client_ip}</span>
+                  <span className="font-mono text-ink">{vless ? 'VLESS' : client.client_ip}</span>
                   {traffic(client)}
                   <span className="flex items-center gap-1 text-muted">
                     <Clock className="w-3.5 h-3.5 text-faint" />
