@@ -53,6 +53,16 @@ export interface BridgeRuleLink {
   host: string;
   awg_port: number;
   stub_port: number | null;
+  /** Протокол ноды: AWG пересылается по UDP (+ TCP заглушки проверки), VLESS — только по TCP */
+  protocol?: string | null;
+}
+
+/** Правила пересылки одной привязки: [протокол, порт ноды] */
+function linkForwards(link: BridgeRuleLink): Array<['udp' | 'tcp', number]> {
+  if (link.protocol === 'vless') return [['tcp', Number(link.awg_port)]];
+  const forwards: Array<['udp' | 'tcp', number]> = [['udp', Number(link.awg_port)]];
+  if (link.stub_port) forwards.push(['tcp', Number(link.stub_port)]);
+  return forwards;
 }
 
 export interface BridgeRoute {
@@ -117,15 +127,16 @@ export function buildBridgeRules(links: BridgeRuleLink[]): string {
   ];
   for (const link of links) {
     if (!isValidHost(link.host) || net.isIPv6(link.host)) throw new Error(`Адрес ноды ${link.host} не поддерживается мостом (нужен IPv4 или домен)`);
-    lines.push(`forward udp ${Number(link.listen_port)} ${shellQuote(link.host)} ${Number(link.awg_port)}`);
-    if (link.stub_port) lines.push(`forward tcp ${Number(link.listen_port)} ${shellQuote(link.host)} ${Number(link.stub_port)}`);
+    for (const [proto, port] of linkForwards(link)) {
+      lines.push(`forward ${proto} ${Number(link.listen_port)} ${shellQuote(link.host)} ${port}`);
+    }
   }
-  lines.push(`echo "---RULES ${links.reduce((n, l) => n + (l.stub_port ? 2 : 1), 0)}"`);
+  lines.push(`echo "---RULES ${expectedRuleCount(links)}"`);
   return lines.join('\n') + '\n';
 }
 
 export function expectedRuleCount(links: BridgeRuleLink[]): number {
-  return links.reduce((n, l) => n + (l.stub_port ? 2 : 1), 0);
+  return links.reduce((n, l) => n + linkForwards(l).length, 0);
 }
 
 /** Проверка моста: число правил DNAT и то, что переход в цепочку панели — первое правило FORWARD */
@@ -179,7 +190,7 @@ function credentials(bridge: any): SshCredentials {
 
 function ruleLinks(bridgeId: number): BridgeRuleLink[] {
   return db.prepare(`
-    SELECT l.listen_port, s.host, s.awg_port, s.stub_port
+    SELECT l.listen_port, s.host, s.awg_port, s.stub_port, s.protocol
     FROM bridge_links l JOIN servers s ON s.id = l.server_id
     WHERE l.bridge_id = ? ORDER BY l.listen_port
   `).all(bridgeId) as any[];
