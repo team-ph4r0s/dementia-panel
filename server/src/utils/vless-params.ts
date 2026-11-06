@@ -11,7 +11,9 @@ import crypto from 'node:crypto';
  * - клиент VLESS: `client_uuid` (секрет, как приватный ключ), `client_ip = ''`, `client_public_key = ''`,
  *   `client_private_key = ''`;
  * - параметры Reality — колонки `reality_sni`, `reality_dest`, `reality_short_ids` (JSON), `xray_flow`,
- *   `xray_fingerprint`; читаются `vlessParamsFromRow`, проверяются `validateVlessParams`.
+ *   `xray_fingerprint`; транспорт — `xray_transport` (`tcp` | `xhttp`), `xhttp_path`, `xhttp_mode` (миграция v16);
+ *   читаются `vlessParamsFromRow`, проверяются `validateVlessParams`;
+ * - вход через CDN (Cloudflare) — колонки `cdn_*`, см. CdnService: отдельный inbound VLESS + XHTTP + TLS.
  */
 export type NodeProtocol = 'awg' | 'vless';
 export const NODE_PROTOCOLS: readonly NodeProtocol[] = ['awg', 'vless'];
@@ -34,6 +36,15 @@ export const DEFAULT_VLESS_PORT = 443;
 
 export const VLESS_FLOWS = ['xtls-rprx-vision', ''] as const;
 export type VlessFlow = (typeof VLESS_FLOWS)[number];
+/** Транспорт Reality-входа: RAW/TCP (Vision со splice, быстрее) или XHTTP (HTTP-запросы, устойчивее к анализу потока) */
+export const VLESS_TRANSPORTS = ['tcp', 'xhttp'] as const;
+export type VlessTransport = (typeof VLESS_TRANSPORTS)[number];
+/** Режим XHTTP у клиента. Сервер принимает все (`auto`), в ссылку идёт выбранный */
+export const XHTTP_MODES = ['auto', 'packet-up', 'stream-up', 'stream-one'] as const;
+export type XhttpMode = (typeof XHTTP_MODES)[number];
+/** Тег inbound входа через CDN (VLESS + XHTTP + TLS) */
+export const XRAY_CDN_INBOUND_TAG = 'vless-cdn';
+
 export const VLESS_FINGERPRINTS = ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', 'random', 'randomized'] as const;
 
 /**
@@ -55,10 +66,20 @@ export interface VlessParams {
   reality_short_ids: string[];
   xray_flow: VlessFlow;
   xray_fingerprint: string;
+  xray_transport: VlessTransport;
+  /** Путь XHTTP (общий для Reality-входа с XHTTP и входа через CDN) */
+  xhttp_path: string;
+  xhttp_mode: XhttpMode;
 }
 
 const HOSTNAME_RE = /^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/i;
 const SHORT_ID_RE = /^([0-9a-f]{2}){0,8}$/;
+/** Путь XHTTP: только безопасные для URL и config.json символы (значение попадает в ссылки и YAML) */
+export const XHTTP_PATH_RE = /^\/[A-Za-z0-9._~\/-]{0,63}$/;
+
+export function generateXhttpPath(): string {
+  return `/${crypto.randomBytes(8).toString('hex')}`;
+}
 
 export function generateShortId(bytes = 8): string {
   return crypto.randomBytes(bytes).toString('hex');
@@ -72,6 +93,9 @@ export function generateVlessParams(): VlessParams {
     reality_short_ids: [generateShortId()],
     xray_flow: 'xtls-rprx-vision',
     xray_fingerprint: 'chrome',
+    xray_transport: 'tcp',
+    xhttp_path: generateXhttpPath(),
+    xhttp_mode: 'auto',
   };
 }
 
@@ -97,6 +121,9 @@ export function vlessParamsFromRow(row: any): VlessParams {
     reality_short_ids: parseShortIds(row?.reality_short_ids),
     xray_flow: row?.xray_flow === '' ? '' : 'xtls-rprx-vision',
     xray_fingerprint: typeof row?.xray_fingerprint === 'string' && row.xray_fingerprint ? row.xray_fingerprint : 'chrome',
+    xray_transport: row?.xray_transport === 'xhttp' ? 'xhttp' : 'tcp',
+    xhttp_path: typeof row?.xhttp_path === 'string' && XHTTP_PATH_RE.test(row.xhttp_path) ? row.xhttp_path : '/',
+    xhttp_mode: (XHTTP_MODES as readonly string[]).includes(row?.xhttp_mode) ? row.xhttp_mode : 'auto',
   };
 }
 
@@ -108,6 +135,9 @@ export function vlessParamsToColumns(p: VlessParams): Record<string, string> {
     reality_short_ids: JSON.stringify(p.reality_short_ids),
     xray_flow: p.xray_flow,
     xray_fingerprint: p.xray_fingerprint,
+    xray_transport: p.xray_transport,
+    xhttp_path: p.xhttp_path,
+    xhttp_mode: p.xhttp_mode,
   };
 }
 
@@ -132,6 +162,11 @@ export function validateVlessParams(p: VlessParams): string | null {
   }
   if (!(VLESS_FLOWS as readonly string[]).includes(p.xray_flow)) return 'Неизвестный flow';
   if (!(VLESS_FINGERPRINTS as readonly string[]).includes(p.xray_fingerprint)) return 'Неизвестный отпечаток TLS (fingerprint)';
+  if (!(VLESS_TRANSPORTS as readonly string[]).includes(p.xray_transport)) return 'Транспорт — tcp или xhttp';
+  if (typeof p.xhttp_path !== 'string' || !XHTTP_PATH_RE.test(p.xhttp_path)) {
+    return 'Путь XHTTP начинается с / и содержит до 64 символов: латиница, цифры, . _ ~ - /';
+  }
+  if (!(XHTTP_MODES as readonly string[]).includes(p.xhttp_mode)) return 'Режим XHTTP: auto, packet-up, stream-up или stream-one';
   return null;
 }
 

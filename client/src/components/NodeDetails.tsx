@@ -328,6 +328,16 @@ export const NodeDetails: React.FC<NodeDetailsProps> = ({
             <dt className="text-faint">Адрес маскировки</dt>
             <dd className="font-mono text-ink break-all">{server.reality_dest || '—'}</dd>
           </div>
+          <div className="bg-paper border border-line rounded-lg px-3 py-2">
+            <dt className="text-faint">Транспорт</dt>
+            <dd className="font-mono text-ink break-all">{server.xray_transport === 'xhttp' ? `XHTTP ${server.xhttp_mode ?? 'auto'}` : 'TCP'}</dd>
+          </div>
+          <div className="bg-paper border border-line rounded-lg px-3 py-2">
+            <dt className="text-faint">Вход через CDN</dt>
+            <dd className={`font-mono break-all ${server.cdn_error ? 'text-bad' : 'text-ink'}`}>
+              {server.cdn_enabled && server.cdn_domain ? `${server.cdn_domain}:${server.cdn_port}` : 'выключен'}
+            </dd>
+          </div>
         </dl>
       ) : (
         <div className="bg-paper border border-line rounded-xl p-3 space-y-2 text-xs">

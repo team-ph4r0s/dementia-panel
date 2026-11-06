@@ -273,6 +273,22 @@ export class SslService {
     }
 
     // 3. Request ACME certificate via DNS-01
+    const { cert, key } = await this.obtainDns01Certificate(cleanDomain, cleanEmail, cfToken, matchedZone.id);
+
+    this.saveCertificate(cert, key, 'letsencrypt_cf', cleanDomain, {
+      ssl_email: cleanEmail,
+      ...(persistToken ? { cf_token: encryptSecret(cfToken) } : {}),
+    });
+    return { success: true };
+  }
+
+  /**
+   * Сертификат Let's Encrypt для имени через DNS-01 в зоне Cloudflare — без сохранения: его использует и сертификат панели,
+   * и вход через CDN на нодах VLESS (CdnService). TXT-записи удаляются после проверки.
+   */
+  static async obtainDns01Certificate(domain: string, email: string, cfToken: string, zoneId: string): Promise<{ cert: string; key: string }> {
+    const cleanDomain = validateDomain(domain);
+    const cleanEmail = validateEmail(email);
     const client = await this.getAcmeClient();
     const [key, csr] = await acme.crypto.createCsr({ commonName: cleanDomain });
     const createdRecordIds = new Map<string, string>();
@@ -284,7 +300,7 @@ export class SslService {
       challengePriority: ['dns-01'],
       challengeCreateFn: async (authz, challenge, keyAuthorization) => {
         if (challenge.type !== 'dns-01') return;
-        const cfData = await cfFetch(cfToken, `/zones/${matchedZone.id}/dns_records`, {
+        const cfData = await cfFetch(cfToken, `/zones/${zoneId}/dns_records`, {
           method: 'POST',
           body: JSON.stringify({
             type: 'TXT',
@@ -303,16 +319,12 @@ export class SslService {
       challengeRemoveFn: async (authz, challenge) => {
         const recId = createdRecordIds.get(challenge.token);
         if (recId) {
-          await cfFetch(cfToken, `/zones/${matchedZone.id}/dns_records/${recId}`, { method: 'DELETE' }).catch(() => {});
+          await cfFetch(cfToken, `/zones/${zoneId}/dns_records/${recId}`, { method: 'DELETE' }).catch(() => {});
         }
       },
     });
 
-    this.saveCertificate(cert, key.toString(), 'letsencrypt_cf', cleanDomain, {
-      ssl_email: cleanEmail,
-      ...(persistToken ? { cf_token: encryptSecret(cfToken) } : {}),
-    });
-    return { success: true };
+    return { cert, key: key.toString() };
   }
 
   /**

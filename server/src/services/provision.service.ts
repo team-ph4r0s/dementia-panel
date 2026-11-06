@@ -22,7 +22,7 @@ import {
   generateVlessParams,
   vlessParamsFromRow,
 } from '../utils/vless-params.js';
-import { XrayService } from './xray.service.js';
+import { cdnReady, XrayService } from './xray.service.js';
 import {
   newStubToken,
   parseStubHits,
@@ -726,18 +726,21 @@ export class ProvisionService {
   private static async doInstallVless(serverId: number, server: any, onLog?: (chunk: string) => void): Promise<OperationResult> {
     const log = (text: string) => onLog?.(text);
     const port = Number(server.awg_port || DEFAULT_VLESS_PORT);
+    // Порт входа через CDN (VLESS + XHTTP + TLS) — второй TCP-порт того же контейнера
+    const cdnPort = cdnReady(server) ? Number(server.cdn_port) : null;
     const credentials = this.getCredentials(server);
 
-    // Проверка до любых изменений: если на TCP-порту уже слушает кто-то, кроме нашего контейнера, — ошибка
+    // Проверка до любых изменений: если на TCP-портах уже слушает кто-то, кроме нашего контейнера, — ошибка
     try {
       const checkScript = [
-        `port=${shellQuote(port)}`,
+        `ports=${shellQuote([port, cdnPort].filter(Boolean).join(' '))}`,
         `c=${shellQuote(XRAY_CONTAINER)}`,
         `marker=${shellQuote(`${XRAY_CONF_DIR}/dementia.env`)}`,
         'if docker ps -a --format "{{.Names}}" 2>/dev/null | grep -Eq "^${c}\$"; then',
         '  if [ ! -f "$marker" ]; then echo "FOREIGN_CONTAINER"; exit 0; fi',
         'fi',
         'listening=0',
+        'for port in $ports; do',
         'if command -v ss >/dev/null 2>&1; then',
         '  if ss -tln 2>/dev/null | grep -Eq "[: ]${port}\\b"; then listening=1; fi',
         'elif command -v netstat >/dev/null 2>&1; then',
@@ -745,6 +748,7 @@ export class ProvisionService {
         'elif (echo > "/dev/tcp/127.0.0.1/${port}") >/dev/null 2>&1; then',
         '  listening=1',
         'fi',
+        'done',
         'if [ "$listening" -eq 0 ]; then echo "OK"; exit 0; fi',
         'if [ -f "$marker" ] && [ "$(docker inspect -f \'{{.State.Running}}\' "$c" 2>/dev/null)" = "true" ]; then',
         '  echo "OK"; exit 0',
@@ -767,7 +771,8 @@ export class ProvisionService {
         return { success: false, error };
       }
       if (check.stdout.includes('PORT_IN_USE')) {
-        const error = `TCP-порт ${port} уже занят другой службой или контейнером на сервере. Освободите порт перед установкой.`;
+        const busy = cdnPort ? `TCP-порт ${port} или ${cdnPort} (вход через CDN)` : `TCP-порт ${port}`;
+        const error = `${busy} уже занят другой службой или контейнером на сервере. Освободите порт перед установкой.`;
         log(`\r\n❌ Ошибка: ${error}\r\n`);
         return { success: false, error };
       }
@@ -808,6 +813,7 @@ export class ProvisionService {
         `export VLESS_PORT=${shellQuote(port)}`,
         `export XRAY_CONF_B64=${shellQuote(Buffer.from(conf).toString('base64'))}`,
         `export XRAY_IMAGE=${shellQuote(XRAY_IMAGE)}`,
+        `export XRAY_CDN_PORT=${shellQuote(cdnPort ?? '')}`,
         `export XRAY_CONTAINER=${shellQuote(XRAY_CONTAINER)}`,
         `export XRAY_CONF_DIR=${shellQuote(XRAY_CONF_DIR)}`,
         readDeployXrayScript(),
@@ -845,6 +851,9 @@ export class ProvisionService {
             reality_short_ids = ?,
             xray_flow = ?,
             xray_fingerprint = ?,
+            xray_transport = ?,
+            xhttp_path = ?,
+            xhttp_mode = ?,
             needs_sync = 0,
             needs_apply = 0,
             fail_count = 0,
@@ -864,6 +873,9 @@ export class ProvisionService {
         JSON.stringify(params.reality_short_ids),
         params.xray_flow,
         params.xray_fingerprint,
+        params.xray_transport,
+        params.xhttp_path,
+        params.xhttp_mode,
         serverId
       );
 
@@ -1091,7 +1103,8 @@ export class ProvisionService {
         if (nodeProtocol(server) === 'vless') {
           const marker = `${XRAY_CONF_DIR}/dementia.env`;
           const cName = server.container_name || XRAY_CONTAINER;
-          const cmd = `docker rm -f ${shellQuote(cName)} >/dev/null 2>&1; if [ -f ${shellQuote(marker)} ]; then rm -rf ${shellQuote(XRAY_CONF_DIR)}; fi; echo done`;
+          // Контейнер с нашим именем без метки панели — чужой (инвариант 47): не трогаем ни его, ни каталог
+          const cmd = `if [ -f ${shellQuote(marker)} ]; then docker rm -f ${shellQuote(cName)} >/dev/null 2>&1; rm -rf ${shellQuote(XRAY_CONF_DIR)}; fi; echo done`;
           const result = await SshService.executeCommand(
             credentials,
             `${SshService.sudo(credentials)}sh -c ${shellQuote(cmd)}`,

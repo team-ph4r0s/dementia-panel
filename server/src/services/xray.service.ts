@@ -1,6 +1,23 @@
 import crypto from 'node:crypto';
 import { formatEndpointHost } from '../utils/net.js';
-import { toXrayKey, VlessParams, vlessParamsFromRow, XRAY_API_PORT, XRAY_INBOUND_TAG } from '../utils/vless-params.js';
+import {
+  toXrayKey, VlessParams, vlessParamsFromRow, XRAY_API_PORT, XRAY_CDN_INBOUND_TAG, XRAY_INBOUND_TAG,
+} from '../utils/vless-params.js';
+import { decryptSecret } from './secrets.service.js';
+
+
+/** ALPN входа через CDN: Cloudflare говорит с клиентом по h2, с нодой — по HTTP/1.1 (h2 к источнику по умолчанию выключен) */
+const CDN_ALPN = ['h2', 'http/1.1'];
+
+/** Готов ли вход через CDN: включён, есть домен, порт и сертификат с ключом */
+export function cdnReady(server: any): boolean {
+  return Boolean(server?.cdn_enabled && server.cdn_domain && server.cdn_port && server.cdn_cert && server.cdn_key);
+}
+
+/** PEM для inline-сертификата Xray (`certificate`/`key` — массивы строк): файлы на ноде не нужны, конфиг целиком из БД */
+function pemLines(pem: string): string[] {
+  return pem.replace(/\r/g, '').split('\n').filter((line) => line.length > 0);
+}
 
 /** Частные сети явным списком: geoip.dat в образе не требуется (без него Xray не запустился бы) */
 const PRIVATE_NETWORKS = [
@@ -30,13 +47,39 @@ export class XrayService {
    * - api-inbound dokodemo-door на 127.0.0.1:XRAY_API_PORT (HandlerService, StatsService), policy со статистикой
    *   uplink/downlink пользователей, outbounds freedom + blackhole, routing api → api;
    * - routing `IPIfNonMatch`: запросы в частные сети блокируются и по IP, и по домену, который в них резолвится;
+   * - транспорт Reality-входа — `raw` (tcp) или `xhttp` с путём `xhttp_path` (сервер принимает любой режим — `auto`);
+   * - вход через CDN (`cdnReady`): inbound `XRAY_CDN_INBOUND_TAG` на `cdn_port`, XHTTP + TLS с сертификатом домена
+   *   прямо в config.json; flow пустой (через CDN Vision не нужен), email тот же — трафик суммируется;
    * - клиенты без client_uuid или неактивные (enabled/subscriber_active, как в AwgService.generateServerConfig) не попадают.
    */
   static generateServerConfig(server: any, clients: any[]): string {
     const params = this.params(server);
-    const users = clients
-      .filter((client) => client.client_uuid && client.enabled && !client.owner_blocked && client.subscriber_active !== 0)
-      .map((client) => ({ id: client.client_uuid, flow: params.xray_flow, email: `c${client.id}`, level: 0 }));
+    const active = clients
+      .filter((client) => client.client_uuid && client.enabled && !client.owner_blocked && client.subscriber_active !== 0);
+    const users = active.map((client) => ({ id: client.client_uuid, flow: params.xray_flow, email: `c${client.id}`, level: 0 }));
+    const sniffing = { enabled: true, destOverride: ['http', 'tls', 'quic'] };
+    const realityStream = params.xray_transport === 'xhttp'
+      ? { network: 'xhttp', xhttpSettings: { path: params.xhttp_path, mode: 'auto' } }
+      : { network: 'tcp' };
+    const cdnInbounds = cdnReady(server)
+      ? [{
+        tag: XRAY_CDN_INBOUND_TAG,
+        listen: '0.0.0.0',
+        port: Number(server.cdn_port),
+        protocol: 'vless',
+        settings: { clients: active.map((client) => ({ id: client.client_uuid, flow: '', email: `c${client.id}`, level: 0 })), decryption: 'none' },
+        streamSettings: {
+          network: 'xhttp',
+          xhttpSettings: { path: params.xhttp_path, mode: 'auto' },
+          security: 'tls',
+          tlsSettings: {
+            alpn: CDN_ALPN,
+            certificates: [{ certificate: pemLines(server.cdn_cert), key: pemLines(decryptSecret(server.cdn_key) ?? '') }],
+          },
+        },
+        sniffing,
+      }]
+      : [];
 
     return JSON.stringify({
       log: { loglevel: 'warning' },
@@ -58,7 +101,7 @@ export class XrayService {
           protocol: 'vless',
           settings: { clients: users, decryption: 'none' },
           streamSettings: {
-            network: 'tcp',
+            ...realityStream,
             security: 'reality',
             realitySettings: {
               show: false,
@@ -69,8 +112,9 @@ export class XrayService {
               shortIds: params.reality_short_ids,
             },
           },
-          sniffing: { enabled: true, destOverride: ['http', 'tls', 'quic'] },
+          sniffing,
         },
+        ...cdnInbounds,
       ],
       outbounds: [{ protocol: 'freedom', tag: 'direct' }, { protocol: 'blackhole', tag: 'block' }],
       routing: {
@@ -92,9 +136,14 @@ export class XrayService {
    * Имя кодируется encodeURIComponent.
    */
   static buildVlessLink(server: any, client: any, name: string, endpointHost?: string, endpointPort?: number): string {
+    // Запись подписки «через CDN» (server.via_cdn) — та же нода, другой вход
+    if (server.via_cdn) return this.buildVlessCdnLink(server, client, name);
     const params = vlessParamsFromRow(server);
     const query = [
-      ['type', 'tcp'],
+      ['type', params.xray_transport],
+      ...(params.xray_transport === 'xhttp'
+        ? [['path', params.xhttp_path], ['host', params.reality_sni], ['mode', params.xhttp_mode]]
+        : []),
       ['security', 'reality'],
       ['pbk', toXrayKey(server.server_public_key)],
       ['fp', params.xray_fingerprint],
@@ -113,6 +162,7 @@ export class XrayService {
    * servername, client-fingerprint, reality-opts: {public-key, short-id}}`.
    */
   static buildMihomoProxy(server: any, client: any, name: string, endpointHost?: string, endpointPort?: number): Record<string, unknown> {
+    if (server.via_cdn) return this.buildMihomoCdnProxy(server, client, name);
     const params = vlessParamsFromRow(server);
     return {
       name,
@@ -120,7 +170,10 @@ export class XrayService {
       server: endpointHost || server.host,
       port: endpointPort ?? server.awg_port,
       uuid: client.client_uuid,
-      network: 'tcp',
+      network: params.xray_transport,
+      ...(params.xray_transport === 'xhttp'
+        ? { 'xhttp-opts': { path: params.xhttp_path, host: params.reality_sni, mode: params.xhttp_mode } }
+        : {}),
       tls: true,
       udp: true,
       ...(params.xray_flow ? { flow: params.xray_flow } : {}),
@@ -130,6 +183,52 @@ export class XrayService {
         'public-key': toXrayKey(server.server_public_key),
         'short-id': params.reality_short_ids[0] ?? '',
       },
+    };
+  }
+
+  /** Адрес, к которому клиент подключается через CDN: «чистый» IP/домен Cloudflare (`cdn_address`) или сам домен */
+  static cdnEndpoint(server: any): { host: string; port: number; domain: string } {
+    return { host: server.cdn_address || server.cdn_domain, port: Number(server.cdn_port), domain: server.cdn_domain };
+  }
+
+  /**
+   * Ссылка входа через CDN: `vless://<uuid>@<cdn_address|cdn_domain>:<cdn_port>?type=xhttp&path=…&host=<домен>&mode=…
+   * &security=tls&sni=<домен>&alpn=h2,http/1.1&fp=…&encryption=none#<имя>`. Без flow: Vision через CDN не используется.
+   */
+  static buildVlessCdnLink(server: any, client: any, name: string): string {
+    const params = vlessParamsFromRow(server);
+    const cdn = this.cdnEndpoint(server);
+    const query = [
+      ['type', 'xhttp'],
+      ['path', params.xhttp_path],
+      ['host', cdn.domain],
+      ['mode', params.xhttp_mode],
+      ['security', 'tls'],
+      ['sni', cdn.domain],
+      ['alpn', CDN_ALPN.join(',')],
+      ['fp', params.xray_fingerprint],
+      ['encryption', 'none'],
+    ].map(([key, value]) => `${key}=${encodeURIComponent(value)}`).join('&');
+    return `vless://${client.client_uuid}@${formatEndpointHost(cdn.host)}:${cdn.port}?${query}#${encodeURIComponent(name)}`;
+  }
+
+  /** Прокси mihomo для входа через CDN (XHTTP + TLS) */
+  static buildMihomoCdnProxy(server: any, client: any, name: string): Record<string, unknown> {
+    const params = vlessParamsFromRow(server);
+    const cdn = this.cdnEndpoint(server);
+    return {
+      name,
+      type: 'vless',
+      server: cdn.host,
+      port: cdn.port,
+      uuid: client.client_uuid,
+      network: 'xhttp',
+      'xhttp-opts': { path: params.xhttp_path, host: cdn.domain, mode: params.xhttp_mode },
+      tls: true,
+      udp: true,
+      servername: cdn.domain,
+      alpn: CDN_ALPN,
+      'client-fingerprint': params.xray_fingerprint,
     };
   }
 }

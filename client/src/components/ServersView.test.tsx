@@ -12,6 +12,8 @@ vi.mock('../api', () => ({
     createServer: vi.fn(),
     updateServer: vi.fn(),
     randomizeParams: vi.fn(),
+    enableCdn: vi.fn(),
+    disableCdn: vi.fn(),
     getNodeUpdates: vi.fn().mockResolvedValue({ settings: { auto_update: false, hour_utc: 3 }, running: false, active_server: null, nodes: [] }),
     getProbes: vi.fn().mockResolvedValue({
       settings: { enabled: false, countries: [], interval_minutes: 30, show_in_name: false, show_in_description: false },
@@ -196,7 +198,35 @@ describe('VLESS Reality', () => {
       reality_short_ids: ['1234', 'abcd'],
       xray_flow: 'xtls-rprx-vision',
       xray_fingerprint: 'chrome',
+      xray_transport: 'tcp',
+      xhttp_path: '/',
+      xhttp_mode: 'auto',
     });
     await waitFor(() => expect(onClose).toHaveBeenCalled());
+  });
+
+  it('сохраняет транспорт XHTTP и включает вход через CDN после подтверждения', async () => {
+    vi.mocked(api.updateServer).mockResolvedValueOnce(node);
+    vi.mocked(api.enableCdn).mockResolvedValueOnce({ ...node, cdn_enabled: true, cdn_domain: 'vpn.example.com', cdn_port: 8443 });
+    const onUpdated = vi.fn();
+    render(
+      <FeedbackProvider>
+        <VlessParamsModal server={{ ...node, xhttp_path: '/abc' }} onClose={vi.fn()} onUpdated={onUpdated} />
+      </FeedbackProvider>,
+    );
+    // Порт VLESS ноды (443) не предлагается для входа через CDN
+    const port = screen.getByLabelText('Порт');
+    expect(within(port).queryByRole('option', { name: '443' })).not.toBeInTheDocument();
+    expect(port).toHaveValue('8443');
+
+    const enable = screen.getByRole('button', { name: 'Включить вход через CDN' });
+    expect(enable).toBeDisabled();
+    fireEvent.change(screen.getByLabelText(/Домен/), { target: { value: ' vpn.example.com ' } });
+    fireEvent.change(screen.getByLabelText(/Адрес для подключения/), { target: { value: '104.16.1.1' } });
+    fireEvent.click(enable);
+    fireEvent.click(await screen.findByRole('button', { name: 'Подтвердить' }));
+    await waitFor(() => expect(api.enableCdn).toHaveBeenCalledWith(node.id, { domain: 'vpn.example.com', port: 8443, address: '104.16.1.1' }));
+    await waitFor(() => expect(onUpdated).toHaveBeenCalledWith(expect.objectContaining({ cdn_enabled: true })));
+    expect(await screen.findByText('включён')).toBeInTheDocument();
   });
 });

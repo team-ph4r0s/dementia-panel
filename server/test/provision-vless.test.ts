@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -395,6 +397,35 @@ describe('удаление ноды (teardown)', () => {
     // Ни в коем случае не трогать amnezia-* или /opt/amnezia
     expect(cmd).not.toContain('amnezia');
     expect(cmd).not.toContain('dementia-probe');
+  });
+
+  it.skipIf(process.platform === 'win32')('чужой dementia-xray без метки панели не удаляется (команда выполняется оболочкой)', async () => {
+    const serverId = insertVlessServer({ status: 'online' });
+    const ssh = stubSsh();
+    await ProvisionService.teardown(serverId);
+
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'xray-teardown-'));
+    const bin = path.join(tmp, 'bin');
+    const dir = path.join(tmp, 'opt');
+    fs.mkdirSync(bin);
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(bin, 'docker'), '#!/bin/sh\necho "docker $*" >> "$LOG"\n', { mode: 0o755 });
+    const command = ssh.calls[0].command.replaceAll(XRAY_CONF_DIR, dir).replace(/^sudo /, '');
+    const run = () => {
+      const log = path.join(tmp, 'log');
+      fs.rmSync(log, { force: true });
+      execFileSync('bash', ['-c', command], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, LOG: log } });
+      return fs.existsSync(log) ? fs.readFileSync(log, 'utf-8') : '';
+    };
+    try {
+      expect(run()).toBe('');
+      expect(fs.existsSync(dir)).toBe(true);
+      fs.writeFileSync(path.join(dir, 'dementia.env'), 'VLESS_PORT=443\n');
+      expect(run()).toContain(`docker rm -f ${XRAY_CONTAINER}`);
+      expect(fs.existsSync(dir)).toBe(false);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it('для AWG-ноды по-прежнему выполняет очистку amnezia', async () => {

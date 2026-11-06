@@ -55,6 +55,18 @@ HTTP-кодом. Тела — JSON.
 и восстанавливает прежние значения. `randomize-params` обновляет параметры Reality с сохранением пары ключей.
 Сканирование, импорт AmneziaVPN, обновление протокола AWG и выдача ноды партнёру для VLESS недоступны.
 
+Транспорт VLESS — `xray_transport` (`tcp` | `xhttp`), `xhttp_path`, `xhttp_mode` (`auto`, `packet-up`, `stream-up`, `stream-one`) в том же
+`PUT /:id`; `randomize-params` их транспорт и режим не меняет, путь генерирует заново.
+
+Вход через CDN Cloudflare ([vless.md](vless.md#cdn)):
+
+| Метод | Путь | Тело / ответ |
+|---|---|---|
+| POST | `/api/servers/:id/cdn` | `{domain, port?, address?, origin_ip?, token?, email?}` → сервер. `port` — 443, 2053, 2083, 2087, 2096, 8443 (не порт VLESS, по умолчанию 8443); `token`/`email` — если не сохранены. 400 — не VLESS/неверные данные, 409 — имя занято (панель, нода, мост, чужая DNS-запись), 502 — Cloudflare/ACME/переустановка не удались (всё откатывается) |
+| DELETE | `/api/servers/:id/cdn` | → сервер (+ `warning`, если нода или DNS не обновились) |
+
+В ответе сервера — `cdn_enabled`, `cdn_cert_ready`, `cdn_domain`, `cdn_port`, `cdn_address`, `cdn_expires_at`, `cdn_error`; `cdn_cert`/`cdn_key` не отдаются.
+
 ## Клиенты
 | Метод | Путь | Описание |
 |---|---|---|

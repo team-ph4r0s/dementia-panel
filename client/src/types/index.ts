@@ -89,6 +89,17 @@ export interface Server {
   reality_short_ids?: string[];
   xray_flow?: 'xtls-rprx-vision' | '';
   xray_fingerprint?: string;
+  xray_transport?: 'tcp' | 'xhttp';
+  xhttp_path?: string;
+  xhttp_mode?: 'auto' | 'packet-up' | 'stream-up' | 'stream-one';
+  /** Вход через CDN Cloudflare (VLESS + XHTTP + TLS); приватный ключ сертификата сервер не отдаёт */
+  cdn_enabled?: boolean;
+  cdn_cert_ready?: boolean;
+  cdn_domain?: string | null;
+  cdn_port?: number | null;
+  cdn_address?: string | null;
+  cdn_expires_at?: string | null;
+  cdn_error?: string | null;
   /** Контейнер на ноде: панели (dementia) или найденный контейнер приложения Amnezia */
   container_name: string;
   managed_by: 'demension' | 'amnezia' | 'partner';
@@ -167,7 +178,8 @@ export interface PanelUpdateStatus {
 }
 
 export interface ServerUpdate extends Pick<Server,
-  'reality_sni' | 'reality_dest' | 'reality_short_ids' | 'xray_flow' | 'xray_fingerprint'
+  'reality_sni' | 'reality_dest' | 'reality_short_ids' | 'xray_flow' | 'xray_fingerprint' |
+  'xray_transport' | 'xhttp_path' | 'xhttp_mode'
 > {
   name?: string;
   host?: string;
@@ -530,3 +542,12 @@ export interface BackupSettings {
   last_error: string | null;
 }
 export interface RemoteBackup { id: string; name: string; created_at: string; size: number }
+
+export interface CdnInput {
+  domain: string;
+  port: number;
+  address?: string;
+  origin_ip?: string;
+  token?: string;
+  email?: string;
+}

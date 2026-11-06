@@ -32,7 +32,9 @@
 
 VLESS-ссылка имеет вид `vless://<uuid>@<host>:<port>?type=tcp&security=reality&pbk=…&fp=…&sni=…&sid=…&flow=…&encryption=none#<имя>`.
 Публичный ключ Reality кодируется в base64url, `sid` — первый shortId ноды, пустой `flow` не добавляется. Клиенты VLESS без
-`client_uuid` не попадают в подписку. Мост подменяет хост и порт VLESS так же, как `Endpoint` у AWG.
+`client_uuid` не попадают в подписку. Мост подменяет хост и порт VLESS так же, как `Endpoint` у AWG. С транспортом XHTTP в ссылку
+добавляются `type=xhttp&path=…&host=…&mode=…` (mihomo — `network: xhttp` + `xhttp-opts`). Нода с включённым входом через CDN даёт вторую
+запись `<имя> · CDN` (VLESS + XHTTP + TLS на адрес Cloudflare, без flow) — [vless.md](vless.md#cdn); мост её не меняет.
 
 В `[Peer]` строка `PresharedKey` (в mihomo — `pre-shared-key`) пишется только если у клиента или сервера есть PSK.
 `AllowedIPs = 0.0.0.0/0, ::/0` — намеренно: у нод нет IPv6, и маршрут `::/0` в туннель не даёт IPv6-трафику клиента идти

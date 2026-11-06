@@ -258,7 +258,8 @@ CI на `main`. Подробно — [docs/releases.md](docs/releases.md).
 46. **Cloudflare проксирует только домен панели, а не VPN.** Настройка домена не меняет ноды/клиентов/ключи и не перезаписывает чужие адресные записи;
     основной listener сохраняется, дополнительный использует тот же TLS/API/WSS. Изменения TLS/домена сериализуйте через `SslService.exclusive`.
     Не выдавайте сохранённый `cf_token` браузеру (только флаг); при повторном выпуске сертификата не сбрасывайте `proxied`.
-    `CF-Connecting-IP` принимается только от реальных сетей Cloudflare, не от произвольного `X-Forwarded-For`. Подробности — docs/cloudflare.md.
+    `CF-Connecting-IP` принимается только от реальных сетей Cloudflare, не от произвольного `X-Forwarded-For`. Исключение — вход через CDN нод VLESS
+    (`CdnService`, docs/vless.md#cdn): отдельное имя на IP ноды, те же правила записей, отката и `SslService.exclusive`. Подробности — docs/cloudflare.md.
 
 47. **VLESS повторяет контракт AWG и не трогает AmneziaWG.** Протокол ноды — `servers.protocol` (`nodeProtocol()`), ветвление — в
     ProvisionService через ту же очередь; конфиг Xray целиком из БД (`XrayService.generateServerConfig`). `client_uuid` — секрет как приватный
@@ -266,7 +267,10 @@ CI на `main`. Подробно — [docs/releases.md](docs/releases.md).
     Образ Xray — distroless без оболочки: в контейнере только `/usr/local/bin/xray …` без `sh -c`, контейнер с `--user 0:0`; конфиг
     без `geoip:`/`geosite:`, маршрутизация `IPIfNonMatch` (с `AsIs` блокировку частных сетей обходит домен на 127.0.0.1); новый конфиг
     проверяется `xray run -test` до замены и перезапуска. `deploy-xray.sh` не трогает `amnezia-*` и `/opt/amnezia`, чужой `dementia-xray` без метки не удаляет.
-    VLESS-ноды не передаются партнёрам и не участвуют в проверке из стран и обновлении образов. Подробно — docs/vless.md.
+    VLESS-ноды не передаются партнёрам и не участвуют в проверке из стран и обновлении образов. `teardown` удаляет `dementia-xray`
+    только при метке `/opt/dementia-xray/dementia.env`. Транспорт (`tcp`/`xhttp`) меняет только явное действие — «Сгенерировать новые» его
+    сохраняет. Вход через CDN (`CdnService`) — второй inbound `vless-cdn` с сертификатом из БД прямо в config.json; `cdn_key` шифруется и не
+    отдаётся (как приватные ключи, инвариант 1), запись в подписке «· CDN» — отдельная, мост её не меняет. Подробно — docs/vless.md.
 
 ## Чек-лист перед коммитом
 

@@ -1,7 +1,7 @@
 import { Router, type Request } from 'express';
 import { db } from '../db/index.js';
 import { AwgService } from '../services/awg.service.js';
-import { XrayService } from '../services/xray.service.js';
+import { cdnReady, XrayService } from '../services/xray.service.js';
 import { SubscriptionService } from '../services/subscription.service.js';
 import { buildSubscriptionHeaders, readSubscriptionSettings } from '../services/subscription-settings.service.js';
 import { contentDisposition } from '../utils/http.js';
@@ -164,6 +164,8 @@ subscriptionRouter.get('/:token', (req, res) => {
     ? (db.prepare(`
         SELECT c.*, s.name AS server_name, s.sub_name, s.host, s.awg_port, s.server_public_key, s.preshared_key AS server_psk,
           s.protocol, s.reality_sni, s.reality_dest, s.reality_short_ids, s.xray_flow, s.xray_fingerprint,
+          s.xray_transport, s.xhttp_path, s.xhttp_mode, s.cdn_enabled, s.cdn_domain, s.cdn_port, s.cdn_address,
+          s.cdn_cert IS NOT NULL AND s.cdn_key IS NOT NULL AS cdn_has_cert,
           s.awg_version, s.jc, s.jmin, s.jmax, s.s1, s.s2, s.s3, s.s4, s.h1, s.h2, s.h3, s.h4,
           s.i1, s.i2, s.i3, s.i4, s.i5, s.header_protection_key, s.extra_params
         FROM clients c
@@ -179,13 +181,19 @@ subscriptionRouter.get('/:token', (req, res) => {
   const marks = ProbeService.getNameMarks();
   // Ноды, недоступные из страны пользователя, выдаются через мост этой страны: меняется только Endpoint (docs/bridges.md)
   const routes = BridgeService.routesFor(subscriber.country);
-  const entries = peers.filter((p) => p.protocol !== 'vless' || p.client_uuid).map((p) => {
+  const entries = peers.filter((p) => p.protocol !== 'vless' || p.client_uuid).flatMap((p) => {
     const route = routes.get(p.server_id);
-    return {
+    const direct = {
       name: [p.sub_name || p.server_name, marks.get(p.server_id), route ? `🌉 ${countryFlag(subscriber.country)}` : null].filter(Boolean).join(' · '),
       server: { ...p, preshared_key: p.server_psk, ...(route ? { host: route.host, awg_port: route.port } : {}) },
       client: p,
     };
+    // Нода VLESS с готовым входом через CDN — вторая запись: адрес Cloudflare вместо IP ноды (docs/vless.md#cdn).
+    // Мост её не трогает: у неё свой адрес и порт
+    const viaCdn = p.protocol === 'vless' && cdnReady({ ...p, cdn_cert: p.cdn_has_cert, cdn_key: p.cdn_has_cert })
+      ? [{ name: [p.sub_name || p.server_name, 'CDN'].join(' · '), server: { ...p, via_cdn: true }, client: p }]
+      : [];
+    return [direct, ...viaCdn];
   });
 
   if (showPage) {

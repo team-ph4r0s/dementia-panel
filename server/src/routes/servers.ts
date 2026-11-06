@@ -1,3 +1,4 @@
+import { CdnService } from '../services/cdn.service.js';
 import { Router } from 'express';
 import { db, transaction, getSetting } from '../db/index.js';
 import { AwgService, AwgParams } from '../services/awg.service.js';
@@ -27,7 +28,8 @@ const TEXT_PARAM_KEYS = ['h1', 'h2', 'h3', 'h4', 'i1', 'i2', 'i3', 'i4', 'i5', '
  */
 export function serializeServer(s: any) {
   if (!s) return s;
-  const { ssh_password, ssh_key, server_private_key, preshared_key, extra_params, ...rest } = s;
+  // cdn_key — приватный ключ сертификата входа через CDN, cdn_cert не нужен интерфейсу (инвариант 1)
+  const { ssh_password, ssh_key, server_private_key, preshared_key, extra_params, cdn_key, cdn_cert, ...rest } = s;
   const params = paramsFromRow(s);
   const remotePanel = s.remote_panel_id
     ? (db.prepare('SELECT name, status FROM remote_panels WHERE id = ?').get(s.remote_panel_id) as any)
@@ -42,6 +44,8 @@ export function serializeServer(s: any) {
     remote_panel_status: remotePanel?.status ?? null,
     has_ssh_password: Boolean(ssh_password),
     has_ssh_key: Boolean(ssh_key),
+    cdn_enabled: Boolean(s.cdn_enabled),
+    cdn_cert_ready: Boolean(cdn_cert && cdn_key),
     needs_sync: Boolean(s.needs_sync),
     needs_apply: Boolean(s.needs_apply),
     installing: ProvisionService.isInstalling(s.id),
@@ -437,6 +441,10 @@ serversRouter.put('/:id', asyncHandler(async (req, res) => {
     paramColumns = before;
   }
 
+  if (protocol === 'vless' && server.cdn_enabled && updates.awg_port !== undefined && Number(updates.awg_port) === Number(server.cdn_port)) {
+    throw new HttpError(400, 'Этот порт занят входом через CDN — выберите другой');
+  }
+
   // Уже существующие дубли не мешают правке других полей — проверяется только смена адреса или порта
   if (updates.host !== undefined || updates.awg_port !== undefined) {
     const host = String(updates.host ?? server.host);
@@ -484,8 +492,26 @@ serversRouter.delete('/:id', asyncHandler(async (req, res) => {
   }
 
   db.prepare('DELETE FROM servers WHERE id = ?').run(id);
+  await CdnService.forget(server);
   EventService.log('info', 'server.deleted', `Удалена нода «${server.name}»`, { kind: 'server', id });
   res.json({ success: true, message: 'Сервер удален из панели' });
+}));
+
+// POST /:id/cdn { domain, port?, address?, origin_ip?, token?, email? } — вход через CDN Cloudflare для ноды VLESS
+serversRouter.post('/:id/cdn', asyncHandler(async (req, res) => {
+  const id = parseId(req.params.id);
+  getLocalServerOr404(id);
+  if (ProvisionService.isInstalling(id)) throw new HttpError(409, 'Дождитесь окончания установки');
+  await CdnService.enable(id, req.body ?? {});
+  res.json(serializeServer(selectServerWithCounts(id)));
+}));
+
+// DELETE /:id/cdn — выключить вход через CDN (A-запись в Cloudflare удаляется, сертификат сохраняется)
+serversRouter.delete('/:id/cdn', asyncHandler(async (req, res) => {
+  const id = parseId(req.params.id);
+  getLocalServerOr404(id);
+  const result = await CdnService.disable(id);
+  res.json({ ...serializeServer(selectServerWithCounts(id)), ...(result.warning ? { warning: result.warning } : {}) });
 }));
 
 // POST test SSH connection
@@ -502,8 +528,14 @@ serversRouter.post('/:id/randomize-params', asyncHandler(async (req, res) => {
 
   // Новые случайные значения в рамках текущей версии протокола; I1–I5 и доп. параметры сохраняются
   const current = paramsFromRow(server);
+  // VLESS: новые SNI/shortId, транспорт и режим XHTTP сохраняются (их меняют только явно), путь — новый
+  const currentVless = vlessParamsFromRow(server);
   const columns = nodeProtocol(server) === 'vless'
-    ? vlessParamsToColumns(generateVlessParams())
+    ? vlessParamsToColumns({
+      ...generateVlessParams(),
+      xray_transport: currentVless.xray_transport,
+      xhttp_mode: currentVless.xhttp_mode,
+    })
     : paramsToColumns({
       ...AwgService.generateRandomParams(current.awg_version),
       i1: current.i1, i2: current.i2, i3: current.i3, i4: current.i4, i5: current.i5,

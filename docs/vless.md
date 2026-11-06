@@ -19,7 +19,8 @@ AmneziaWG быстрее на чистом UDP и остаётся проток�
 |---|---|
 | Порт (TCP) | `awg_port`, применённый — `deployed_port` (как у AWG) |
 | Ключи Reality x25519 | `server_private_key` / `server_public_key` в base64; в config.json и ссылках — base64url (`toXrayKey`) |
-| Параметры | `reality_sni`, `reality_dest` (`домен:порт`), `reality_short_ids` (JSON), `xray_flow`, `xray_fingerprint`; проверка — `validateVlessParams` |
+| Параметры | `reality_sni`, `reality_dest` (`домен:порт`), `reality_short_ids` (JSON), `xray_flow`, `xray_fingerprint`, `xray_transport` (`tcp`/`xhttp`), `xhttp_path`, `xhttp_mode`; проверка — `validateVlessParams` |
+| Вход через CDN | `cdn_*` (миграция v16), `CdnService` — см. [ниже](#cdn) |
 | Клиент | `client_uuid` (секрет, как приватный ключ: не отдаётся в API и гостю); `client_ip`, ключи — пустые строки |
 | Контейнер | `dementia-xray`, конфиг `/opt/dementia-xray/config.json`, образ `ghcr.io/xtls/xray-core:latest` |
 
@@ -42,6 +43,50 @@ AmneziaWG быстрее на чистом UDP и остаётся проток�
 пользователей. Смена параметров перезапускает контейнер (`requestApply`, откат как у AWG — инвариант 28); пользователям нужно
 обновить подписку. Действия AWG («Перейти на 3.x», «Сканировать», импорт Amnezia) для VLESS возвращают 400.
 
+## Транспорт: TCP или XHTTP
+
+Reality-вход ноды работает поверх одного из транспортов (`xray_transport`, окно «Параметры Reality»):
+
+- **TCP (RAW)** — по умолчанию: Vision со splice, самый быстрый;
+- **XHTTP** — данные идут HTTP-запросами по пути `xhttp_path` (случайный, генерируется вместе с параметрами). Длинный поток не выглядит
+  одной TCP-сессией с «рандомными» данными, поэтому XHTTP лучше переживает анализ поведения (заморозки сессий после 15–20 КБ в РФ).
+  Сервер принимает любой режим (`mode: auto`), а режим из `xhttp_mode` идёт в ссылку и mihomo: `auto` (клиент выбирает сам: через
+  Reality — `stream-one`), `packet-up` (самый совместимый, для мостов и CDN), `stream-up`, `stream-one`. Vision с XHTTP допустим.
+
+Смена транспорта — перезапуск контейнера (`requestApply`, откат как у параметров). Ссылка XHTTP:
+`…?type=xhttp&path=…&host=<sni>&mode=…&security=reality&…`, mihomo — `network: xhttp` + `xhttp-opts: {path, host, mode}`. Нужны клиенты
+Xray 25+ (v2rayN/v2rayNG/Happ/Streisand свежих версий) или mihomo 1.19+.
+
+<a id="cdn"></a>
+
+## Вход через CDN Cloudflare
+
+Если IP ноды заблокирован, а Cloudflare в стране пользователя доступен, нода может принимать подключения **через Cloudflare**:
+клиент подключается к адресу Cloudflare, Cloudflare по TLS пересылает HTTP-запросы XHTTP на ноду. Reality так не умеет (Cloudflare
+завершает TLS сам), поэтому это **второй inbound** того же контейнера: тег `vless-cdn`, VLESS + XHTTP + TLS на `cdn_port`.
+
+- **Включение** — «Параметры Reality → Вход через CDN Cloudflare» (`POST /api/servers/:id/cdn`, `CdnService.enable`): отдельный поддомен
+  в зоне Cloudflare (не домен панели, не адрес ноды/моста), порт из HTTPS-портов Cloudflare (443, 2053, 2083, 2087, 2096, 8443 — кроме
+  порта VLESS ноды), токен с Zone:Read + DNS:Edit (сохранённый токен панели подходит), email Let's Encrypt.
+  Панель выпускает сертификат Let's Encrypt через DNS-01 (`SslService.obtainDns01Certificate`), создаёт A-запись имени на IPv4 ноды с
+  `proxied: true` (имя должно быть свободно или указывать на этот же IP — чужие записи не перезаписываются) и переустанавливает
+  контейнер: deploy-xray.sh открывает второй порт в фаерволе (`XRAY_CDN_PORT`), порт проверяется на занятость до изменений.
+  Если что-то не удалось — БД и DNS возвращаются как были.
+- **Сертификат в config.json.** PEM сертификата и ключа встраиваются в `tlsSettings.certificates` (`certificate`/`key` — массивы строк),
+  поэтому конфиг по-прежнему целиком из БД и проверяется `run -test`. `cdn_key` хранится через `encryptSecret`, `cdn_cert`/`cdn_key`
+  не отдаются в API и гостю. Продление — `CdnService.renewAll` вместе с сертификатом панели (за 30 дней), затем обычная синхронизация.
+- **Пользователи** — те же клиенты с тем же email `c<id>` (трафик суммируется), без flow. В подписке у ноды появляется вторая запись
+  `<имя> · CDN`: `vless://<uuid>@<cdn_address|cdn_domain>:<cdn_port>?type=xhttp&path=…&host=<домен>&mode=…&security=tls&sni=<домен>
+  &alpn=h2,http/1.1&fp=…&encryption=none`. `cdn_address` — необязательный «чистый» IP или домен Cloudflare, если часть адресов
+  Cloudflare в стране режут: имя в `sni`/`host` остаётся вашим, а TCP идёт на выбранный адрес. Мост CDN-запись не трогает.
+- **Cloudflare**: SSL/TLS зоны — **Full (strict)** (с Flexible не заработает), не включайте для имени CAPTCHA/Bot Fight/кеширование;
+  WebSocket и HTTP/2 к клиентам Cloudflare пропускает по умолчанию.
+- **Выключение** (`DELETE …/cdn`) убирает inbound синхронизацией и удаляет нашу A-запись (только если она всё ещё указывает на IP ноды);
+  домен и сертификат остаются для повторного включения. При удалении ноды запись тоже удаляется.
+
+Ограничения: где режут сам Cloudflare (в РФ с июня 2025 — обрыв после ~16 КБ на адресах Cloudflare у многих провайдеров), этот вход
+не поможет — нужен мост в стране пользователя ([bridges.md](bridges.md)). Скорость ниже прямого Reality, задержка выше.
+
 ## Клиенты и подписки
 
 Ссылка клиента — `vless://<uuid>@<host>:<port>?type=tcp&security=reality&pbk=…&fp=…&sni=…&sid=…&flow=…&encryption=none#<имя>`;
@@ -57,6 +102,7 @@ AmneziaWG быстрее на чистом UDP и остаётся проток�
 
 ## Синхронизация и трафик
 
+
 - Добавление/удаление клиентов (`requestSync`) перезаписывает config.json и перезапускает контейнер: соединения переподключаются
   за секунды. Новый конфиг сначала пишется в `config.new.json` и проверяется `xray run -test` образом работающего контейнера
   (`docker run --rm --network none`); не принятый Xray конфиг удаляется, прежний и контейнер не трогаются. Расширение `.json`
@@ -71,6 +117,7 @@ AmneziaWG быстрее на чистом UDP и остаётся проток�
 
 ## Ограничения первой версии
 
+- Вход через CDN — только Cloudflare и только IPv4 ноды.
 - VLESS-ноды нельзя передавать партнёрам (`/api/partners` и федерация отвечают 400, в `/nodes` их нет): UUID — общий секрет,
   передачу между панелями нужно проектировать отдельно.
 - Нет импорта Xray-серверов из приложения AmneziaVPN, автообновления образа Xray и проверки доступности из стран.

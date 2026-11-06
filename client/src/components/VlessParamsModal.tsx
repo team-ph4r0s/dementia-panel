@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { Shuffle, X } from 'lucide-react';
+import { Cloud, Shuffle, X } from 'lucide-react';
 import { api } from '../api';
 import type { Server } from '../types';
 import { useFeedback } from './ui/feedback-context';
@@ -14,6 +14,9 @@ interface VlessParamsModalProps {
 const title = 'Параметры Reality';
 const warning = 'После изменения параметров пользователям нужно обновить подписку или заново импортировать ссылку VLESS.';
 const fingerprints = ['chrome', 'firefox', 'safari', 'ios', 'android', 'edge', 'random', 'randomized'];
+const xhttpModes = ['auto', 'packet-up', 'stream-up', 'stream-one'] as const;
+/** HTTPS-порты, которые Cloudflare проксирует на ноду */
+const cdnPorts = [443, 2053, 2083, 2087, 2096, 8443];
 const inputClass = 'mt-1 w-full bg-paper border border-line rounded-lg px-3 py-2 text-sm font-mono text-ink focus:border-brand';
 
 function toForm(server: Server) {
@@ -23,6 +26,20 @@ function toForm(server: Server) {
     shortIds: server.reality_short_ids?.join(', ') ?? '',
     flow: server.xray_flow ?? 'xtls-rprx-vision',
     fingerprint: server.xray_fingerprint ?? 'chrome',
+    transport: server.xray_transport ?? 'tcp',
+    path: server.xhttp_path ?? '/',
+    mode: server.xhttp_mode ?? 'auto',
+  };
+}
+
+function toCdnForm(server: Server) {
+  const free = cdnPorts.filter((port) => port !== server.awg_port);
+  return {
+    domain: server.cdn_domain ?? '',
+    port: server.cdn_port && free.includes(server.cdn_port) ? server.cdn_port : free.includes(8443) ? 8443 : free[0],
+    address: server.cdn_address ?? '',
+    token: '',
+    email: '',
   };
 }
 
@@ -30,6 +47,8 @@ export function VlessParamsModal({ server, onClose, onUpdated }: VlessParamsModa
   const { confirm, toast } = useFeedback();
   const [form, setForm] = useState(() => toForm(server));
   const [busy, setBusy] = useState(false);
+  const [cdn, setCdn] = useState(() => toCdnForm(server));
+  const [current, setCurrent] = useState(server);
 
   const update = async (request: () => Promise<Server>, randomize = false) => {
     setBusy(true);
@@ -57,7 +76,53 @@ export function VlessParamsModal({ server, onClose, onUpdated }: VlessParamsModa
       reality_short_ids: form.shortIds.split(',').map((id) => id.trim().toLowerCase()),
       xray_flow: form.flow,
       xray_fingerprint: form.fingerprint,
+      xray_transport: form.transport,
+      xhttp_path: form.path.trim(),
+      xhttp_mode: form.mode,
     }));
+  };
+
+  const enableCdn = async () => {
+    setBusy(true);
+    try {
+      if (!(await confirm({
+        title: current.cdn_enabled ? 'Обновить вход через CDN?' : 'Включить вход через CDN?',
+        message: `Панель выпустит сертификат для ${cdn.domain || 'домена'}, создаст в Cloudflare A-запись с оранжевым облаком на IP ноды и переустановит контейнер Xray (соединения переподключатся). В подписках появится запись «· CDN».`,
+      }))) return;
+      const updated = await api.enableCdn(current.id, {
+        domain: cdn.domain.trim(),
+        port: cdn.port,
+        address: cdn.address.trim(),
+        ...(cdn.token.trim() ? { token: cdn.token.trim() } : {}),
+        ...(cdn.email.trim() ? { email: cdn.email.trim() } : {}),
+      });
+      setCurrent(updated);
+      setCdn({ ...toCdnForm(updated) });
+      onUpdated(updated);
+      toast('Вход через CDN включён', 'success');
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Не удалось включить вход через CDN', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disableCdn = async () => {
+    setBusy(true);
+    try {
+      if (!(await confirm({
+        title: 'Выключить вход через CDN?',
+        message: 'Запись «· CDN» пропадёт из подписок, A-запись в Cloudflare будет удалена. Сертификат сохранится для повторного включения.',
+      }))) return;
+      const { warning: notice, ...updated } = await api.disableCdn(current.id);
+      setCurrent(updated);
+      onUpdated(updated);
+      toast(notice ?? 'Вход через CDN выключен', notice ? 'error' : 'success');
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Не удалось выключить вход через CDN', 'error');
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -106,6 +171,29 @@ export function VlessParamsModal({ server, onClose, onUpdated }: VlessParamsModa
                 </select>
               </label>
             </div>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="text-xs text-muted">
+                Транспорт
+                <select value={form.transport} onChange={(e) => setForm({ ...form, transport: e.target.value === 'xhttp' ? 'xhttp' : 'tcp' })} className={inputClass}>
+                  <option value="tcp">TCP (RAW)</option>
+                  <option value="xhttp">XHTTP</option>
+                </select>
+              </label>
+              <label className="text-xs text-muted">
+                Режим XHTTP
+                <select value={form.mode} onChange={(e) => setForm({ ...form, mode: e.target.value as typeof form.mode })} className={inputClass}>
+                  {xhttpModes.map((mode) => <option key={mode}>{mode}</option>)}
+                </select>
+              </label>
+            </div>
+            <label className="block text-xs text-muted">
+              Путь XHTTP
+              <input value={form.path} onChange={(e) => setForm({ ...form, path: e.target.value })} className={inputClass} aria-describedby="xhttp-hint" />
+            </label>
+            <p id="xhttp-hint" className="text-xs text-muted">
+              XHTTP передаёт данные HTTP-запросами — устойчивее к анализу потока, чем TCP, но медленнее. Путь и режим общие с входом
+              через CDN. Нужны свежие клиенты (Xray 25+, mihomo 1.19+).
+            </p>
             <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-line">
               <button
                 type="button"
@@ -121,6 +209,68 @@ export function VlessParamsModal({ server, onClose, onUpdated }: VlessParamsModa
             </div>
           </fieldset>
         </form>
+
+        <section aria-labelledby="cdn-title" className="px-6 pb-6 overflow-y-auto">
+          <fieldset disabled={busy} className="space-y-3 min-w-0 pt-4 border-t border-line disabled:opacity-50">
+            <h3 id="cdn-title" className="flex items-center gap-2 text-sm font-semibold text-ink">
+              <Cloud className="w-4 h-4 text-brand" />
+              Вход через CDN Cloudflare
+              {current.cdn_enabled && <span className="ml-auto px-2 py-0.5 rounded-lg text-xs bg-ok-soft text-ok">включён</span>}
+            </h3>
+            <p className="text-xs text-muted">
+              Если IP ноды заблокирован, клиенты подключаются к адресам Cloudflare, а он пересылает трафик на ноду (VLESS + XHTTP + TLS).
+              Нужен домен в Cloudflare и токен с правами Zone:Read и DNS:Edit; режим SSL/TLS зоны — Full (strict).
+              Там, где режут сам Cloudflare, этот вход не поможет.
+            </p>
+            {current.cdn_error && <p className="p-3 bg-bad-soft text-bad rounded-lg text-xs">{current.cdn_error}</p>}
+            {current.cdn_enabled && current.cdn_expires_at && (
+              <p className="text-xs text-muted">
+                Сертификат до <span className="font-mono text-ink">{new Date(current.cdn_expires_at).toLocaleDateString('ru-RU')}</span>, продлевается автоматически.
+              </p>
+            )}
+            <div className="grid grid-cols-[1fr_auto] gap-3">
+              <label className="text-xs text-muted">
+                Домен (поддомен с оранжевым облаком)
+                <input value={cdn.domain} onChange={(e) => setCdn({ ...cdn, domain: e.target.value })} placeholder="vpn.example.com" className={inputClass} />
+              </label>
+              <label className="text-xs text-muted">
+                Порт
+                <select value={cdn.port} onChange={(e) => setCdn({ ...cdn, port: Number(e.target.value) })} className={inputClass}>
+                  {cdnPorts.filter((port) => port !== current.awg_port).map((port) => <option key={port} value={port}>{port}</option>)}
+                </select>
+              </label>
+            </div>
+            <label className="block text-xs text-muted">
+              Адрес для подключения (необязательно)
+              <input value={cdn.address} onChange={(e) => setCdn({ ...cdn, address: e.target.value })} placeholder="домен или «чистый» IP Cloudflare" className={inputClass} />
+            </label>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="text-xs text-muted">
+                Токен Cloudflare
+                <input type="password" autoComplete="off" value={cdn.token} onChange={(e) => setCdn({ ...cdn, token: e.target.value })} placeholder="если не сохранён" className={inputClass} />
+              </label>
+              <label className="text-xs text-muted">
+                Email Let’s Encrypt
+                <input type="email" value={cdn.email} onChange={(e) => setCdn({ ...cdn, email: e.target.value })} placeholder="если не сохранён" className={inputClass} />
+              </label>
+            </div>
+            <div className="flex flex-wrap justify-end gap-3">
+              {current.cdn_enabled && (
+                <button type="button" onClick={() => void disableCdn()} className="px-3 py-2 text-xs font-medium text-bad bg-soft hover:bg-soft-2 rounded-lg btn-press border border-line">
+                  Выключить
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={!cdn.domain.trim()}
+                onClick={() => void enableCdn()}
+                className="bg-brand text-on-accent font-bold text-sm px-4 py-2 rounded-lg btn-press disabled:opacity-50"
+              >
+                {current.cdn_enabled ? 'Обновить вход через CDN' : 'Включить вход через CDN'}
+              </button>
+            </div>
+          </fieldset>
+        </section>
       </div>
     </ModalShell>
   );

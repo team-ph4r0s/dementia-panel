@@ -37,6 +37,7 @@ import type {
   NodeUpdatesOverview,
   NodeUpdateSettings,
   CloudflarePanelStatus,
+  CdnInput,
 } from '../types';
 
 const API_BASE = '/api';
@@ -243,6 +244,14 @@ export const api = {
 
   testSsh(id: number): Promise<{ success: boolean; message?: string }> {
     return request(`${API_BASE}/servers/${id}/test-ssh`, { method: 'POST' }, 'Ошибка проверки SSH');
+  },
+
+  enableCdn(id: number, input: CdnInput): Promise<Server> {
+    return request(`${API_BASE}/servers/${id}/cdn`, { method: 'POST', ...json(input) }, 'Не удалось включить вход через CDN');
+  },
+
+  disableCdn(id: number): Promise<Server & { warning?: string }> {
+    return request(`${API_BASE}/servers/${id}/cdn`, { method: 'DELETE' }, 'Не удалось выключить вход через CDN');
   },
 
   randomizeParams(id: number): Promise<Server> {

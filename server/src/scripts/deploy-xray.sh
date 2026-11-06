@@ -10,6 +10,7 @@ set -euo pipefail
 #   XRAY_IMAGE      - Docker-образ Xray-core
 #   XRAY_CONTAINER  - имя контейнера (по умолчанию dementia-xray)
 #   XRAY_CONF_DIR   - каталог конфигурации (по умолчанию /opt/dementia-xray)
+#   XRAY_CDN_PORT   - TCP-порт входа через CDN (VLESS + XHTTP + TLS), пусто — входа нет
 #   PANEL_IP        - IP панели (исключается из блокировок fail2ban)
 # ==============================================================================
 
@@ -23,6 +24,11 @@ CONTAINER_NAME="${XRAY_CONTAINER:-dementia-xray}"
 IMAGE_NAME="${XRAY_IMAGE:-ghcr.io/xtls/xray-core:latest}"
 PANEL_IP="${PANEL_IP:-}"
 XRAY_DIR="${XRAY_CONF_DIR:-/opt/dementia-xray}"
+CDN_PORT="${XRAY_CDN_PORT:-}"
+case "$CDN_PORT" in
+  "") ;;
+  *[!0-9]*) echo "Ошибка: XRAY_CDN_PORT должен быть числом"; exit 1 ;;
+esac
 
 case "$CONTAINER_NAME" in
   amnezia*)
@@ -133,12 +139,14 @@ docker run -d \
   run -c /etc/xray/config.json >/dev/null
 
 # Открытие TCP-порта в активном фаерволе хоста
-if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
-  ufw allow "${VLESS_PORT}/tcp" >/dev/null 2>&1 || true
-elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-  firewall-cmd --permanent --add-port="${VLESS_PORT}/tcp" >/dev/null 2>&1 || true
-  firewall-cmd --reload >/dev/null 2>&1 || true
-fi
+for OPEN_PORT in "$VLESS_PORT" $CDN_PORT; do
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+    ufw allow "${OPEN_PORT}/tcp" >/dev/null 2>&1 || true
+  elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+    firewall-cmd --permanent --add-port="${OPEN_PORT}/tcp" >/dev/null 2>&1 || true
+    firewall-cmd --reload >/dev/null 2>&1 || true
+  fi
+done
 
 echo "[6/6] Настройка защиты SSH от перебора паролей (fail2ban)..."
 if ! command -v fail2ban-client >/dev/null 2>&1; then

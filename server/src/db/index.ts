@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { dbFile } from '../config.js';
@@ -475,6 +476,29 @@ const migrations: Array<() => void> = [
         DROP INDEX idx_clients_server_pubkey;
         CREATE UNIQUE INDEX idx_clients_server_pubkey ON clients(server_id, client_public_key) WHERE client_public_key <> '';
       `);
+    }
+  },
+  // v16: транспорт VLESS (tcp | xhttp) и вход через CDN Cloudflare (VLESS + XHTTP + TLS, docs/vless.md).
+  // cdn_key — приватный ключ сертификата (encryptSecret), в API не отдаётся
+  () => {
+    addColumn('servers', 'xray_transport TEXT');
+    addColumn('servers', 'xhttp_path TEXT');
+    addColumn('servers', 'xhttp_mode TEXT');
+    addColumn('servers', 'cdn_enabled INTEGER NOT NULL DEFAULT 0');
+    addColumn('servers', 'cdn_domain TEXT');
+    addColumn('servers', 'cdn_port INTEGER');
+    addColumn('servers', 'cdn_address TEXT');
+    addColumn('servers', 'cdn_zone TEXT');
+    addColumn('servers', 'cdn_record TEXT');
+    addColumn('servers', 'cdn_origin_ip TEXT');
+    addColumn('servers', 'cdn_cert TEXT');
+    addColumn('servers', 'cdn_key TEXT');
+    addColumn('servers', 'cdn_expires_at TEXT');
+    addColumn('servers', 'cdn_error TEXT');
+    // Случайный путь XHTTP уже существующим VLESS-нодам: «/» легко угадать при активном зондировании
+    const update = db.prepare('UPDATE servers SET xhttp_path = ? WHERE id = ?');
+    for (const row of db.prepare("SELECT id FROM servers WHERE protocol = 'vless'").all() as { id: number }[]) {
+      update.run(`/${crypto.randomBytes(8).toString('hex')}`, row.id);
     }
   },
 ];

@@ -42,6 +42,7 @@ import { PartnerService } from './services/partner.service.js';
 import { FederationClient } from './services/federation-client.service.js';
 import { ProvisionService } from './services/provision.service.js';
 import { SubscriptionService } from './services/subscription.service.js';
+import { CdnService } from './services/cdn.service.js';
 import { SslService, http01Challenges } from './services/ssl.service.js';
 import { errorHandler } from './middleware/error-handler.js';
 import { securityHeaders } from './middleware/security-headers.js';
@@ -391,6 +392,7 @@ const renew = () => {
   // Сертификат перенесённой панели продлевает новая
   if (MigrationService.isBackgroundPaused()) return;
   SslService.renewIfNeeded().catch((err) => console.error('[SSL]', err));
+  CdnService.renewAll().catch((err) => console.error('[CDN]', err));
 };
 setTimeout(renew, 60 * 1000);
 setInterval(renew, 12 * 60 * 60 * 1000);
