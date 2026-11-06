@@ -4,6 +4,7 @@ import { ServersView } from './components/ServersView';
 import { AddServerModal } from './components/AddServerModal';
 import { InstallLogsModal } from './components/InstallLogsModal';
 import { AwgParamsModal } from './components/AwgParamsModal';
+import { VlessParamsModal } from './components/VlessParamsModal';
 import { AddClientModal } from './components/AddClientModal';
 import { AddSubscriberModal } from './components/AddSubscriberModal';
 import { SubscriptionModal } from './components/SubscriptionModal';
@@ -214,6 +215,10 @@ export const App: React.FC = () => {
   const handleServerAdded = async (newServer: Server) => {
     setServers((prev) => [newServer, ...prev]);
     setSelectedServerId(newServer.id);
+    if (newServer.protocol === 'vless') {
+      setInstallModalServer(newServer);
+      return;
+    }
     try {
       const scan = await api.scanServer(newServer.id);
       if (scan.found) {
@@ -392,7 +397,7 @@ export const App: React.FC = () => {
                 Добро пожаловать в Dementia Panel
               </h2>
               <p className="text-sm text-muted max-w-lg mx-auto">
-                Добавляйте удаленные серверы по SSH, и панель автоматически развернет изолированный Docker-контейнер с AmneziaWG и сгенерирует подписки для клиентов.
+                Добавляйте удаленные серверы по SSH, и панель автоматически развернет изолированный Docker-контейнер с AmneziaWG или VLESS Reality и сгенерирует подписки для клиентов.
               </p>
             </div>
 
@@ -406,7 +411,7 @@ export const App: React.FC = () => {
               <div className="p-4 bg-paper border border-line rounded-2xl">
                 <Sparkles className="w-5 h-5 text-info mb-2" />
                 <h4 className="text-xs font-semibold text-ink">Параметры протокола</h4>
-                <p className="text-xs text-muted mt-1">Случайные параметры AmneziaWG (Jc, S1–S4, H1–H4) для каждого сервера.</p>
+                <p className="text-xs text-muted mt-1">Автоматическая генерация параметров AmneziaWG или Reality для каждой ноды.</p>
               </div>
 
               <div className="p-4 bg-paper border border-line rounded-2xl">
@@ -475,17 +480,27 @@ export const App: React.FC = () => {
         onFinished={loadData}
       />
 
-      <AwgParamsModal
-        isOpen={!!paramsModalServer}
-        server={paramsModalServer}
-        onClose={() => setParamsModalServer(null)}
-        onUpdated={handleServerUpdated}
-      />
+      {paramsModalServer?.protocol === 'vless' ? (
+        <VlessParamsModal
+          key={paramsModalServer.id}
+          server={paramsModalServer}
+          onClose={() => setParamsModalServer(null)}
+          onUpdated={handleServerUpdated}
+        />
+      ) : (
+        <AwgParamsModal
+          isOpen={!!paramsModalServer}
+          server={paramsModalServer}
+          onClose={() => setParamsModalServer(null)}
+          onUpdated={handleServerUpdated}
+        />
+      )}
 
       <AddClientModal
         isOpen={isAddClientOpen}
         serverId={selectedServerId}
         serverName={selectedServer?.name || ''}
+        protocol={selectedServer?.protocol}
         onClose={() => setIsAddClientOpen(false)}
         onClientAdded={handleClientAdded}
       />

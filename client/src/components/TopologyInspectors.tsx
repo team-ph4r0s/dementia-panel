@@ -3,6 +3,7 @@ import { Waypoints, Globe2, ExternalLink } from 'lucide-react';
 import type { Bridge, Server, Subscriber } from '../types';
 import { countryFlag, countryName } from '../utils';
 import { UNKNOWN_COUNTRY } from '../topology/model';
+import { ProtocolBadge } from './ProtocolBadge';
 import { ProbeBadges } from './ProbeBadges';
 
 const STATUS_TEXT: Record<Bridge['status'], string> = {
@@ -59,6 +60,7 @@ export const BridgeInspector: React.FC<{ bridge: Bridge; servers: Server[]; onOp
         return (
           <div key={link.server_id} className="bg-paper border border-line rounded-lg px-3 py-2 text-xs flex flex-wrap items-center gap-x-3 gap-y-1">
             <span className="font-semibold text-ink">{server?.name ?? link.server_name}</span>
+            {server && <ProtocolBadge protocol={server.protocol} />}
             <span className="font-mono text-faint">порт {link.listen_port} → {link.awg_port}</span>
             <span className="ml-auto flex items-center gap-1.5">
               <span className="px-1.5 py-0.5 rounded bg-soft text-muted">{MODE_TEXT[link.mode]}</span>
@@ -109,6 +111,7 @@ export const CountryInspector: React.FC<{ code: string; servers: Server[]; bridg
           {probed.map((s) => (
             <div key={s.id} className="bg-paper border border-line rounded-lg px-3 py-2 text-xs flex items-center gap-2">
               <span className="font-semibold text-ink">{s.name}</span>
+              <ProtocolBadge protocol={s.protocol} />
               <span className="ml-auto">
                 <ProbeBadges probes={(s.probes ?? []).filter((p) => p.country.toUpperCase() === code)} showRtt />
               </span>

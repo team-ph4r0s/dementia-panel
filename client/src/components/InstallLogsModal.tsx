@@ -105,8 +105,10 @@ export const InstallLogsModal: React.FC<InstallLogsModalProps> = ({
 
   if (!isOpen || !server) return null;
 
+  const protocolName = server.protocol === 'vless' ? 'VLESS Reality' : 'AmneziaWG';
+
   return (
-    <ModalShell label="Установка AmneziaWG" onClose={onClose}>
+    <ModalShell label={`Установка ${protocolName}`} onClose={onClose}>
       <div className="bg-paper border border-line rounded-2xl w-full max-w-3xl shadow-pop flex flex-col h-[75vh] overflow-hidden">
         {/* Terminal Header */}
         <div className="flex items-center justify-between px-6 py-3.5 border-b border-line bg-card">
@@ -114,7 +116,7 @@ export const InstallLogsModal: React.FC<InstallLogsModalProps> = ({
             <Terminal className="w-5 h-5 text-ok" />
             <div>
               <h2 className="text-sm font-semibold text-ink flex items-center gap-2">
-                <span>Установка AmneziaWG на {server.name}</span>
+                <span>Установка {protocolName} на {server.name}</span>
                 <span className="text-faint font-mono text-xs">({server.host})</span>
               </h2>
             </div>
