@@ -258,7 +258,11 @@ export class FailoverService {
     const path = `/zones/${zone}/dns_records/${id}`;
     let current: any = null;
     try { current = await this.api(token, path); }
-    catch { return; }
+    catch (err: any) {
+      // Запись, которой уже нет (Cloudflare ответил отказом), забываем; временный сбой связи — нет: иначе адрес останется в DNS без учёта
+      if (err?.status === 502) throw err;
+      return;
+    }
     if (current?.type === 'A' && current?.name === domain && current?.content === ip) await this.api(token, path, { method: 'DELETE' });
   }
 

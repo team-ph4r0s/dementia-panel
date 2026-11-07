@@ -35,6 +35,7 @@ export function PanelIpCard() {
     status.uses.bridges > 0 && `пересылка «Панели через мост» на ${status.uses.bridges} мост(ах)`,
     status.uses.failover_domain && `прямой адрес в резервном домене ${status.uses.failover_domain}`,
     status.uses.public_url_by_ip && 'публичный адрес панели (ссылки подписок по IP)',
+    status.uses.certificate_ip && 'самоподписанный сертификат HTTPS на этот IP (будет перевыпущен)',
   ].filter(Boolean) as string[];
 
   const apply = async () => {
@@ -87,7 +88,13 @@ export function PanelIpCard() {
         {busy && <Loader2 className="w-4 h-4 animate-spin text-info" />}
       </div>
 
-      {status.changed && (
+      {status.dns_pending && (
+        <p role="alert" className="p-3 bg-bad-soft text-bad rounded-lg text-xs">
+          Домен панели в Cloudflare ещё ведёт на старый IP: перевод на <span className="font-mono">{status.dns_pending}</span> не удался.
+          Нажмите «Обновить везде» ещё раз или исправьте A-запись в Cloudflare вручную.
+        </p>
+      )}
+      {status.changed && status.detected && (
         <p role="alert" className="p-3 bg-warn-soft text-warn rounded-lg text-xs">
           IP панели изменился: был <span className="font-mono">{status.known}</span>, сейчас <span className="font-mono">{status.detected}</span>.
           Пока адрес не обновлён, домен, мосты и резервный домен ведут на старый.
@@ -119,7 +126,7 @@ export function PanelIpCard() {
           </label>
           <button
             type="button"
-            disabled={!ip.trim() || ip.trim() === status.known}
+            disabled={!ip.trim() || (ip.trim() === status.known && !status.dns_pending)}
             onClick={() => void apply()}
             className="bg-brand text-on-accent font-bold text-sm px-4 py-2 rounded-lg btn-press disabled:opacity-50"
           >

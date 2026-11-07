@@ -24,7 +24,16 @@ export interface AddressStep { ok: boolean; title: string; detail: string }
 export class PanelAddressService {
   /** Адрес, который панель считает своим (на него указывают DNS и мосты) */
   static known(): string | null {
-    const ip = getSetting('panel_origin_ip') || getSetting('cf_panel_ip');
+    // Явный адрес → адрес домена в Cloudflare → публичный адрес панели, заданный IP → первый замеченный (установка без домена)
+    for (const ip of [getSetting('panel_origin_ip'), getSetting('cf_panel_ip'), this.publicUrlHost(), getSetting('panel_ip_baseline')]) {
+      if (ip && net.isIPv4(ip)) return ip;
+    }
+    return null;
+  }
+
+  /** Адрес, на который не удалось перевести A-запись домена панели (пока не получилось — домен ведёт на старый IP) */
+  static dnsPending(): string | null {
+    const ip = getSetting('panel_ip_dns_pending');
     return ip && net.isIPv4(ip) ? ip : null;
   }
 
@@ -34,7 +43,8 @@ export class PanelAddressService {
     return {
       known,
       detected: detected && net.isIPv4(detected) ? detected : null,
-      changed: Boolean(detected && known && detected !== known),
+      changed: Boolean(detected && known && detected !== known) || Boolean(this.dnsPending()),
+      dns_pending: this.dnsPending(),
       auto: getSetting('panel_ip_auto') === '1',
       checked_at: getSetting('panel_ip_checked_at'),
       // Что зависит от адреса — чтобы было видно, что обновится
@@ -43,6 +53,7 @@ export class PanelAddressService {
         bridges: (db.prepare('SELECT COUNT(*) AS n FROM bridges WHERE panel_forward = 1').get() as { n: number }).n,
         failover_domain: getSetting('failover_domain'),
         public_url_by_ip: Boolean(known && this.publicUrlHost() === known),
+        certificate_ip: getSetting('ssl_mode') === 'selfsigned_ip' && known && getSetting('ssl_domain') === known ? known : null,
       },
     };
   }
@@ -64,11 +75,22 @@ export class PanelAddressService {
    */
   static async check(detect: () => Promise<string | null> = detectPublicIpv4): Promise<void> {
     const known = this.known();
-    if (!known) return; // адрес ещё нигде не используется — следить не за чем
     const detected = await detect();
     if (!detected || !net.isIPv4(detected)) return;
     setSetting('panel_ip_checked_at', new Date().toISOString());
+    if (!known) {
+      // Установка без домена и без заданного IP: запоминаем первый замеченный адрес, чтобы заметить его смену
+      setSetting('panel_ip_baseline', detected);
+      return;
+    }
     if (detected === known) {
+      // Прошлое применение не смогло обновить DNS из-за временной ошибки — автообновление повторяет попытку
+      if (this.dnsPending() && getSetting('panel_ip_dns_retry') === '1' && getSetting('panel_ip_auto') === '1') {
+        await this.apply(this.dnsPending()).catch((err: any) => {
+          EventService.log('error', 'panel.ip_update_failed', `Не удалось автоматически обновить IP панели: ${err.message}`);
+        });
+        return;
+      }
       if (getSetting('panel_ip_detected')) {
         transaction(() => { setSetting('panel_ip_detected', null); setSetting('panel_ip_streak', null); });
         LiveService.notify();
@@ -96,10 +118,12 @@ export class PanelAddressService {
   static async apply(ipInput: unknown): Promise<{ ip: string; previous: string | null; steps: AddressStep[] }> {
     if (typeof ipInput !== 'string' || !net.isIPv4(ipInput.trim())) throw new HttpError(400, 'Укажите IPv4-адрес панели');
     const ip = ipInput.trim();
-    const previous = this.known();
+    let previous: string | null = null;
     const steps: AddressStep[] = [];
 
     await SslService.exclusive(async () => {
+      previous = this.known(); // внутри очереди: два одновременных применения не должны видеть одно и то же «прежнее»
+      let dnsFailed: 'retry' | 'manual' | null = null;
       // 1. A-запись домена панели в Cloudflare
       const zone = getSetting('cf_panel_zone');
       const record = getSetting('cf_panel_record');
@@ -112,11 +136,13 @@ export class PanelAddressService {
           const current = await cfFetch(token, path);
           const r = current?.result;
           if (current?.success !== true || r?.type !== 'A' || r?.name !== domain) {
+            dnsFailed = 'manual';
             steps.push({ ok: false, title: `DNS ${domain}`, detail: 'запись не найдена или изменена вне панели — обновите её в Cloudflare вручную' });
           } else if (r.content === ip) {
             setSetting('cf_panel_ip', ip);
             steps.push({ ok: true, title: `DNS ${domain}`, detail: `уже указывает на ${ip}` });
           } else if (r.content !== recordIp) {
+            dnsFailed = 'manual';
             steps.push({ ok: false, title: `DNS ${domain}`, detail: `запись указывает на ${r.content}, а не на прежний IP панели — не трогаю, проверьте в Cloudflare` });
           } else {
             const updated = await cfFetch(token, path, { method: 'PATCH', body: JSON.stringify({ content: ip }) });
@@ -125,9 +151,14 @@ export class PanelAddressService {
             steps.push({ ok: true, title: `DNS ${domain}`, detail: `${recordIp} → ${ip} (оранжевое облако сохранено)` });
           }
         } catch (err: any) {
+          dnsFailed = 'retry';
           steps.push({ ok: false, title: `DNS ${domain}`, detail: `ошибка Cloudflare: ${err.message}` });
         }
       }
+
+      // Пока DNS не переведён, адрес считается неприменённым: баннер остаётся, кнопка доступна, автообновление повторит попытку
+      setSetting('panel_ip_dns_pending', dnsFailed ? ip : null);
+      setSetting('panel_ip_dns_retry', dnsFailed === 'retry' ? '1' : null);
 
       // 2. Публичный адрес панели, заданный IP
       const host = this.publicUrlHost();
@@ -138,8 +169,19 @@ export class PanelAddressService {
         steps.push({ ok: true, title: 'Публичный адрес панели', detail: `${url.toString().replace(/\/+$/, '')} — выданные ранее ссылки с ${previous} перестанут работать, раздайте новые` });
       }
 
-      // 3. Адрес для мостов и резервного домена
+      // 3. Самоподписанный сертификат на прежний IP: редирект HTTP → HTTPS и сертификат должны указывать на новый адрес
+      if (previous && getSetting('ssl_mode') === 'selfsigned_ip' && getSetting('ssl_domain') === previous) {
+        try {
+          await SslService.generateSelfSignedIpCert(ip);
+          steps.push({ ok: true, title: 'Сертификат HTTPS', detail: `самоподписанный сертификат перевыпущен на ${ip} (браузер спросит доверие заново)` });
+        } catch (err: any) {
+          steps.push({ ok: false, title: 'Сертификат HTTPS', detail: `не удалось перевыпустить сертификат на ${ip}: ${err.message}` });
+        }
+      }
+
+      // 4. Адрес для мостов и резервного домена
       transaction(() => {
+        setSetting('panel_ip_baseline', ip);
         setSetting('panel_origin_ip', ip);
         setSetting('panel_ip_detected', null);
         setSetting('panel_ip_streak', null);
@@ -159,8 +201,16 @@ export class PanelAddressService {
     if (getSetting('failover_domain')) {
       const { FailoverService } = await import('./failover.service.js');
       await FailoverService.reconcile();
+      // Пустой набор не публикуется намеренно; иначе опубликованные записи должны совпасть с нужными (ошибка могла остаться от прошлого раза)
+      const desired = FailoverService.desiredIps();
+      const published = FailoverService.status().published;
+      const synced = desired.length === 0 || (desired.length === published.length && desired.every((a) => published.includes(a)));
       const error = getSetting('failover_error');
-      steps.push({ ok: !error, title: `Резервный домен ${getSetting('failover_domain')}`, detail: error ?? 'адреса обновлены' });
+      steps.push({
+        ok: synced,
+        title: `Резервный домен ${getSetting('failover_domain')}`,
+        detail: synced ? 'адреса обновлены' : (error ?? 'опубликованные записи не совпадают с нужными — проверьте резервный домен'),
+      });
     }
     if (steps.length === 0) steps.push({ ok: true, title: 'Адрес сохранён', detail: 'от IP панели пока ничего не зависит' });
 
