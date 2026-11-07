@@ -3,6 +3,7 @@ import { db, getSetting, initDatabase, setSetting } from '../src/db/index.js';
 import { PanelAddressService } from '../src/services/panel-address.service.js';
 import { BridgeService } from '../src/services/bridge.service.js';
 import { FailoverService } from '../src/services/failover.service.js';
+import { SslService } from '../src/services/ssl.service.js';
 import { encryptSecret } from '../src/services/secrets.service.js';
 import { createAdminApi } from './helpers/api.js';
 import { startTestServer, type TestEnv } from './test-app.js';
@@ -29,7 +30,7 @@ afterAll(async () => { await env.close(); });
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
-  db.exec("DELETE FROM bridges; DELETE FROM events; DELETE FROM settings WHERE key LIKE 'cf_%' OR key LIKE 'panel_%' OR key LIKE 'failover_%' OR key = 'public_url'");
+  db.exec("DELETE FROM bridges; DELETE FROM events; DELETE FROM settings WHERE key LIKE 'cf_%' OR key LIKE 'panel_%' OR key LIKE 'failover_%' OR key LIKE 'ssl_%' OR key = 'public_url'");
 });
 
 function cloudflare(record: Record<string, unknown>) {
@@ -107,6 +108,7 @@ describe('применение нового IP', () => {
     setSetting('panel_origin_ip', OLD);
     setSetting('public_url', `https://${OLD}:3001`);
     setSetting('failover_domain', 'sub.example.com');
+    setSetting('failover_records', JSON.stringify({ '198.51.100.80': 'c'.repeat(32), [NEW]: 'd'.repeat(32) })); // сверка подменена: записи уже есть
     db.prepare("INSERT INTO bridges (name, host, ssh_port, ssh_user, country, status, panel_forward) VALUES ('Москва', '198.51.100.80', 22, 'root', 'ru', 'online', 1)").run();
     const calls = cloudflare({ content: OLD });
     const applyBridge = vi.spyOn(BridgeService, 'requestApply').mockResolvedValue({ success: true });
@@ -147,5 +149,91 @@ describe('применение нового IP', () => {
     setSetting('panel_origin_ip', OLD);
     setSetting('panel_ip_detected', NEW);
     expect((await api('/api/security/panel-ip')).body).toMatchObject({ known: OLD, detected: NEW, changed: true, auto: true });
+  });
+});
+
+describe('сбои и особые случаи', () => {
+  it('сбой DNS: адрес остаётся неприменённым — баннер, кнопка доступна, повтор доводит дело до конца', async () => {
+    panelOnCloudflare();
+    setSetting('panel_origin_ip', OLD);
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('network'); }));
+    const failed = await PanelAddressService.apply(NEW);
+    expect(failed.steps[0]).toMatchObject({ ok: false, title: 'DNS panel.example.com' });
+    expect(PanelAddressService.status()).toMatchObject({ known: NEW, dns_pending: NEW, changed: true });
+    expect(getSetting('cf_panel_ip')).toBe(OLD);
+
+    vi.unstubAllGlobals();
+    const calls = cloudflare({ content: OLD });
+    const retried = await PanelAddressService.apply(NEW);
+    expect(calls.some((c) => c.method === 'PATCH')).toBe(true);
+    expect(retried.steps[0].ok).toBe(true);
+    expect(PanelAddressService.status()).toMatchObject({ dns_pending: null, changed: false });
+    expect(getSetting('cf_panel_ip')).toBe(NEW);
+  });
+
+  it('автообновление повторяет перевод DNS после временной ошибки, но не трогает чужую запись', async () => {
+    panelOnCloudflare();
+    setSetting('panel_origin_ip', OLD);
+    setSetting('panel_ip_auto', '1');
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('network'); }));
+    await PanelAddressService.apply(NEW);
+    vi.unstubAllGlobals();
+    const calls = cloudflare({ content: OLD });
+    await PanelAddressService.check(async () => NEW);
+    expect(calls.some((c) => c.method === 'PATCH')).toBe(true);
+    expect(PanelAddressService.dnsPending()).toBeNull();
+
+    // Чужая запись — повторять нечего, автоматика не стучится в Cloudflare каждые 10 минут
+    panelOnCloudflare();
+    setSetting('panel_origin_ip', OLD);
+    setSetting('panel_ip_dns_pending', null);
+    const foreign = cloudflare({ content: '192.0.2.200' });
+    await PanelAddressService.apply(NEW);
+    expect(PanelAddressService.dnsPending()).toBe(NEW);
+    const before = foreign.length;
+    await PanelAddressService.check(async () => NEW);
+    expect(foreign.length).toBe(before);
+  });
+
+  it('установка без домена: первый замеченный адрес запоминается, смена потом замечается', async () => {
+    await PanelAddressService.check(async () => OLD);
+    expect(PanelAddressService.status()).toMatchObject({ known: OLD, changed: false });
+    await PanelAddressService.check(async () => NEW);
+    expect(PanelAddressService.status()).toMatchObject({ known: OLD, detected: NEW, changed: true });
+  });
+
+  it('публичный адрес по IP считается известным адресом и переводится на новый', async () => {
+    setSetting('public_url', `https://${OLD}:3001`);
+    expect(PanelAddressService.known()).toBe(OLD);
+    await PanelAddressService.apply(NEW);
+    expect(getSetting('public_url')).toBe(`https://${NEW}:3001`);
+  });
+
+  it('самоподписанный сертификат на прежний IP перевыпускается на новый', async () => {
+    setSetting('panel_origin_ip', OLD);
+    setSetting('ssl_mode', 'selfsigned_ip');
+    setSetting('ssl_domain', OLD);
+    const issue = vi.spyOn(SslService, 'generateSelfSignedIpCert').mockResolvedValue({ success: true });
+    expect(PanelAddressService.status().uses.certificate_ip).toBe(OLD);
+    const res = await PanelAddressService.apply(NEW);
+    expect(issue).toHaveBeenCalledWith(NEW);
+    expect(res.steps.find((s) => s.title === 'Сертификат HTTPS')?.ok).toBe(true);
+  });
+
+  it('резервный домен: временный сбой Cloudflare не теряет запись старого IP, шаг отчёта честно красный', async () => {
+    panelOnCloudflare();
+    setSetting('panel_origin_ip', OLD);
+    setSetting('failover_domain', 'sub.example.com');
+    setSetting('failover_zone', ZONE);
+    setSetting('failover_records', JSON.stringify({ [OLD]: 'e'.repeat(32) }));
+    vi.stubGlobal('fetch', vi.fn(async (url: any, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      if (method === 'POST') return Response.json({ success: true, result: { id: 'f'.repeat(32), type: 'A', proxied: false } });
+      if (String(url).endsWith('e'.repeat(32))) throw new Error('network');
+      return Response.json({ success: true, result: {} });
+    }));
+    const res = await PanelAddressService.apply(NEW);
+    expect(JSON.parse(getSetting('failover_records')!)).toHaveProperty(OLD);
+    expect(res.steps.find((s) => s.title.startsWith('Резервный домен'))?.ok).toBe(false);
   });
 });

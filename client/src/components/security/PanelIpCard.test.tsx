@@ -7,11 +7,18 @@ import { api } from '../../api';
 vi.mock('../../api', () => ({ api: { getPanelIp: vi.fn(), applyPanelIp: vi.fn(), setPanelIpAuto: vi.fn() } }));
 
 const changed = {
-  known: '203.0.113.5', detected: '198.51.100.77', changed: true, auto: false, checked_at: null,
-  uses: { cloudflare_domain: 'panel.example.com', bridges: 2, failover_domain: 'sub.example.com', public_url_by_ip: false },
+  known: '203.0.113.5', detected: '198.51.100.77', changed: true, dns_pending: null, auto: false, checked_at: null,
+  uses: { cloudflare_domain: 'panel.example.com', bridges: 2, failover_domain: 'sub.example.com', public_url_by_ip: false, certificate_ip: null },
 };
 
 describe('PanelIpCard', () => {
+  it('после сбоя DNS предупреждает и оставляет кнопку доступной для повтора', async () => {
+    vi.mocked(api.getPanelIp).mockResolvedValue({ ...changed, known: '198.51.100.77', detected: null, dns_pending: '198.51.100.77' });
+    render(<FeedbackProvider><PanelIpCard /></FeedbackProvider>);
+    expect(await screen.findByRole('alert')).toHaveTextContent('ещё ведёт на старый IP');
+    expect(screen.getByRole('button', { name: 'Обновить везде' })).toBeEnabled();
+  });
+
   it('показывает обнаруженную смену, подставляет новый адрес и применяет его после подтверждения', async () => {
     vi.mocked(api.getPanelIp).mockResolvedValue(changed);
     vi.mocked(api.applyPanelIp).mockResolvedValue({ ip: changed.detected, previous: changed.known, steps: [{ ok: true, title: 'DNS panel.example.com', detail: 'ok' }] });
