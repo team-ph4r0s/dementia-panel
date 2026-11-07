@@ -97,6 +97,7 @@ export class CloudflarePanelService {
           for (const [key, value] of Object.entries({ cf_panel_enabled: '1', cf_panel_domain: domain, cf_panel_zone: zone.id,
             cf_panel_record: recordId!, cf_panel_ip: ip, cf_panel_port: String(port), public_url: url, cf_token: encryptSecret(token) })) setSetting(key, value);
           setSetting('cf_panel_error', null);
+          setSetting('panel_ip_dns_pending', null); // домен настроен заново — отложенный перевод DNS больше не нужен
         });
         EventService.log('info', 'cloudflare.configured', `Для панели настроен домен ${domain} с проксированием Cloudflare`);
         return this.status();

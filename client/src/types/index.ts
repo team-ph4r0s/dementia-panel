@@ -502,9 +502,11 @@ export interface PanelIpStatus {
   known: string | null;
   detected: string | null;
   changed: boolean;
+  /** Адрес, на который не удалось перевести A-запись домена панели (домен пока ведёт на старый IP) */
+  dns_pending: string | null;
   auto: boolean;
   checked_at: string | null;
-  uses: { cloudflare_domain: string | null; bridges: number; failover_domain: string | null; public_url_by_ip: boolean };
+  uses: { cloudflare_domain: string | null; bridges: number; failover_domain: string | null; public_url_by_ip: boolean; certificate_ip: string | null };
 }
 
 export interface PanelIpApplyResult {
