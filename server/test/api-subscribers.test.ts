@@ -134,6 +134,11 @@ describe('API: Подписчики и подписки (интеграцион�
     expect(html).toContain('🇫🇮 Хельсинки');
     expect(html).toContain('href="?format=clash"');
     expect(html).not.toContain('awg://');
+    // кнопки приложений ведут на полный адрес подписки, а скрипт страницы отдаётся отдельным файлом (CSP без inline)
+    expect(html).toContain(`incy://import/${testEnv.baseUrl}${path}`);
+    const script = await testEnv.request('/sub/page.js');
+    expect(script.status).toBe(200);
+    expect(script.headers.get('content-type')).toContain('javascript');
 
     const vpn = await testEnv.request(path, { headers: { Accept: headers.Accept, 'User-Agent': 'Incy/1.0' } });
     expect(await vpn.text()).toBe(payload);

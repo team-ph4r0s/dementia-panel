@@ -179,7 +179,7 @@ describe('VLESS + Reality в подписках', () => {
   });
 
   it('страница предлагает VLESS-подписку и совместимые приложения', () => {
-    const html = renderSubscriptionPage({ title: 'VPN', status: 'Активна', active: true, expire: 0, used: 0, limit: 0, nodes: [] });
+    const html = renderSubscriptionPage({ title: 'VPN', status: 'Активна', active: true, expire: 0, used: 0, limit: 0, nodes: [], url: 'https://p.example/sub/t' });
     expect(html).toContain('?format=v2ray');
     for (const app of ['v2rayNG', 'Hiddify', 'Streisand', 'Happ', 'v2rayN']) expect(html).toContain(app);
   });
