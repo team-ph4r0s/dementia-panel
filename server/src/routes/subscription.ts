@@ -1,5 +1,5 @@
 import { Router, type Request } from 'express';
-import { db } from '../db/index.js';
+import { db, getSetting } from '../db/index.js';
 import { AwgService } from '../services/awg.service.js';
 import { cdnReady, XrayService } from '../services/xray.service.js';
 import { SubscriptionService } from '../services/subscription.service.js';
@@ -8,7 +8,7 @@ import { contentDisposition } from '../utils/http.js';
 import { paramsFromRow } from '../utils/awg-params.js';
 import { countryFlag, ProbeService } from '../services/probe.service.js';
 import { BridgeService } from '../services/bridge.service.js';
-import { renderSubscriptionPage } from './subscription-page.js';
+import { renderSubscriptionPage, SUBSCRIPTION_PAGE_SCRIPT } from './subscription-page.js';
 
 /** Названия доп. параметров AWG 3.x в amnezia-wg-option mihomo */
 const MIHOMO_EXTRA_KEYS: Record<string, string> = {
@@ -127,6 +127,11 @@ export function buildClashConfig(entries: { name: string; server: any; client: a
  * - `?format=clash` или User-Agent клиента mihomo: YAML-конфигурация mihomo;
  * - `?format=v2ray` или User-Agent VLESS-клиента: base64-список только ссылок `vless://`.
  */
+/** Скрипт страницы подписки (копирование ссылки, определение платформы): встроенные скрипты запрещены CSP */
+subscriptionRouter.get('/page.js', (_req, res) => {
+  res.type('application/javascript; charset=utf-8').send(SUBSCRIPTION_PAGE_SCRIPT);
+});
+
 subscriptionRouter.get('/:token', (req, res) => {
   const { token } = req.params;
   const format = detectFormat(req.query.format, req.get('user-agent'));
@@ -210,6 +215,8 @@ subscriptionRouter.get('/:token', (req, res) => {
       used: usage.used,
       limit: subscriber.traffic_limit,
       nodes: entries.map((entry) => entry.name),
+      url: `${(getSetting('public_url') || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '')}/sub/${encodeURIComponent(token)}`,
+      protocols: [...new Set(entries.map((entry) => (entry.server.protocol === 'vless' ? 'vless' : 'awg') as 'vless' | 'awg'))],
     }));
   }
 
