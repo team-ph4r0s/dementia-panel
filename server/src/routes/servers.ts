@@ -13,6 +13,7 @@ import { generateSignature, normalizeSignatureDomain, SIGNATURE_PRESETS, Signatu
 import { AmneziaKeyError, decodeAmneziaKey, splitAmneziaKeys } from '../utils/amnezia-key.js';
 import { ProbeService } from '../services/probe.service.js';
 import { EventService } from '../services/event.service.js';
+import { BridgeService } from '../services/bridge.service.js';
 import { ExtraPortsService, parseExtraPorts, validateExtraPorts } from '../services/extra-ports.service.js';
 import {
   DEFAULT_VLESS_PORT, generateVlessParams, NODE_PROTOCOLS, NodeProtocol, nodeProtocol,
@@ -378,7 +379,10 @@ serversRouter.put('/:id', asyncHandler(async (req, res) => {
   if (body.host !== undefined) {
     if (!isValidHost(body.host)) throw new HttpError(400, 'Укажите корректный IP-адрес или домен сервера');
     updates.host = String(body.host).trim();
-    if (updates.host !== server.host) updates.host_key = null;
+    if (updates.host !== server.host) {
+      BridgeService.requireNoCascade('server_id', id);
+      updates.host_key = null;
+    }
   }
   if (body.ssh_port !== undefined) updates.ssh_port = validatePort(body.ssh_port, 'SSH-порт');
   if (body.ssh_user !== undefined) updates.ssh_user = validateSshUser(body.ssh_user);
@@ -523,6 +527,7 @@ serversRouter.delete('/:id', asyncHandler(async (req, res) => {
   const id = parseId(req.params.id);
   const server = getLocalServerOr404(id);
   if (ProvisionService.isInstalling(id)) throw new HttpError(409, 'Дождитесь окончания установки');
+  BridgeService.requireNoCascade('server_id', id);
 
   if (req.query.teardown === '1' && server.status !== 'uninstalled') {
     const result = await ProvisionService.teardown(id);
@@ -534,6 +539,7 @@ serversRouter.delete('/:id', asyncHandler(async (req, res) => {
     }
   }
 
+  BridgeService.requireNoCascade('server_id', id);
   db.prepare('DELETE FROM servers WHERE id = ?').run(id);
   await CdnService.forget(server);
   EventService.log('info', 'server.deleted', `Удалена нода «${server.name}»`, { kind: 'server', id });

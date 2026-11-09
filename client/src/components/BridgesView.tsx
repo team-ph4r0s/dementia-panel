@@ -3,8 +3,10 @@ import { Plus, Waypoints, RefreshCw, Pencil, Trash2, Terminal, Loader2, Save, Ch
 import type { Bridge, BridgeLinkMode, Server } from '../types';
 import { api } from '../api';
 import { countryFlag, countryName } from '../utils';
+import { linkInUse } from '../topology/model';
 import { BridgeModal } from './BridgeModal';
 import { FailoverCard } from './bridges/FailoverCard';
+import { CascadeModal } from './bridges/CascadeModal';
 import { useFeedback } from './ui/feedback-context';
 
 const STATUS: Record<Bridge['status'], { label: string; className: string }> = {
@@ -33,6 +35,8 @@ const BridgeLinks: React.FC<{ bridge: Bridge; servers: Server[]; onChanged: () =
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
+  const [cascadeServer, setCascadeServer] = useState<number | null>(null);
+  const cascadeLink = bridge.links.find((link) => link.server_id === cascadeServer);
 
   // Фоновое обновление не затирает несохранённую правку
   useEffect(() => {
@@ -84,6 +88,7 @@ const BridgeLinks: React.FC<{ bridge: Bridge; servers: Server[]; onChanged: () =
                     type="checkbox"
                     className="w-4 h-4"
                     checked={Boolean(mode)}
+                    disabled={Boolean(link?.cascade_port)}
                     onChange={(e) => {
                       const next = { ...modes };
                       if (e.target.checked) next[s.id] = 'main';
@@ -120,7 +125,20 @@ const BridgeLinks: React.FC<{ bridge: Bridge; servers: Server[]; onChanged: () =
                   </select>
                 )}
               </div>
-              <div className={link ? 'pl-6 md:pl-0' : 'hidden md:block'}>{link && <LinkState bridge={bridge} link={link} />}</div>
+              <div className={link ? 'pl-6 md:pl-0 space-y-1' : 'hidden md:block'}>
+                {link && <LinkState bridge={bridge} link={link} />}
+                {link && !s.remote_panel_id && (link.cascade_port || (bridge.status === 'online' && s.status === 'online')) && (
+                  <button
+                    type="button"
+                    disabled={dirty || saving || bridge.installing}
+                    onClick={() => setCascadeServer(s.id)}
+                    aria-label={`Каскад XHTTP для ${s.name}`}
+                    className="min-h-10 rounded-lg border border-line px-2 text-xs text-brand hover:bg-soft disabled:opacity-50"
+                  >
+                    {link.cascade_port ? `XHTTP · ${link.cascade_port}` : 'Каскад XHTTP'}
+                  </button>
+                )}
+              </div>
             </div>
           );
         })}
@@ -140,13 +158,14 @@ const BridgeLinks: React.FC<{ bridge: Bridge; servers: Server[]; onChanged: () =
           </button>
         </div>
       )}
+      {cascadeLink && <CascadeModal bridge={bridge} link={cascadeLink} onChanged={onChanged} onClose={() => setCascadeServer(null)} />}
     </div>
   );
 };
 
 const LinkState: React.FC<{ bridge: Bridge; link: Bridge['links'][number] }> = ({ bridge, link }) => {
   const flag = countryFlag(bridge.country);
-  const via = link.mode === 'main' || link.mode === 'always' || (link.mode === 'auto' && link.active);
+  const via = linkInUse(link);
   const broken = link.check_ok === false;
   return (
     <div className="space-y-0.5">
@@ -156,6 +175,8 @@ const LinkState: React.FC<{ bridge: Bridge; link: Bridge['links'][number] }> = (
         <span className="text-faint" title="Подписка выдаёт мост, только пока он работает">
           {flag} напрямую — мост не работает
         </span>
+      ) : link.cascade_pending ? (
+        <span className="text-warn">каскад ожидает применения</span>
       ) : broken ? (
         <span className="inline-flex items-center gap-1 text-bad" title="Панель не получила ответ заглушки ноды через мост — мост не выдаётся">
           <XCircle className="w-3.5 h-3.5" /> пересылка не работает

@@ -4,7 +4,7 @@ FROM docker:dind
 
 # Убираем унаследованный SSH-клиент до обращения к репозиторию: нода принимает SSH-соединения.
 RUN apk del --no-network openssh-client \
-    && apk add --no-cache bash openssh-server shadow coreutils iptables iproute2 procps curl \
+    && apk add --no-cache bash openssh-server shadow coreutils iptables iproute2 conntrack-tools procps curl python3 \
     && ssh-keygen -A \
     && echo 'root:rootpass123' | chpasswd \
     && echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config \

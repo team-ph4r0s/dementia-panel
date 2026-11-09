@@ -520,6 +520,12 @@ const migrations: Array<() => void> = [
     addColumn('probe_results', 'gp_total INTEGER');
     addColumn('probe_results', 'gp_eyeball INTEGER');
   },
+  // v20: транспорт моста XHTTP Reality. NULL — прежняя пересылка DNAT.
+  () => {
+    addColumn('bridge_links', 'cascade_port INTEGER');
+    addColumn('bridge_links', 'cascade_secret TEXT');
+    addColumn('bridge_links', 'cascade_pending INTEGER NOT NULL DEFAULT 0');
+  },
 ];
 
 /** Версия схемы, которую умеет эта сборка панели (число миграций) */

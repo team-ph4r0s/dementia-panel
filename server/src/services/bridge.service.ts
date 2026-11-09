@@ -5,12 +5,17 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db, getSetting, transaction } from '../db/index.js';
 import { HttpError } from '../utils/http.js';
-import { formatEndpointHost, isValidHost, shellQuote } from '../utils/net.js';
+import { formatEndpointHost, isValidHost, isValidPort, shellQuote } from '../utils/net.js';
+import { nodeProtocol } from '../utils/vless-params.js';
 import { HostKeyMismatchError, SshCredentials, SshService } from './ssh.service.js';
 import { decryptSecret, encryptSecret } from './secrets.service.js';
-import { OperationResult, runExclusive } from './provision.service.js';
+import { OperationResult, ProvisionService, runExclusive } from './provision.service.js';
 import { ProbeService, ProbeResult } from './probe.service.js';
 import { stubPortCandidates } from './stub.service.js';
+import {
+  CASCADE_XRAY_IMAGE, applyCascadeContainer, cascadeConfigs, cascadeContainer, cascadePortReachable, cascadeRunning,
+  clearBridgeConntrack, generateCascadeSecret, removeCascadeContainer, type CascadeLink,
+} from './bridge-cascade.service.js';
 
 /**
  * Мосты (docs/bridges.md): серверы в стране пользователей, пересылающие UDP-трафик AmneziaWG на зарубежные ноды правилами
@@ -218,8 +223,21 @@ function ruleLinks(bridgeId: number): BridgeRuleLink[] {
   return db.prepare(`
     SELECT l.listen_port, s.host, s.awg_port, s.stub_port, s.protocol
     FROM bridge_links l JOIN servers s ON s.id = l.server_id
-    WHERE l.bridge_id = ? ORDER BY l.listen_port
+    WHERE l.bridge_id = ? AND l.cascade_port IS NULL ORDER BY l.listen_port
   `).all(bridgeId) as any[];
+}
+
+function cascadeLinks(bridgeId: number): CascadeLink[] {
+  const rows = db.prepare(`
+    SELECT l.server_id, l.listen_port, l.cascade_port, l.cascade_secret, s.host, s.protocol,
+      COALESCE(s.deployed_port, s.awg_port) AS vpn_port, s.stub_port
+    FROM bridge_links l JOIN servers s ON s.id = l.server_id
+    WHERE l.bridge_id = ? AND l.cascade_port IS NOT NULL ORDER BY l.server_id
+  `).all(bridgeId) as any[];
+  return rows.map((row) => ({
+    bridgeId, serverId: row.server_id, host: row.host, port: row.cascade_port, listenPort: row.listen_port,
+    vpnPort: row.vpn_port, stubPort: row.stub_port, protocol: nodeProtocol(row), secret: JSON.parse(decryptSecret(row.cascade_secret)!),
+  }));
 }
 
 /** Пересылка панели для моста: включена флагом `panel_forward` и известен IPv4 панели (`panel_origin_ip`) */
@@ -230,10 +248,29 @@ function panelForwardOf(bridge: any): PanelForward | null {
 }
 
 function rulesFor(bridge: any): string {
-  return buildBridgeRules(ruleLinks(bridge.id), panelForwardOf(bridge));
+  const rules = buildBridgeRules(ruleLinks(bridge.id), panelForwardOf(bridge));
+  const links = cascadeLinks(bridge.id);
+  if (!links.length) return rules;
+  const cleanup = links.flatMap((link) => [
+    `# XHTTP ${sha256(CASCADE_XRAY_IMAGE + JSON.stringify(cascadeConfigs(link)))}`,
+    `clear_bridge_conntrack ${link.protocol === 'awg' ? 'udp' : 'tcp'} ${link.listenPort} --dst-nat`,
+    ...(link.protocol === 'awg' && link.stubPort ? [`clear_bridge_conntrack tcp ${link.listenPort} --dst-nat`] : []),
+  ]);
+  return [rules, clearBridgeConntrack, ...cleanup, ''].join('\n');
 }
 
 const sha256 = (text: string) => crypto.createHash('sha256').update(text).digest('hex');
+
+function recordApplied(id: number, rules: string): void {
+  transaction(() => {
+    db.prepare(`
+      UPDATE bridges SET status = 'online', rules_hash = ?, needs_apply = 0, fail_count = 0, last_error = NULL, last_seen = datetime('now')
+      WHERE id = ?
+    `).run(sha256(rules), id);
+    db.prepare('UPDATE bridge_links SET cascade_pending = 0 WHERE bridge_id = ? AND cascade_pending = 1').run(id);
+  });
+  lastHealth.set(id, Date.now());
+}
 
 export class BridgeService {
   // ---- Представление ----
@@ -243,6 +280,7 @@ export class BridgeService {
     const { ssh_password, ssh_key, rules_hash, ...rest } = bridge;
     const links = db.prepare(`
       SELECT l.server_id, s.name AS server_name, s.host AS server_host, s.awg_port, l.listen_port, l.mode, l.check_ok, l.checked_at,
+        l.cascade_port, l.cascade_pending,
         COALESCE(st.active, 0) AS active, st.reason, st.changed_at
       FROM bridge_links l
       JOIN servers s ON s.id = l.server_id
@@ -258,6 +296,7 @@ export class BridgeService {
       links: links.map((l) => ({
         ...l,
         check_ok: l.check_ok === null ? null : Boolean(l.check_ok),
+        cascade_pending: Boolean(l.cascade_pending || (l.cascade_port && bridge.needs_apply)),
         active: Boolean(l.active),
       })),
     };
@@ -290,6 +329,7 @@ export class BridgeService {
     if (body.host !== undefined || !existing) {
       if (!isValidHost(body.host)) throw new HttpError(400, 'Укажите корректный IP-адрес или домен моста');
       fields.host = String(body.host).trim();
+      if (existing && fields.host !== existing.host) this.requireNoCascade('bridge_id', existing.id);
       if (existing && fields.host !== existing.host) fields.host_key = null;
     }
     if (body.ssh_port !== undefined || !existing) {
@@ -361,6 +401,39 @@ export class BridgeService {
     return installing.has(id);
   }
 
+  static requireNoCascade(by: 'bridge_id' | 'server_id', id: number): void {
+    if (db.prepare(`SELECT 1 FROM bridge_links WHERE ${by} = ? AND cascade_port IS NOT NULL`).get(id)) {
+      throw new HttpError(409, 'Сначала отключите каскад XHTTP у привязанных нод');
+    }
+  }
+
+  private static async changeCascadeNode(link: CascadeLink, apply: boolean): Promise<void> {
+    await runExclusive(link.serverId, async () => {
+      const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(link.serverId) as any;
+      if (!server || server.remote_panel_id) throw new Error('Нужна локальная нода с доступом по SSH');
+      const creds = ProvisionService.getCredentials(server);
+      const name = cascadeContainer(link, 'node');
+      if (apply) await applyCascadeContainer(creds, name, cascadeConfigs(link).node);
+      else await removeCascadeContainer(creds, name);
+    });
+  }
+
+  private static async applyCascades(bridge: any, creds: SshCredentials): Promise<void> {
+    const links = cascadeLinks(bridge.id);
+    if (links.length) {
+      const command = `${SshService.sudo(creds)}sh -c 'command -v conntrack && command -v ip'`;
+      const result = await SshService.executeCommand(creds, command, { timeoutMs: 10000 });
+      if (result.code !== 0) throw new Error('Установите conntrack и iproute2 на мосту для смены транспорта');
+    }
+    for (const link of links) {
+      await this.changeCascadeNode(link, true);
+      await applyCascadeContainer(creds, cascadeContainer(link, 'bridge'), cascadeConfigs(link).bridge);
+      const check = cascadePortReachable(link.host, link.port);
+      const result = await SshService.executeCommand(creds, check, { timeoutMs: 10000 });
+      if (result.code !== 0) throw new Error(`С моста недоступен TCP-порт каскада ${link.host}:${link.port}`);
+    }
+  }
+
   /** Установка моста: пересылка пакетов, правила из БД, автозапуск правил. Возвращает журнал установки. */
   static async install(id: number): Promise<OperationResult & { log: string }> {
     loadBridge(id);
@@ -375,6 +448,7 @@ export class BridgeService {
           const rules = rulesFor(db.prepare('SELECT * FROM bridges WHERE id = ?').get(id));
           const script = [`export RULES_B64=${shellQuote(Buffer.from(rules).toString('base64'))}`, readDeployScript()].join('\n');
           const creds = credentials(bridge);
+          await this.applyCascades(bridge, creds);
           const result = await SshService.executeCommand(
             creds,
             `${SshService.sudo(creds)}bash -c 'script=$(cat); exec bash -c "$script" deploy-bridge'`,
@@ -387,11 +461,7 @@ export class BridgeService {
             const detail = result.stderr.trim().split('\n').slice(-2).join(' ').slice(0, 300);
             throw new Error(`Скрипт установки моста завершился с ошибкой (код ${result.code}).${hint}${detail ? ` ${detail}` : ''}`);
           }
-          db.prepare(`
-            UPDATE bridges SET status = 'online', rules_hash = ?, needs_apply = 0, fail_count = 0, last_error = NULL, last_seen = datetime('now')
-            WHERE id = ?
-          `).run(sha256(rules), id);
-          lastHealth.set(id, Date.now());
+          recordApplied(id, rules);
           return { success: true, log };
         } catch (err: any) {
           db.prepare("UPDATE bridges SET status = 'error', last_error = ? WHERE id = ?").run(err.message, id);
@@ -416,7 +486,7 @@ export class BridgeService {
     return promise;
   }
 
-  private static async doApply(id: number): Promise<OperationResult> {
+  private static async doApply(id: number, removedCascade?: CascadeLink): Promise<OperationResult> {
     const bridge = db.prepare('SELECT * FROM bridges WHERE id = ?').get(id) as any;
     if (!bridge) return { success: false, error: 'Мост удалён' };
     if (bridge.status === 'uninstalled' || bridge.status === 'installing' || installing.has(id)) {
@@ -425,14 +495,23 @@ export class BridgeService {
     try {
       const rules = rulesFor(db.prepare('SELECT * FROM bridges WHERE id = ?').get(id));
       const creds = credentials(bridge);
-      const write = `umask 077 && mkdir -p /etc/dementia-bridge && cat > /etc/dementia-bridge/rules.sh.new && mv -f /etc/dementia-bridge/rules.sh.new /etc/dementia-bridge/rules.sh && sh /etc/dementia-bridge/rules.sh`;
+      await this.applyCascades(bridge, creds);
+      const write = [
+        'set -e',
+        'umask 077',
+        'mkdir -p /etc/dementia-bridge',
+        'cat > /etc/dementia-bridge/rules.sh.new',
+        'sh /etc/dementia-bridge/rules.sh.new',
+        ...(removedCascade ? [
+          clearBridgeConntrack,
+          `clear_bridge_conntrack ${removedCascade.protocol === 'awg' ? 'udp' : 'tcp'} ${removedCascade.listenPort}`,
+          ...(removedCascade.protocol === 'awg' && removedCascade.stubPort ? [`clear_bridge_conntrack tcp ${removedCascade.listenPort}`] : []),
+        ] : []),
+        'mv -f /etc/dementia-bridge/rules.sh.new /etc/dementia-bridge/rules.sh',
+      ].join('\n');
       const result = await SshService.executeCommand(creds, `${SshService.sudo(creds)}sh -c ${shellQuote(write)}`, { input: rules, timeoutMs: 60000 });
       if (result.code !== 0) throw new Error(`Ошибка применения правил моста: ${result.stderr.trim() || `код ${result.code}`}`);
-      db.prepare(`
-        UPDATE bridges SET status = 'online', rules_hash = ?, needs_apply = 0, fail_count = 0, last_error = NULL, last_seen = datetime('now')
-        WHERE id = ?
-      `).run(sha256(rules), id);
-      lastHealth.set(id, Date.now());
+      recordApplied(id, rules);
       return { success: true };
     } catch (err: any) {
       db.prepare('UPDATE bridges SET last_error = ? WHERE id = ?').run(err.message, id);
@@ -466,6 +545,10 @@ export class BridgeService {
    * Если применить правила на мосту не удалось, прежний список возвращается.
    */
   static async setLinks(id: number, links: unknown): Promise<OperationResult> {
+    return runExclusive(queueKey(id), () => this.updateLinks(id, links));
+  }
+
+  private static async updateLinks(id: number, links: unknown): Promise<OperationResult> {
     const bridge = loadBridge(id);
     if (!Array.isArray(links)) throw new HttpError(400, 'links должен быть массивом');
     const wanted = new Map<number, LinkMode>();
@@ -478,6 +561,9 @@ export class BridgeService {
     }
 
     const previous = db.prepare('SELECT * FROM bridge_links WHERE bridge_id = ?').all(id) as any[];
+    if (previous.some((link) => link.cascade_port !== null && !wanted.has(link.server_id))) {
+      throw new HttpError(409, 'Перед отвязкой ноды отключите её каскад XHTTP');
+    }
     transaction(() => {
       for (const serverId of wanted.keys()) {
         const server = db.prepare('SELECT id, host, awg_port, status FROM servers WHERE id = ?').get(serverId) as any;
@@ -506,18 +592,86 @@ export class BridgeService {
     });
 
     if (bridge.status === 'uninstalled') return { success: true };
-    const result = await this.requestApply(id);
+    db.prepare('UPDATE bridges SET needs_apply = 1 WHERE id = ?').run(id);
+    const result = await this.doApply(id);
     if (result.success) return result;
 
     // Мост не принял правила: возвращаем прежние привязки (подписки не должны раздавать неработающий адрес)
     transaction(() => {
       db.prepare('DELETE FROM bridge_links WHERE bridge_id = ?').run(id);
-      const insert = db.prepare('INSERT INTO bridge_links (bridge_id, server_id, listen_port, mode, check_ok, checked_at) VALUES (?, ?, ?, ?, ?, ?)');
+      const insert = db.prepare(`
+        INSERT INTO bridge_links (bridge_id, server_id, listen_port, mode, check_ok, checked_at, cascade_port, cascade_secret, cascade_pending)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
       for (const l of previous) {
-        if (db.prepare('SELECT 1 FROM servers WHERE id = ?').get(l.server_id)) insert.run(id, l.server_id, l.listen_port, l.mode, l.check_ok, l.checked_at);
+        if (db.prepare('SELECT 1 FROM servers WHERE id = ?').get(l.server_id)) {
+          insert.run(id, l.server_id, l.listen_port, l.mode, l.check_ok, l.checked_at, l.cascade_port, l.cascade_secret, l.cascade_pending);
+        }
       }
     });
     return { success: false, error: `${result.error}. Привязки моста возвращены к прежним.` };
+  }
+
+  static setCascade(id: number, serverId: number, port: unknown): Promise<OperationResult> {
+    if (port !== null && (typeof port !== 'number' || !isValidPort(port))) throw new HttpError(400, 'Укажите TCP-порт каскада от 1 до 65535');
+    return runExclusive(queueKey(id), async () => {
+      const bridge = loadBridge(id);
+      const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as any;
+      const link = db.prepare('SELECT * FROM bridge_links WHERE bridge_id = ? AND server_id = ?').get(id, serverId) as any;
+      if (!link || !server) throw new HttpError(404, 'Привязка к ноде не найдена');
+      const previous = cascadeLinks(id).find((item) => item.serverId === serverId);
+      if (port === null && !previous) return { success: true };
+      if (bridge.status === 'uninstalled' || installing.has(id)) throw new HttpError(409, 'Сначала установите мост');
+      if (port !== null) {
+        if (server.remote_panel_id || server.status !== 'online' || !server.deployed_port || ProvisionService.isInstalling(serverId)) {
+          throw new HttpError(400, 'Для каскада нужна работающая локальная нода с доступом по SSH');
+        }
+        if (bridge.host.toLowerCase() === server.host.toLowerCase()) throw new HttpError(400, 'Мост и нода должны быть на разных хостах');
+        if (!isValidHost(server.host) || net.isIPv6(server.host)) throw new HttpError(400, 'Для каскада нужен IPv4-адрес или домен ноды');
+        if (previous && port !== previous.port) throw new HttpError(409, 'Для смены порта сначала отключите каскад');
+        const busy = [server.ssh_port, server.stub_port, server.cdn_port,
+          ...(nodeProtocol(server) === 'vless' ? [server.awg_port, server.deployed_port] : [])];
+        if (busy.includes(port) || db.prepare('SELECT 1 FROM bridge_links WHERE server_id = ? AND bridge_id != ? AND cascade_port = ?').get(serverId, id, port)) {
+          throw new HttpError(409, 'TCP-порт каскада на ноде уже используется');
+        }
+      }
+
+      const update = db.prepare(`
+        UPDATE bridge_links SET cascade_port = ?, cascade_secret = ?, check_ok = ?, checked_at = ?
+        WHERE bridge_id = ? AND server_id = ?
+      `);
+      transaction(() => {
+        db.prepare('UPDATE bridges SET needs_apply = 1 WHERE id = ?').run(id);
+        db.prepare('UPDATE bridge_links SET cascade_pending = 1 WHERE bridge_id = ? AND server_id = ?').run(id, serverId);
+      });
+      if (port === null && previous) {
+        // До удаления записи держим секрет и идентификаторы, чтобы повторить очистку при недоступности одной стороны.
+        try {
+          await this.changeCascadeNode(previous, false);
+          await removeCascadeContainer(credentials(bridge), cascadeContainer(previous, 'bridge'));
+        } catch (err: any) {
+          db.prepare('UPDATE bridges SET last_error = ? WHERE id = ?').run(err.message, id);
+          return { success: false, error: err.message };
+        }
+      }
+      update.run(port as number | null, port === null ? null : (link.cascade_secret || encryptSecret(JSON.stringify(generateCascadeSecret()))), null, null, id, serverId);
+      const result = await this.doApply(id, port === null ? previous : undefined);
+      if (result.success) return result;
+
+      // Сначала снимаем новый каскад. Если очистка прервалась, запись остаётся доступной для повторного отключения.
+      const created = !previous && cascadeLinks(id).find((item) => item.serverId === serverId);
+      if (created) {
+        try {
+          await this.changeCascadeNode(created, false);
+          await removeCascadeContainer(credentials(bridge), cascadeContainer(created, 'bridge'));
+        } catch {
+          return { success: false, error: `${result.error}. Каскад применён не полностью. Повторите настройку или отключите каскад.` };
+        }
+      }
+      update.run(link.cascade_port, link.cascade_secret, link.check_ok, link.checked_at, id, serverId);
+      const restored = await this.doApply(id);
+      return { success: false, error: restored.success ? result.error : `${result.error}. Не удалось восстановить прежнюю пересылку: ${restored.error}` };
+    });
   }
 
   // ---- Фоновая проверка ----
@@ -555,12 +709,19 @@ export class BridgeService {
     if (!bridge) return;
     try {
       const creds = credentials(bridge);
-      const result = await SshService.executeCommand(creds, `${SshService.sudo(creds)}sh -c ${shellQuote(HEALTH_SCRIPT)}`, { timeoutMs: 30000 });
+      const cascades = cascadeLinks(id);
+      const checks = cascades.map((link) => [
+        `if ${cascadeRunning(cascadeContainer(link, 'bridge'))} && ${cascadePortReachable(link.host, link.port)};`,
+        `then echo "CASCADE ${link.serverId}"; fi &`,
+      ].join(' '));
+      const script = [HEALTH_SCRIPT, ...checks, ...(checks.length ? ['wait'] : [])].join('\n');
+      const result = await SshService.executeCommand(creds, `${SshService.sudo(creds)}sh -c ${shellQuote(script)}`, { timeoutMs: 30000 });
       if (result.code !== 0) throw new Error(result.stderr.trim() || `код ${result.code}`);
       const health = parseHealth(result.stdout);
       db.prepare("UPDATE bridges SET status = 'online', fail_count = 0, last_seen = datetime('now') WHERE id = ?").run(id);
       // Правила пропали (перезагрузка без systemd, чужой iptables-restore) или переход сдвинут ufw/Docker — применить заново
-      if (health.rules !== expectedRules || (expectedRules > 0 && (!health.forwardFirst || !health.prerouting))) {
+      const cascadeMissing = cascades.some((link) => !result.stdout.split(/\r?\n/).includes(`CASCADE ${link.serverId}`));
+      if (cascadeMissing || health.rules !== expectedRules || (expectedRules > 0 && (!health.forwardFirst || !health.prerouting))) {
         db.prepare('UPDATE bridges SET needs_apply = 1 WHERE id = ?').run(id);
       } else if (bridge.last_error) {
         db.prepare('UPDATE bridges SET last_error = NULL WHERE id = ?').run(id);
@@ -584,9 +745,10 @@ export class BridgeService {
    */
   static async checkLinks(): Promise<void> {
     const links = db.prepare(`
-      SELECT l.bridge_id, l.server_id, l.listen_port, b.host AS bridge_host, s.stub_token
+      SELECT l.bridge_id, l.server_id, l.listen_port, l.cascade_port, b.host AS bridge_host, s.stub_token
       FROM bridge_links l JOIN bridges b ON b.id = l.bridge_id JOIN servers s ON s.id = l.server_id
       WHERE b.status = 'online' AND s.stub_port IS NOT NULL AND s.stub_token IS NOT NULL AND l.mode != 'off'
+        AND l.cascade_pending = 0 AND (l.cascade_port IS NULL OR b.needs_apply = 0)
     `).all() as any[];
     await Promise.all(
       links.map(async (l) => {
@@ -600,8 +762,11 @@ export class BridgeService {
         } catch {
           ok = false;
         }
-        db.prepare('UPDATE bridge_links SET check_ok = ?, checked_at = ? WHERE bridge_id = ? AND server_id = ?').run(
-          ok ? 1 : 0, new Date().toISOString(), l.bridge_id, l.server_id
+        db.prepare(`
+          UPDATE bridge_links SET check_ok = ?, checked_at = ?
+          WHERE bridge_id = ? AND server_id = ? AND listen_port = ? AND cascade_port IS ? AND cascade_pending = 0
+        `).run(
+          ok ? 1 : 0, new Date().toISOString(), l.bridge_id, l.server_id, l.listen_port, l.cascade_port
         );
       })
     );
@@ -718,6 +883,7 @@ export class BridgeService {
       JOIN bridges b ON b.id = l.bridge_id
       LEFT JOIN bridge_state st ON st.server_id = l.server_id AND st.country = b.country
       WHERE b.country = ? AND b.status = 'online' AND COALESCE(l.check_ok, 1) = 1
+        AND l.cascade_pending = 0 AND (l.cascade_port IS NULL OR b.needs_apply = 0)
         AND (l.mode IN ('main', 'always') OR (l.mode = 'auto' AND st.active = 1))
       ORDER BY b.id
     `).all(country) as any[];

@@ -549,6 +549,10 @@ export const api = {
     return request(`${API_BASE}/bridges/${id}/links`, { method: 'PUT', ...json({ links }) }, 'Ошибка привязки нод к мосту');
   },
 
+  setBridgeCascade(id: number, serverId: number, port: number | null): Promise<BridgeOperationResult> {
+    return request(`${API_BASE}/bridges/${id}/links/${serverId}/cascade`, { method: 'PUT', ...json({ port }) }, 'Ошибка настройки каскада');
+  },
+
   installBridge(id: number): Promise<BridgeOperationResult> {
     return request(`${API_BASE}/bridges/${id}/install`, { method: 'POST' }, 'Ошибка установки моста');
   },

@@ -82,6 +82,13 @@ bridgesRouter.put('/:id/links', asyncHandler(async (req, res) => {
   res.status(result.success ? 200 : 502).json({ ...result, bridge: BridgeService.get(id) });
 }));
 
+// PUT /api/bridges/:id/links/:serverId/cascade — {port: number | null}
+bridgesRouter.put('/:id/links/:serverId/cascade', asyncHandler(async (req, res) => {
+  const id = parseId(req.params.id);
+  const result = await BridgeService.setCascade(id, parseId(req.params.serverId), req.body?.port);
+  res.status(result.success ? 200 : 502).json({ ...result, bridge: BridgeService.get(id) });
+}));
+
 // POST /api/bridges/:id/install — установка (повторная) с журналом
 bridgesRouter.post('/:id/install', asyncHandler(async (req, res) => {
   const id = parseId(req.params.id);
@@ -107,12 +114,14 @@ bridgesRouter.delete('/:id', asyncHandler(async (req, res) => {
   const id = parseId(req.params.id);
   const bridge = BridgeService.get(id);
   if (BridgeService.isInstalling(id)) throw new HttpError(409, 'Дождитесь окончания установки');
+  BridgeService.requireNoCascade('bridge_id', id);
   if (req.query.teardown === '1' && bridge.status !== 'uninstalled') {
     const result = await BridgeService.teardown(id);
     if (!result.success && req.query.force !== '1') {
       throw new HttpError(502, `Не удалось убрать правила с моста: ${result.error}. Удалите принудительно или очистите сервер вручную.`);
     }
   }
+  BridgeService.requireNoCascade('bridge_id', id);
   db.prepare('DELETE FROM bridges WHERE id = ?').run(id);
   await FailoverService.reconcile().catch(() => {});
   res.json({ success: true });

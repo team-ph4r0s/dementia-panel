@@ -87,6 +87,74 @@ describe('правила пересылки', () => {
   });
 });
 
+describe('каскад XHTTP', () => {
+  const setup = async () => {
+    const server = insertServer({ name: 'Cascade exit', awgPort: 52301 });
+    const result = await api('/api/bridges', 'POST', {
+      name: 'Cascade entrance', host: `bridge-${server}.example.com`, country: 'ca', ssh_password: 'secret',
+      links: [{ server_id: server }],
+    });
+    expect(result.body.success).toBe(true);
+    const bridge = result.body.bridge.id as number;
+    const endpoint = `/api/bridges/${bridge}/links/${server}/cascade`;
+    return { server, bridge, endpoint };
+  };
+
+  it('заменяет DNAT без смены порта, ограничивает назначение и скрывает ключи от API', async () => {
+    const ssh = bridgeSsh();
+    const { server, bridge, endpoint } = await setup();
+    db.prepare('UPDATE servers SET stub_port = 30881 WHERE id = ?').run(server);
+    expect((await api(endpoint, 'PUT', { port: '8443' })).status).toBe(400);
+    expect((await api(endpoint, 'PUT', { port: 22 })).status).toBe(409);
+    const result = await api(endpoint, 'PUT', { port: 8443 });
+    expect(result.status).toBe(200);
+    expect(result.body.bridge.links[0]).toMatchObject({ cascade_port: 8443, listen_port: 52301 });
+    const configs = ssh.calls.filter((call) => call.command.includes('config.new.json')).map((call) => JSON.parse(call.input!));
+    expect(configs).toHaveLength(2);
+    expect(configs[0].outbounds[0].protocol).toBe('blackhole');
+    expect(configs[0].outbounds[1].settings.finalRules).toEqual([
+      { action: 'allow', network: 'udp', ip: ['127.0.0.1'], port: 52301 },
+      { action: 'allow', network: 'tcp', ip: ['127.0.0.1'], port: 30881 },
+      { action: 'block' },
+    ]);
+    expect(configs[0].routing.rules).toEqual([
+      { type: 'field', network: 'udp', ip: ['127.0.0.1'], port: 52301, outboundTag: 'loopback' },
+      { type: 'field', network: 'tcp', ip: ['127.0.0.1'], port: 30881, outboundTag: 'loopback' },
+    ]);
+    expect(configs[1].inbounds.map((inbound: any) => inbound.port)).toEqual([52301, 52301]);
+    const { id, privateKey } = {
+      id: configs[0].inbounds[0].settings.clients[0].id,
+      privateKey: configs[0].inbounds[0].streamSettings.realitySettings.privateKey,
+    };
+    const stored = db.prepare('SELECT cascade_secret FROM bridge_links WHERE bridge_id = ?').get(bridge) as { cascade_secret: string };
+    expect(stored.cascade_secret).toMatch(/^enc:v1:/);
+    expect(JSON.stringify(result.body)).not.toContain(id);
+    expect(JSON.stringify(result.body)).not.toContain(privateKey);
+    expect(ssh.calls.map((call) => call.command).join('\n')).not.toContain(id);
+    const applied = ssh.calls.findLast((call) => call.command.includes('rules.sh.new'))?.input;
+    expect(applied).toContain('clear_bridge_conntrack udp 52301 --dst-nat');
+    expect(applied).not.toContain('forward udp 52301');
+    expect(BridgeService.routesFor('ca').get(server)?.port).toBe(52301);
+
+    expect((await api(`/api/bridges/${bridge}/links`, 'PUT', { links: [] })).status).toBe(409);
+    expect((await api(`/api/servers/${server}`, 'DELETE')).status).toBe(409);
+    expect((await api(endpoint, 'PUT', { port: null })).status).toBe(200);
+    expect(ssh.calls.findLast((call) => call.command.includes('rules.sh.new'))?.input).toContain('forward udp 52301');
+    expect(BridgeService.get(bridge).links[0].cascade_port).toBeNull();
+  });
+
+  it('снимает частично развёрнутый каскад и восстанавливает прежнюю пересылку после сбоя', async () => {
+    const ssh = bridgeSsh(undefined, (call) => call.command.includes('/dev/tcp/'));
+    const { server, bridge, endpoint } = await setup();
+    const result = await api(endpoint, 'PUT', { port: 8443 });
+    expect(result.status).toBe(502);
+    expect(result.body.bridge).toMatchObject({ needs_apply: false, links: [{ server_id: server, cascade_port: null }] });
+    expect(ssh.calls.filter((call) => call.command.includes('rmdir "/etc/dementia-cascade/'))).toHaveLength(2);
+    expect(ssh.calls.findLast((call) => call.command.includes('rules.sh.new'))?.input).toContain('forward udp 52301');
+    expect(BridgeService.routesFor('ca').get(server)?.bridge_id).toBe(bridge);
+  });
+});
+
 describe('API мостов', () => {
   let nodeA: number;
   let nodeB: number;

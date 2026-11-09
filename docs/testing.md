@@ -116,6 +116,10 @@ server/test/docker/nodes.sh down
 
 ## CI
 
+`bridges.test.ts` проверяет API каскада, ограничение локальных портов в конфиге, сокрытие секретов и откат при сбое.
+`real-docker-bridge-cascade.test.ts` через SSH запускает Xray на обеих Docker-нодах, проверяет передачу UDP и TCP в обе стороны
+на прежнем порту моста, очистку старой записи DNAT и удаление контейнеров при отключении.
+
 Клиентские компонентные тесты запускаются `cd client && npm test` (Vitest, jsdom, Testing Library).
 
 `.github/workflows/ci.yml`: `server` (типы, тесты без Docker, сборка), `client` (линт, тесты, сборка), `scripts` (shellcheck), `install` (`install.sh` в чистом

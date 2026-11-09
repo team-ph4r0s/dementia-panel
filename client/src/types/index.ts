@@ -490,6 +490,9 @@ export interface BridgeLink {
   /** Порт на мосту: UDP — на AmneziaWG ноды, TCP — на заглушку ноды */
   listen_port: number;
   mode: BridgeLinkMode;
+  /** TCP-порт XHTTP Reality на ноде. null — обычная пересылка DNAT. */
+  cascade_port?: number | null;
+  cascade_pending?: boolean;
   /** Сквозная проверка пересылки до заглушки ноды; null — ещё не проверялось */
   check_ok: boolean | null;
   checked_at: string | null;

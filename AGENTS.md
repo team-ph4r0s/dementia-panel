@@ -294,6 +294,11 @@ CI на `main`. Подробно — [docs/releases.md](docs/releases.md).
     `ExtraPortsService.activePorts` (отметка `extra_ports_hash` соответствует БД) — не читайте `servers.extra_ports` напрямую.
     Подробно — docs/node-management.md#extra-ports.
 
+50. **Каскад XHTTP меняет только транспорт привязки между мостом и локальной нодой** (docs/bridges.md#cascade).
+    Порт моста сохраняется. У каскада отдельные контейнеры и зашифрованный секрет; конфиг передаётся через SSH stdin.
+    Xray на ноде пропускает только точные loopback-порты VPN и заглушки. Правило DNAT привязки снимается вместе со старыми
+    записями conntrack этого порта. Привязку с каскадом можно отвязать или удалить только после снятия контейнеров.
+
 ## Чек-лист перед коммитом
 
 - [ ] `cd server && npx tsc --noEmit && npm test` (при правках провижининга, федерации, WebSocket/HTTPS — с поднятыми нодами `nodes.sh up`)

@@ -34,6 +34,7 @@ SQLite (`node:sqlite`, Node ≥ 22.13), файл `data/dementia.db`, режим 
 | v17 | `bridges.panel_forward` — мост пересылает порт панели; режим привязки `main` (значение `bridge_links.mode`); резервный домен подписок — `settings` (`failover_domain`, `failover_zone`, `failover_records` — JSON «IP → ID записи», `failover_include_panel`, `failover_error`), `panel_origin_ip`, `ssl_alt_names` — см. [bridges.md](bridges.md#failover) |
 | v18 | Запасные порты ноды AmneziaWG: `servers.extra_ports` (JSON-список), `extra_ports_hash` (SHA-256 применённых на ноде правил, `NULL` — не применены), `extra_ports_error` — см. [node-management.md](node-management.md#extra-ports) |
 | v19 | Globalping в проверке из стран: `probe_results.gp_ok`, `gp_total`, `gp_eyeball` — см. [probes.md](probes.md) |
+| v20 | `bridge_links.cascade_port`, `cascade_secret` и `cascade_pending` — [каскад XHTTP](bridges.md#cascade) |
 
 ## Таблицы
 
@@ -96,7 +97,10 @@ SQLite (`node:sqlite`, Node ≥ 22.13), файл `data/dementia.db`, режим 
 ### `bridges`, `bridge_links`, `bridge_state` — мосты ([bridges.md](bridges.md))
 `bridges`: SSH-доступ как у `servers` (`ssh_password`, `ssh_key` — **зашифрованы**, `host_key` — TOFU), `country`, `status`, `rules_hash`
 (SHA-256 применённых правил), `needs_apply`, `fail_count`, `last_error`, `last_seen`. `bridge_links`: нода моста, `listen_port` (уникален на
-мосту, не меняется после привязки), `mode` (`auto`/`always`/`off`), `check_ok`/`checked_at` — сквозная проверка пересылки. `bridge_state`:
+мосту, не меняется после привязки), `mode` (`main`/`auto`/`always`/`off`), `check_ok`/`checked_at` — сквозная проверка пересылки.
+`cascade_port` — TCP-порт XHTTP на ноде (`NULL` для DNAT), `cascade_secret` — зашифрованные реквизиты туннеля для пары мост × нода.
+`cascade_pending` скрывает маршрут из подписок до подтверждения смены транспорта.
+`bridge_state`:
 по паре нода × страна — `active` (мост выдаётся), серии проверок `fail_streak`/`ok_streak`, `reason` (`probe`/`clients`), `changed_at`.
 Связи удаляются каскадно вместе с мостом и нодой.
 

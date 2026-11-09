@@ -115,6 +115,9 @@ UUID не входит в списки и обычные ответы API. Пр�
 `GET /`, `POST /` (добавить и установить), `PUT /:id`, `PUT /:id/links` (`links[{server_id, mode}]`), `POST /:id/install`, `POST /:id/apply`,
 `POST /:id/test-ssh`, `DELETE /:id` (`?teardown=1&force=1`), см. [bridges.md](bridges.md). SSH-секреты мостов в ответах не отдаются.
 
+`PUT /:id/links/:serverId/cascade` принимает `{port: number | null}` и включает каскад XHTTP на указанном TCP-порту ноды
+или возвращает DNAT. Ответ содержит обновлённый мост с `cascade_port` в привязке. Секреты каскада остаются на сервере.
+
 ## События, уведомления и резервные копии
 - `GET /api/events`, `GET/PUT /api/telegram`, `POST /api/telegram/test`, `POST /api/telegram/detect-chat`.
 - `GET/PUT /api/backups/settings`, `POST /api/backups/test`, `/api/backups/run`, `GET /api/backups`, `GET /api/backups/:id/download`, `DELETE /api/backups/:id`, `POST /api/backups/recovery-key`.

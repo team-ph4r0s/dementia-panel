@@ -1,8 +1,8 @@
 import type { Bridge, BridgeLink, ProbeResult, Server, Subscriber } from '../types';
 
 /** Выдаётся ли нода через мост пользователям его страны (как BridgeService.routesFor): main/always — всегда, auto — когда «нужен мост» */
-export function linkInUse(link: Pick<BridgeLink, 'mode' | 'active'>): boolean {
-  return link.mode === 'main' || link.mode === 'always' || (link.mode === 'auto' && link.active);
+export function linkInUse(link: Pick<BridgeLink, 'mode' | 'active' | 'cascade_pending'>): boolean {
+  return !link.cascade_pending && (link.mode === 'main' || link.mode === 'always' || (link.mode === 'auto' && link.active));
 }
 
 const MODE_TITLE: Record<BridgeLink['mode'], string> = { main: 'основной', always: 'всегда', auto: 'авто', off: 'выключен' };
