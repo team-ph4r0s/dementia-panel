@@ -106,6 +106,8 @@ export class NodeUpdateService {
           updated ? 'updated' : available ? 'available' : 'current', id);
         if (updated) {
           db.prepare('UPDATE servers SET node_info_at = NULL WHERE id = ?').run(id);
+          // Контейнер пересоздан и мог сменить адрес в сети Docker — правила запасных портов применяются заново
+          await ProvisionService.reapplyExtraPorts(id);
           EventService.log('info', 'node.updated', `AmneziaWG на ноде «${server.name}» обновлён; все пиры и ключи сохранены`, { kind: 'server', id });
         } else if (available && (!previous?.available || previous.latest_image !== images[2])) {
           EventService.log('info', 'node.update_available', `Для ноды «${server.name}» доступен новый образ AmneziaWG`, { kind: 'server', id });

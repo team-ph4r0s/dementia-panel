@@ -13,6 +13,7 @@ import { generateSignature, normalizeSignatureDomain, SIGNATURE_PRESETS, Signatu
 import { AmneziaKeyError, decodeAmneziaKey, splitAmneziaKeys } from '../utils/amnezia-key.js';
 import { ProbeService } from '../services/probe.service.js';
 import { EventService } from '../services/event.service.js';
+import { ExtraPortsService, parseExtraPorts, validateExtraPorts } from '../services/extra-ports.service.js';
 import {
   DEFAULT_VLESS_PORT, generateVlessParams, NODE_PROTOCOLS, NodeProtocol, nodeProtocol,
   validateVlessParams, vlessParamsFromRow, vlessParamsToColumns, XRAY_API_PORT, XRAY_CONF_PATH, XRAY_CONTAINER,
@@ -49,6 +50,9 @@ export function serializeServer(s: any) {
     has_ssh_key: Boolean(ssh_key),
     cdn_enabled: Boolean(s.cdn_enabled),
     cdn_cert_ready: Boolean(cdn_cert && cdn_key),
+    // Запасные порты: заданные и те, что сейчас действительно пересылаются на ноде (только они попадают в подписку)
+    extra_ports: parseExtraPorts(s.extra_ports),
+    extra_ports_active: ExtraPortsService.activePorts(s),
     needs_sync: Boolean(s.needs_sync),
     needs_apply: Boolean(s.needs_apply),
     installing: ProvisionService.isInstalling(s.id),
@@ -393,6 +397,9 @@ serversRouter.put('/:id', asyncHandler(async (req, res) => {
   let interfaceChanged = false;
   if (body.awg_port !== undefined) {
     updates.awg_port = validateNodePort(body.awg_port, protocol);
+    if (parseExtraPorts(server.extra_ports).includes(updates.awg_port as number)) {
+      throw new HttpError(400, `Порт ${updates.awg_port} задан как запасной — сначала уберите его из запасных портов`);
+    }
     interfaceChanged ||= updates.awg_port !== server.awg_port;
   }
   // Форма редактирования присылает подсеть всегда; у импортированных нод она бывает адресом сети (10.8.1.0/24),
@@ -484,6 +491,30 @@ serversRouter.put('/:id', asyncHandler(async (req, res) => {
   }
 
   EventService.log('info', 'server.updated', `Изменены настройки ноды «${updates.name ?? server.name}»`, { kind: 'server', id });
+  res.json(serializeServer(selectServerWithCounts(id)));
+}));
+
+/**
+ * PUT /:id/extra-ports { ports: [443, 53] } — запасные UDP-порты ноды AmneziaWG (docs/node-management.md#extra-ports).
+ * На установленной ноде правила применяются сразу; при неудаче список возвращается к прежнему (502), как у порта и
+ * параметров: подписка не должна раздавать то, чего нет на ноде.
+ */
+serversRouter.put('/:id/extra-ports', asyncHandler(async (req, res) => {
+  const id = parseId(req.params.id);
+  const server = getLocalServerOr404(id);
+  if (nodeProtocol(server) !== 'awg') throw new HttpError(400, 'Запасные порты доступны только для нод AmneziaWG');
+  const ports = validateExtraPorts(req.body?.ports, server);
+  const previous = server.extra_ports;
+
+  db.prepare('UPDATE servers SET extra_ports = ?, extra_ports_error = NULL WHERE id = ?').run(ports.length ? JSON.stringify(ports) : null, id);
+  if (server.status !== 'uninstalled' && server.status !== 'installing') {
+    const result = await ExtraPortsService.apply(id);
+    if (!result.success) {
+      db.prepare('UPDATE servers SET extra_ports = ? WHERE id = ?').run(previous, id);
+      return res.status(502).json({ success: false, error: result.error, server: serializeServer(selectServerWithCounts(id)) });
+    }
+  }
+  EventService.log('info', 'server.updated', `Изменены запасные порты ноды «${server.name}»: ${ports.join(', ') || 'нет'}`, { kind: 'server', id });
   res.json(serializeServer(selectServerWithCounts(id)));
 }));
 

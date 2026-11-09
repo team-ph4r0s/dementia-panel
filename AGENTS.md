@@ -288,6 +288,12 @@ CI на `main`. Подробно — [docs/releases.md](docs/releases.md).
     только строки IPv4 CIDR (`parseGeoList`), при ошибке прежний кэш не затирается. Домены и сети проходят валидацию до записи (они попадают в
     YAML клиентов). Подробно — docs/direct-routing.md.
 
+49. **Запасные порты ноды — правила на хосте, а не в AmneziaWG.** `utils/extra-ports.ts` генерирует их целиком из БД; применение —
+    через очередь ноды (`ExtraPortsService`). Правило ведёт на адрес контейнера в сети Docker, поэтому любой путь, который
+    пересоздаёт или перезапускает контейнер, вызывает `ProvisionService.reapplyExtraPorts`. В подписку порт попадает только через
+    `ExtraPortsService.activePorts` (отметка `extra_ports_hash` соответствует БД) — не читайте `servers.extra_ports` напрямую.
+    Подробно — docs/node-management.md#extra-ports.
+
 ## Чек-лист перед коммитом
 
 - [ ] `cd server && npx tsc --noEmit && npm test` (при правках провижининга, федерации, WebSocket/HTTPS — с поднятыми нодами `nodes.sh up`)

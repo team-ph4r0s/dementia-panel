@@ -35,6 +35,7 @@ import { BackupService } from './services/backup.service.js';
 import { LiveService } from './services/live.service.js';
 import { REVALIDATE, staticHeaders } from './middleware/static-cache.js';
 import { BridgeService } from './services/bridge.service.js';
+import { ExtraPortsService } from './services/extra-ports.service.js';
 import { migrationGuard, subscriptionFreeze } from './middleware/migration-guard.js';
 import { MigrationService } from './services/migration.service.js';
 import { PANEL_VERSION } from './services/version.service.js';
@@ -318,6 +319,8 @@ async function statsLoop() {
     });
     // Мосты: правила из БД применены и на месте
     await BridgeService.checkAll();
+    // Запасные порты нод: правила из БД применены и ведут на нынешний адрес контейнера
+    await ExtraPortsService.checkAll();
     SubscriptionService.refreshSuspension();
     PartnerService.refreshSuspension();
     LiveService.notify();

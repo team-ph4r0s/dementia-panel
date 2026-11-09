@@ -506,6 +506,13 @@ const migrations: Array<() => void> = [
   () => {
     addColumn('bridges', 'panel_forward INTEGER NOT NULL DEFAULT 0');
   },
+  // v18: запасные порты ноды AmneziaWG (docs/node-management.md#extra-ports): список (JSON), SHA-256 применённых на ноде
+  // правил (NULL — не применены, в подписку порты не попадают) и текст последней ошибки применения
+  () => {
+    addColumn('servers', 'extra_ports TEXT');
+    addColumn('servers', 'extra_ports_hash TEXT');
+    addColumn('servers', 'extra_ports_error TEXT');
+  },
 ];
 
 /** Версия схемы, которую умеет эта сборка панели (число миграций) */

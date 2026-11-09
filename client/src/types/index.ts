@@ -83,6 +83,10 @@ export interface Server {
   i5: string | null;
   header_protection_key: string | null;
   extra_params: Record<string, string>;
+  /** Запасные UDP-порты ноды AmneziaWG: заданные и те, что сейчас пересылаются на ноде (только они выдаются в подписке) */
+  extra_ports?: number[];
+  extra_ports_active?: number[];
+  extra_ports_error?: string | null;
   /** Только для protocol = 'vless' */
   reality_sni?: string;
   reality_dest?: string;

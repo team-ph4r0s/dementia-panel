@@ -12,6 +12,7 @@ import { ProbesCard } from './ProbesCard';
 import { ProbeBadges } from './ProbeBadges';
 import { NodeUpdatesCard } from './NodeUpdatesCard';
 import { NodeCountry } from './NodeCountry';
+import { NodeExtraPorts } from './NodeExtraPorts';
 
 const TopologyGlobe = lazy(() => import('./TopologyGlobe').then(({ TopologyGlobe }) => ({ default: TopologyGlobe })));
 type ViewMode = 'map' | 'globe' | 'list';
@@ -182,6 +183,9 @@ export const ServersView: React.FC<ServersViewProps> = (props) => {
               />
               <div className="mt-4">
                 <NodeCountry key={listServer.id} server={listServer} readOnly={props.readOnly} onChanged={props.onServerChanged} />
+                <div className="mt-2">
+                  <NodeExtraPorts key={`ports-${listServer.id}`} server={listServer} readOnly={props.readOnly} onChanged={props.onServerChanged} />
+                </div>
               </div>
             </div>
             <ClientList
@@ -229,6 +233,7 @@ export const ServersView: React.FC<ServersViewProps> = (props) => {
           {valid?.kind === 'server' && selectedServer ? (
             <>
               <NodeCountry key={`country-${selectedServer.id}`} server={selectedServer} readOnly={props.readOnly} onChanged={props.onServerChanged} />
+              <NodeExtraPorts key={`ports-${selectedServer.id}`} server={selectedServer} readOnly={props.readOnly} onChanged={props.onServerChanged} />
               <NodeDetails
                 key={selectedServer.id}
                 server={selectedServer}

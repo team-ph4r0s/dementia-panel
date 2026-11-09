@@ -241,6 +241,11 @@ export const api = {
     return request(`${API_BASE}/servers/${id}/country`, { method: 'PUT', ...json({ country }) }, 'Ошибка сохранения страны');
   },
 
+  /** Запасные UDP-порты ноды AmneziaWG; на установленной ноде применяются сразу */
+  updateServerExtraPorts(id: number, ports: number[]): Promise<Server> {
+    return request(`${API_BASE}/servers/${id}/extra-ports`, { method: 'PUT', ...json({ ports }) }, 'Ошибка сохранения запасных портов');
+  },
+
   async deleteServer(id: number, options: { teardown?: boolean; force?: boolean } = {}): Promise<void> {
     const params = new URLSearchParams();
     if (options.teardown) params.set('teardown', '1');

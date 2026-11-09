@@ -8,6 +8,7 @@ import { contentDisposition } from '../utils/http.js';
 import { paramsFromRow } from '../utils/awg-params.js';
 import { countryFlag, ProbeService } from '../services/probe.service.js';
 import { BridgeService } from '../services/bridge.service.js';
+import { ExtraPortsService } from '../services/extra-ports.service.js';
 import { buildClashDirectRules } from '../services/direct-routing.service.js';
 import { renderSubscriptionPage, SUBSCRIPTION_PAGE_SCRIPT } from './subscription-page.js';
 
@@ -193,7 +194,8 @@ subscriptionRouter.get('/:token', (req, res) => {
           s.xray_transport, s.xhttp_path, s.xhttp_mode, s.cdn_enabled, s.cdn_domain, s.cdn_port, s.cdn_address,
           s.cdn_cert IS NOT NULL AND s.cdn_key IS NOT NULL AS cdn_has_cert,
           s.awg_version, s.jc, s.jmin, s.jmax, s.s1, s.s2, s.s3, s.s4, s.h1, s.h2, s.h3, s.h4,
-          s.i1, s.i2, s.i3, s.i4, s.i5, s.header_protection_key, s.extra_params
+          s.i1, s.i2, s.i3, s.i4, s.i5, s.header_protection_key, s.extra_params,
+          s.extra_ports, s.extra_ports_hash, s.container_name, s.deployed_port, s.remote_panel_id
         FROM clients c
         JOIN servers s ON c.server_id = s.id
         WHERE c.subscriber_id = ? AND c.enabled = 1 AND c.external = 0 AND s.status != 'uninstalled'
@@ -224,7 +226,16 @@ subscriptionRouter.get('/:token', (req, res) => {
     const viaCdn = p.protocol === 'vless' && cdnReady({ ...p, cdn_cert: p.cdn_has_cert, cdn_key: p.cdn_has_cert })
       ? [{ name: [p.sub_name || p.server_name, 'CDN'].join(' · '), server: { ...p, via_cdn: true }, client: p }]
       : [];
-    return [direct, ...fallback, ...viaCdn];
+    // Запасные порты ноды (docs/node-management.md#extra-ports) — записи с тем же конфигом и другим портом Endpoint.
+    // Только для прямого адреса: у моста свой порт; в режимах auto/always прямой адрес не выдаётся вовсе
+    const spare = !route || route.keepDirect
+      ? ExtraPortsService.activePorts(p).map((port) => ({
+        name: [base, marks.get(p.server_id), `порт ${port}`].filter(Boolean).join(' · '),
+        server: { ...p, preshared_key: p.server_psk, awg_port: port },
+        client: p,
+      }))
+      : [];
+    return [direct, ...fallback, ...spare, ...viaCdn];
   });
 
   if (showPage) {

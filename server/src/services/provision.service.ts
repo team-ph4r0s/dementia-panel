@@ -9,6 +9,7 @@ import { shellQuote, parseSubnet } from '../utils/net.js';
 import { parseServerConfig, paramsToColumns, ParsedServerConfig } from '../utils/awg-params.js';
 import { FederationClient } from './federation-client.service.js';
 import { EventService } from './event.service.js';
+import { extraPortsRemoveScript } from '../utils/extra-ports.js';
 import { MigrationService } from './migration.service.js';
 import { HttpError } from '../utils/http.js';
 import {
@@ -712,6 +713,7 @@ export class ProvisionService {
 
       // После установки на ноде ровно то, что в БД: это новая база для отката неудачных правок
       appliedBaseline.set(serverId, { ...(db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as any) });
+      await this.reapplyExtraPorts(serverId, log);
       log('\r\n=== AmneziaWG успешно установлен и готов к работе! ===\r\n');
       EventService.log('info', 'server.installed', `AmneziaWG установлен на ноде «${server.name}»`, { kind: 'server', id: serverId });
       return { success: true };
@@ -1053,10 +1055,25 @@ export class ProvisionService {
       }
       db.prepare('UPDATE servers SET needs_apply = 0, needs_sync = 0, last_error = NULL WHERE id = ?').run(serverId);
       appliedBaseline.set(serverId, { ...server });
+      await this.reapplyExtraPorts(serverId);
       return { success: true };
     } catch (err: any) {
       db.prepare('UPDATE servers SET last_error = ? WHERE id = ?').run(err.message, serverId);
       return { success: false, error: err.message };
+    }
+  }
+
+  /**
+   * Запасные порты ведут на адрес контейнера в сети Docker, а после пересоздания или перезапуска контейнера адрес может
+   * измениться — правила применяются заново сразу, из той же очереди. Сбой здесь не отменяет саму операцию: порты
+   * перестают выдаваться в подписке, фоновая сверка повторит попытку (services/extra-ports.service.ts).
+   */
+  static async reapplyExtraPorts(serverId: number, log?: (text: string) => void): Promise<void> {
+    try {
+      const { ExtraPortsService } = await import('./extra-ports.service.js');
+      await ExtraPortsService.reapplyLocked(serverId);
+    } catch (err: any) {
+      log?.(`Предупреждение: запасные порты не применены: ${err.message}\r\n`);
     }
   }
 
@@ -1118,7 +1135,7 @@ export class ProvisionService {
         // Заглушка проверки доступности удаляется вместе с AmneziaWG
         const result = await SshService.executeCommand(
           credentials,
-          `${SshService.sudo(credentials)}sh -c ${shellQuote(`docker rm -f ${c.name} >/dev/null 2>&1${cleanup}; ${stubRemoveScript()}; echo done`)}`,
+          `${SshService.sudo(credentials)}sh -c ${shellQuote(`docker rm -f ${c.name} >/dev/null 2>&1${cleanup}; ${stubRemoveScript()}; ${extraPortsRemoveScript()}; echo done`)}`,
           { timeoutMs: 120000 }
         );
         if (result.code !== 0) throw new Error(result.stderr.trim() || `код ${result.code}`);
