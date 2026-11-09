@@ -11,6 +11,7 @@ import type {
   CloudflareZone,
   PanelSettings,
   SubscriptionSettings,
+  DirectRouting,
   SubscriptionServer,
   ScanResult,
   Partner,
@@ -391,15 +392,26 @@ export const api = {
   },
 
   // Subscription appearance (Incy headers, server names)
-  getSubscriptionSettings(): Promise<{ settings: SubscriptionSettings; servers: SubscriptionServer[] }> {
+  getSubscriptionSettings(): Promise<{ settings: SubscriptionSettings; servers: SubscriptionServer[]; direct: DirectRouting }> {
     return request(`${API_BASE}/subscription-settings`, {}, 'Ошибка загрузки настроек подписки');
   },
 
   updateSubscriptionSettings(data: {
     settings?: Partial<SubscriptionSettings>;
     servers?: { id: number; sub_name: string; sub_order: number }[];
-  }): Promise<{ settings: SubscriptionSettings; servers: SubscriptionServer[] }> {
+    direct?: { enabled: boolean; awg: boolean; countries: string[]; domains: string; cidrs: string };
+  }): Promise<{
+    settings: SubscriptionSettings;
+    servers: SubscriptionServer[];
+    direct: DirectRouting;
+    refresh?: { country: string; error: string | null }[];
+  }> {
     return request(`${API_BASE}/subscription-settings`, { method: 'PUT', ...json(data) }, 'Ошибка сохранения настроек подписки');
+  },
+
+  /** Скачать сети выбранных стран заново */
+  refreshDirectCountries(countries?: string[]): Promise<{ results: { country: string; error: string | null }[]; direct: DirectRouting }> {
+    return request(`${API_BASE}/subscription-settings/direct/refresh`, { method: 'POST', ...json({ countries }) }, 'Ошибка обновления сетей стран');
   },
 
   // Партнёрский доступ: выданные доступы к своим нодам

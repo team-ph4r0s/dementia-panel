@@ -105,7 +105,7 @@ SQLite (`node:sqlite`, Node ≥ 22.13), файл `data/dementia.db`, режим 
 Схема БД не меняется. `public_url` обновляется после успешной настройки домена. При отключении сохраняются домен, HTTPS-порт и URL.
 - `admins` — администратор (scrypt), зашифрованный `totp_secret`, `totp_enabled`, SHA-256 кодов восстановления; `sessions` — SHA-256 токенов с `expires_at`, ролью (`admin`/`guest`), IP, User-Agent и активностью, `trusted_login_ips` — IP успешных входов
   администратора (исключение из блокировки по логину, см. [security.md](security.md)).
-- `settings` — ключ/значение: `ssl_*`, `cf_token` (**зашифрован**), `public_url`, `client_dns`, `client_mtu`,
+- `settings` — ключ/значение: `ssl_*`, `cf_token` (**зашифрован**), `public_url`, `client_dns`, `client_mtu`, `direct_*` и `geo_v4_*` (маршрутизация «напрямую», [direct-routing.md](direct-routing.md)),
   `sub_*` (оформление подписки), `probe_*` (проверка из стран), `migration_*` (состояние переноса панели: `migration_state`,
   `migration_key` — **зашифрован**, `migration_auth_hash`, `migration_expires_at`, `migration_exported_at`, `migration_migrated_at`,
   `migration_new_url`; в снимок для переноса не попадают).

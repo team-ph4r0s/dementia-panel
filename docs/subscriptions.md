@@ -32,7 +32,7 @@
 |---|---|---|
 | Incy (по умолчанию) | `?format=awg`/`incy` или запрос, для которого не выбраны HTML, mihomo и v2ray | base64 смешанного списка `awg://<base64url(.conf)>#<имя>` и `vless://…#<имя>` ([спецификация](https://docs.incy.cc/en/subscription-format/)) |
 | JSON Incy | `?format=json` | `{"type":"amneziawg","version":1,"servers":[…]}`; AWG — `{name,config}`, VLESS — `{name,protocol:"vless",link}` |
-| mihomo | `?format=clash`/`mihomo` или UA `mihomo`, `clash-meta`, `clash-verge`, `flclash`, `clashmi`, `clash.party` | JSON (валидный YAML): AWG `type: wireguard` + `amnezia-wg-option`, VLESS `type: vless` + `reality-opts`, группа `Dementia`, `rules: MATCH,Dementia` |
+| mihomo | `?format=clash`/`mihomo` или UA `mihomo`, `clash-meta`, `clash-verge`, `flclash`, `clashmi`, `clash.party` | JSON (валидный YAML): AWG `type: wireguard` + `amnezia-wg-option`, VLESS `type: vless` + `reality-opts`, группа `Dementia`, `rules: …, MATCH,Dementia` (перед `MATCH` — правила [«Напрямую»](direct-routing.md), если включены) |
 | v2ray | `?format=v2ray` или UA `v2rayN`, `v2rayNG`, `Hiddify`, `Streisand`, `Happ`, `NekoBox` | base64 списка только `vless://…`; записи AWG пропускаются |
 
 VLESS-ссылка имеет вид `vless://<uuid>@<host>:<port>?type=tcp&security=reality&pbk=…&fp=…&sni=…&sid=…&flow=…&encryption=none#<имя>`.
@@ -42,7 +42,7 @@ VLESS-ссылка имеет вид `vless://<uuid>@<host>:<port>?type=tcp&secu
 запись `<имя> · CDN` (VLESS + XHTTP + TLS на адрес Cloudflare, без flow) — [vless.md](vless.md#cdn); мост её не меняет.
 
 В `[Peer]` строка `PresharedKey` (в mihomo — `pre-shared-key`) пишется только если у клиента или сервера есть PSK.
-`AllowedIPs = 0.0.0.0/0, ::/0` — намеренно: у нод нет IPv6, и маршрут `::/0` в туннель не даёт IPv6-трафику клиента идти
+`AllowedIPs = 0.0.0.0/0, ::/0` — намеренно (если администратор не включил [«Напрямую, мимо VPN»](direct-routing.md) для AWG; тогда IPv4 за вычетом выбранных сетей, `::/0` остаётся): у нод нет IPv6, и маршрут `::/0` в туннель не даёт IPv6-трафику клиента идти
 мимо VPN (утечка реального адреса); так же настроены конфиги приложения AmneziaVPN. Не убирайте `::/0`.
 
 ### Приложения AWG по платформам

@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Palette, Save, Loader2, ArrowUp, ArrowDown, Smartphone, Eye, Link2, Server as ServerIcon } from 'lucide-react';
-import type { Subscriber, SubscriptionServer, SubscriptionSettings } from '../types';
+import type { DirectRouting, Subscriber, SubscriptionServer, SubscriptionSettings } from '../types';
 import { api } from '../api';
 import { copyToClipboard } from '../utils';
 import { AwgClientsGuide } from './AwgClientsGuide';
+import { DirectRoutingCard } from './DirectRoutingCard';
+import { toDraft, type DirectDraft } from './directDraft';
 import { useFeedback } from './ui/feedback-context';
 
 const TITLE_MAX = 25;
@@ -27,6 +29,8 @@ export const SubscriptionSettingsView: React.FC<{ subscribers: Subscriber[]; pub
   const { alert: showAlert } = useFeedback();
   const [settings, setSettings] = useState<SubscriptionSettings | null>(null);
   const [servers, setServers] = useState<SubscriptionServer[]>([]);
+  const [direct, setDirect] = useState<DirectDraft | null>(null);
+  const [directStatus, setDirectStatus] = useState<DirectRouting['countries_status']>([]);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [previewId, setPreviewId] = useState<number | null>(null);
@@ -37,6 +41,8 @@ export const SubscriptionSettingsView: React.FC<{ subscribers: Subscriber[]; pub
       .then((data) => {
         setSettings(data.settings);
         setServers(data.servers);
+        setDirect(toDraft(data.direct));
+        setDirectStatus(data.direct.countries_status);
       })
       .catch((err) => setMessage({ type: 'error', text: err.message }));
   }, []);
@@ -49,7 +55,7 @@ export const SubscriptionSettingsView: React.FC<{ subscribers: Subscriber[]; pub
     return servers.filter((s) => ids.has(s.id));
   }, [servers, previewSubscriber]);
 
-  if (!settings) {
+  if (!settings || !direct) {
     return message ? (
       <div className="p-4 rounded-2xl border bg-bad-soft border-line text-bad text-xs">{message.text}</div>
     ) : (
@@ -83,13 +89,19 @@ export const SubscriptionSettingsView: React.FC<{ subscribers: Subscriber[]; pub
       const data = await api.updateSubscriptionSettings({
         settings: { ...settings, update_interval: Number(settings.update_interval) },
         servers: servers.map((s, i) => ({ id: s.id, sub_name: s.sub_name || '', sub_order: i })),
+        direct: { enabled: direct.enabled, awg: direct.awg, countries: direct.countries, domains: direct.domains, cidrs: direct.cidrs },
       });
       setSettings(data.settings);
       setServers(data.servers);
-      setMessage({
-        type: 'success',
-        text: 'Сохранено. Приложения получат изменения при следующем обновлении подписки (или после ручного обновления).',
-      });
+      setDirect(toDraft(data.direct));
+      setDirectStatus(data.direct.countries_status);
+      const failed = (data.refresh ?? []).filter((r) => r.error);
+      setMessage(failed.length
+        ? { type: 'error', text: `Сохранено, но списки сетей не загрузились: ${failed.map((r) => r.error).join('; ')}` }
+        : {
+            type: 'success',
+            text: 'Сохранено. Приложения получат изменения при следующем обновлении подписки (или после ручного обновления).',
+          });
     } catch (err: any) {
       setMessage({ type: 'error', text: err.message });
     } finally {
@@ -235,6 +247,24 @@ export const SubscriptionSettingsView: React.FC<{ subscribers: Subscriber[]; pub
               </div>
             </div>
           </div>
+
+          <DirectRoutingCard
+            draft={direct}
+            status={directStatus}
+            onChange={setDirect}
+            onRefresh={async () => {
+              try {
+                const data = await api.refreshDirectCountries(direct.countries);
+                setDirectStatus(data.direct.countries_status);
+                const failed = data.results.filter((r) => r.error);
+                setMessage(failed.length
+                  ? { type: 'error', text: failed.map((r) => r.error).join('; ') }
+                  : { type: 'success', text: 'Списки сетей обновлены.' });
+              } catch (err: any) {
+                setMessage({ type: 'error', text: err.message });
+              }
+            }}
+          />
 
           {/* Servers */}
           <div className={cardClass}>

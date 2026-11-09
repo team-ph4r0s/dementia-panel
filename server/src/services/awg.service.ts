@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { db, getSetting } from '../db/index.js';
+import { awgAllowedIps } from './direct-routing.service.js';
 import { allocateIp, formatEndpointHost, parseSubnet } from '../utils/net.js';
 import {
   AwgParams,
@@ -20,6 +21,8 @@ export interface KeyPair {
 export interface ClientNetworkSettings {
   dns: string;
   mtu: number;
+  /** AllowedIPs клиента: весь интернет, либо за вычетом «прямых» сетей (direct-routing.service) */
+  allowedIps: string[];
 }
 
 export class AwgService {
@@ -87,6 +90,7 @@ export class AwgService {
     return {
       dns: getSetting('client_dns') || '1.1.1.1, 8.8.8.8',
       mtu: Number.isInteger(mtu) && mtu >= 576 && mtu <= 1500 ? mtu : 1280,
+      allowedIps: awgAllowedIps(),
     };
   }
 
@@ -105,7 +109,7 @@ ${renderAwgLines(paramsFromRow(server), 'client')}
 
 [Peer]
 PublicKey = ${server.server_public_key}
-${psk ? `PresharedKey = ${psk}\n` : ''}AllowedIPs = 0.0.0.0/0, ::/0
+${psk ? `PresharedKey = ${psk}\n` : ''}AllowedIPs = ${settings.allowedIps.join(', ')}
 Endpoint = ${formatEndpointHost(server.host)}:${server.awg_port}
 PersistentKeepalive = 25
 `;

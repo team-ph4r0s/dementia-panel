@@ -322,6 +322,17 @@ export interface SubscriptionSettings {
   hide_url: boolean;
 }
 
+/** «Напрямую, мимо VPN»: страны, домены и сети, трафик к которым идёт не через туннель */
+export interface DirectRouting {
+  enabled: boolean;
+  countries: string[];
+  domains: string[];
+  cidrs: string[];
+  /** Исключать сети из AllowedIPs конфигов AmneziaWG */
+  awg: boolean;
+  countries_status?: { country: string; networks: number; updated_at: string | null }[];
+}
+
 export interface SubscriptionServer {
   id: number;
   name: string;

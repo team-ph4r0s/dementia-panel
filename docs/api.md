@@ -89,7 +89,7 @@ HTTP-кодом. Тела — JSON.
 
 ## Настройки
 - `GET/PUT /api/settings` — `public_url`, `client_dns`, `client_mtu`.
-- `GET/PUT /api/subscription-settings` — оформление подписки и `servers[{id, sub_name, sub_order}]`.
+- `GET/PUT /api/subscription-settings` — оформление подписки, `servers[{id, sub_name, sub_order}]` и `direct` («напрямую, мимо VPN»); `POST /api/subscription-settings/direct/refresh` — обновить сети стран. Подробно — [direct-routing.md](direct-routing.md).
 
 Для клиента VLESS маршрут `config` отдаёт ссылку `vless://` в файле `.txt`, а `qrcode` кодирует ту же ссылку.
 UUID не входит в списки и обычные ответы API. При сбросе ссылки подписчика его VLESS UUID перевыпускаются.
