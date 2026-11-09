@@ -265,6 +265,11 @@ export const api = {
     return request(`${API_BASE}/servers/${id}/randomize-params`, { method: 'POST' }, 'Ошибка рандомизации параметров');
   },
 
+  /** Сигнатурный пакет I1 по пресету: quic и dns — для домена, stun — без него */
+  awgSignature(preset: 'quic' | 'dns' | 'stun', domain: string): Promise<{ i1: string }> {
+    return request(`${API_BASE}/servers/awg-signature`, { method: 'POST', ...json({ preset, domain }) }, 'Ошибка генерации пакета');
+  },
+
   async syncServer(id: number): Promise<{ success: boolean; error?: string }> {
     const res = await fetchWithAuth(`${API_BASE}/servers/${id}/sync`, { method: 'POST' });
     if (res.ok) return res.json();

@@ -171,6 +171,7 @@ clientsRouter.get('/clients/:id/qrcode', asyncHandler(async (req, res) => {
   const { client, server } = loadClientWithServer(parseId(req.params.id));
   const configText = clientConfigText(server, client);
 
+  // Длинные сигнатурные пакеты I1–I5 могут не поместиться в QR-код: библиотека бросает исключение
   const dataUrl = await QRCode.toDataURL(configText, {
     errorCorrectionLevel: 'M',
     margin: 2,
@@ -179,6 +180,8 @@ clientsRouter.get('/clients/:id/qrcode', asyncHandler(async (req, res) => {
       dark: '#000000',
       light: '#ffffff',
     },
+  }).catch(() => {
+    throw new HttpError(422, 'Конфигурация не помещается в QR-код: сократите сигнатурные пакеты I1–I5 ноды или скачайте файл конфигурации');
   });
 
   res.setHeader('Cache-Control', 'no-store');

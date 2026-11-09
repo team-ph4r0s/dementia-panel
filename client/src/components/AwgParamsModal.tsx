@@ -23,6 +23,14 @@ const CHANGE_WARNING =
   'Сервер AmneziaWG будет перезапущен с новыми параметрами. Все текущие подключения оборвутся, ' +
   'а клиентам нужно будет обновить подписку или заново импортировать конфигурацию. Продолжить?';
 
+const CLIENT_ONLY_KEYS: readonly string[] = ['i1', 'i2', 'i3', 'i4', 'i5'];
+
+const PRESETS: { id: 'quic' | 'dns' | 'stun'; label: string; hint: string }[] = [
+  { id: 'quic', label: 'QUIC', hint: 'Пакет QUIC Initial (HTTP/3) с именем домена в ClientHello' },
+  { id: 'dns', label: 'DNS', hint: 'DNS-запрос адреса домена' },
+  { id: 'stun', label: 'STUN', hint: 'STUN Binding Request, как у звонков WebRTC (домен не нужен)' },
+];
+
 const inputBase =
   'w-full bg-paper border border-line rounded-xl px-3 py-1.5 text-ink text-sm focus:outline-none font-mono';
 
@@ -107,6 +115,7 @@ const AwgParamsForm: React.FC<{ server: Server; onClose: () => void; onUpdated: 
   const outdated = server.awg_version < server.latest_awg_version;
   const [form, setForm] = useState<FormState>(() => toForm(server));
   const [loading, setLoading] = useState(false);
+  const [presetDomain, setPresetDomain] = useState('');
 
   const set = (key: keyof FormState) => (value: string) => setForm((prev) => ({ ...prev, [key]: value }));
 
@@ -144,9 +153,30 @@ const AwgParamsForm: React.FC<{ server: Server; onClose: () => void; onUpdated: 
     }
   };
 
+  const handlePreset = async (preset: 'quic' | 'dns' | 'stun') => {
+    if (preset !== 'stun' && !presetDomain.trim()) {
+      toast('Укажите домен, под обращение к которому маскируется пакет', 'error');
+      return;
+    }
+    try {
+      setLoading(true);
+      const { i1 } = await api.awgSignature(preset, presetDomain.trim());
+      set('i1')(i1);
+    } catch (err: any) {
+      toast(err.message, 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (installed && !(await confirm(CHANGE_WARNING))) return;
+    // I1–I5 есть только в конфигурации клиента: если изменились лишь они, нода не перезапускается
+    const initial = toForm(server);
+    const restart = installed && (Object.keys(form) as (keyof FormState)[]).some(
+      (key) => !CLIENT_ONLY_KEYS.includes(key) && form[key].trim() !== initial[key]
+    );
+    if (restart && !(await confirm(CHANGE_WARNING))) return;
     const update: ServerUpdate = {
       jc: Number(form.jc),
       jmin: Number(form.jmin),
@@ -172,6 +202,7 @@ const AwgParamsForm: React.FC<{ server: Server; onClose: () => void; onUpdated: 
       setLoading(true);
       const updated = await api.updateServer(server.id, update);
       onUpdated(updated);
+      if (installed && !restart) toast('Сохранено. Нода не перезапускалась; клиентам нужно обновить подписку или конфигурацию');
       onClose();
     } catch (err: any) {
       toast(err.message, 'error');
@@ -287,8 +318,35 @@ const AwgParamsForm: React.FC<{ server: Server; onClose: () => void; onUpdated: 
             <h3 className="text-xs font-semibold uppercase tracking-wider text-ink">Сигнатурные пакеты I1–I5 (необязательно)</h3>
             <p className="text-xs text-faint">
               Отправляются клиентом перед рукопожатием. Теги: <code>&lt;b 0x…&gt;</code>, <code>&lt;r N&gt;</code>, <code>&lt;rd N&gt;</code>,{' '}
-              <code>&lt;rc N&gt;</code>, <code>&lt;t&gt;</code>.
+              <code>&lt;rc N&gt;</code>, <code>&lt;t&gt;</code>. Есть только в конфигурации клиента: их смена не перезапускает ноду.
             </p>
+            <div className="p-3 bg-paper border border-line rounded-xl space-y-2">
+              <p className="text-xs text-muted">
+                Готовый I1: начало соединения выглядит для фильтров как известный протокол. Домен — сайт, обращение к которому
+                обычно в сети пользователей (для QUIC — с поддержкой HTTP/3).
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  value={presetDomain}
+                  onChange={(e) => setPresetDomain(e.target.value)}
+                  placeholder="example.com"
+                  aria-label="Домен для пресета"
+                  className={`${inputBase} focus:border-brand text-xs flex-1 min-w-40`}
+                />
+                {PRESETS.map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() => handlePreset(preset.id)}
+                    disabled={loading}
+                    title={preset.hint}
+                    className="px-3 py-1.5 text-xs font-mono bg-soft hover:bg-soft-2 text-ink rounded-lg transition border border-line btn-press disabled:opacity-50"
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+            </div>
             {(['i1', 'i2', 'i3', 'i4', 'i5'] as const).map((key) => (
               <input
                 key={key}

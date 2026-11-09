@@ -9,6 +9,7 @@ import { encryptSecret } from '../services/secrets.service.js';
 import { asyncHandler, HttpError, parseId } from '../utils/http.js';
 import { isValidHost, isValidPort, parseSubnet } from '../utils/net.js';
 import { LATEST_AWG_VERSION, paramsFromRow, paramsToColumns } from '../utils/awg-params.js';
+import { generateSignature, normalizeSignatureDomain, SIGNATURE_PRESETS, SignaturePreset } from '../utils/awg-signatures.js';
 import { AmneziaKeyError, decodeAmneziaKey, splitAmneziaKeys } from '../utils/amnezia-key.js';
 import { ProbeService } from '../services/probe.service.js';
 import { EventService } from '../services/event.service.js';
@@ -22,6 +23,8 @@ export const serversRouter = Router();
 /** Параметры обфускации, редактируемые через PUT (версия протокола меняется отдельным действием) */
 const INT_PARAM_KEYS = ['jc', 'jmin', 'jmax', 's1', 's2', 's3', 's4'] as const;
 const TEXT_PARAM_KEYS = ['h1', 'h2', 'h3', 'h4', 'i1', 'i2', 'i3', 'i4', 'i5', 'header_protection_key'] as const;
+/** I1–I5 есть только в конфигурации клиента (renderAwgLines): их смена не требует перезапуска AmneziaWG на ноде */
+const CLIENT_ONLY_PARAM_KEYS: ReadonlySet<string> = new Set(['i1', 'i2', 'i3', 'i4', 'i5']);
 
 /**
  * Представление сервера для фронтенда — без паролей и приватных ключей
@@ -246,6 +249,15 @@ function insertServer(s: NewServer): number {
   return Number(result.lastInsertRowid);
 }
 
+// POST /awg-signature — готовый сигнатурный пакет I1 по пресету (docs/awg-protocol.md); ничего не сохраняет
+serversRouter.post('/awg-signature', (req, res) => {
+  const preset = req.body?.preset as SignaturePreset;
+  if (!SIGNATURE_PRESETS.includes(preset)) throw new HttpError(400, 'Неизвестный пресет сигнатурного пакета');
+  const domain = normalizeSignatureDomain(req.body?.domain);
+  if (preset !== 'stun' && !domain) throw new HttpError(400, 'Укажите домен, под обращение к которому маскируется пакет (например, example.com)');
+  res.json({ preset, i1: generateSignature(preset, domain) });
+});
+
 const MAX_IMPORT_KEYS = 50;
 
 /**
@@ -417,7 +429,7 @@ serversRouter.put('/:id', asyncHandler(async (req, res) => {
     for (const [key, value] of Object.entries(after)) {
       if (value !== before[key]) {
         updates[key] = value;
-        interfaceChanged = true;
+        if (!CLIENT_ONLY_PARAM_KEYS.has(key)) interfaceChanged = true;
       }
     }
   }
