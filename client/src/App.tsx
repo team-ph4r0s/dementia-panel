@@ -25,6 +25,7 @@ const BridgesView = React.lazy(() => import('./components/BridgesView').then((m)
 const SubscribersList = React.lazy(() => import('./components/SubscribersList').then((m) => ({ default: m.SubscribersList })));
 const SecurityView = React.lazy(() => import('./components/SecurityView').then((m) => ({ default: m.SecurityView })));
 const EventsView = React.lazy(() => import('./components/EventsView').then((m) => ({ default: m.EventsView })));
+const DocumentationView = React.lazy(() => import('./components/DocumentationView').then((m) => ({ default: m.DocumentationView })));
 
 type Session = { kind: 'user'; user: AdminUser } | { kind: 'lost' } | { kind: 'anonymous' };
 
@@ -369,7 +370,9 @@ export const App: React.FC = () => {
       <main ref={mainRef} className="flex-1 max-w-[1600px] w-full mx-auto px-4 sm:px-6 pt-5 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
         <React.Suspense fallback={<div className="flex items-center justify-center py-24 text-faint text-sm">Загрузка раздела...</div>}>
         <div className={activeTab === 'servers' && servers.length > 0 ? '' : 'max-w-7xl mx-auto space-y-8'}>
-        {loading ? (
+        {activeTab === 'docs' ? (
+          <DocumentationView />
+        ) : loading ? (
           <div className="flex items-center justify-center py-24 text-faint text-sm">
             Загрузка данных...
           </div>

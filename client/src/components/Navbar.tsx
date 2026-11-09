@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Plus, Server as ServerIcon, Users, LogOut, KeyRound, Lock, Palette, Handshake, Waypoints, ScrollText, Eye, Menu, X } from 'lucide-react';
+import { Plus, Server as ServerIcon, Users, LogOut, KeyRound, Lock, Palette, Handshake, Waypoints, ScrollText, BookOpen, Eye, Menu, X } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { Server, Bridge, Subscriber, AdminUser } from '../types';
 import { PanelVersion } from './PanelVersion';
@@ -8,7 +8,7 @@ import { formatBytes } from '../utils';
 import { InstallAppButton } from './InstallAppButton';
 import { ModalShell } from './ui/Modal';
 
-export type AppTab = 'servers' | 'bridges' | 'subscribers' | 'subscription' | 'partners' | 'events' | 'security';
+export type AppTab = 'servers' | 'bridges' | 'subscribers' | 'subscription' | 'partners' | 'events' | 'security' | 'docs';
 
 /** ws — статусы приходят по WebSocket, poll — панель опрашивает сервер раз в 15 секунд */
 export type LiveMode = 'ws' | 'poll';
@@ -37,10 +37,11 @@ const TABS: { id: AppTab; label: string; icon: LucideIcon }[] = [
   { id: 'partners', label: 'Партнёры', icon: Handshake },
   { id: 'events', label: 'События', icon: ScrollText },
   { id: 'security', label: 'Безопасность', icon: Lock },
+  { id: 'docs', label: 'Документация', icon: BookOpen },
 ];
 
 /** Разделы, доступные гостю (настройки подписки и безопасности скрыты) */
-const GUEST_TABS: AppTab[] = ['servers', 'bridges', 'subscribers', 'partners', 'events'];
+const GUEST_TABS: AppTab[] = ['servers', 'bridges', 'subscribers', 'partners', 'events', 'docs'];
 
 const Kpi: React.FC<{ label: string; value: React.ReactNode }> = ({ label, value }) => (
   <div className="text-right">

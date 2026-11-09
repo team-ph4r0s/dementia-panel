@@ -33,7 +33,7 @@ describe('Navbar: боковое меню разделов на телефоне
     const drawer = screen.getByRole('dialog', { name: 'Меню разделов' });
     const nav = within(drawer).getByRole('navigation', { name: 'Разделы панели (меню)' });
     expect(within(nav).getAllByRole('button').map((b) => b.textContent)).toEqual([
-      'Серверы', 'Мосты', 'Пользователи и подписки', 'Оформление подписки', 'Партнёры', 'События', 'Безопасность',
+      'Серверы', 'Мосты', 'Пользователи и подписки', 'Оформление подписки', 'Партнёры', 'События', 'Безопасность', 'Документация',
     ]);
     expect(within(nav).getByRole('button', { name: 'Серверы' })).toHaveAttribute('aria-current', 'page');
     // Сводка сети и учётная запись — тоже в меню
@@ -80,6 +80,7 @@ describe('Navbar: боковое меню разделов на телефоне
     expect(within(drawer).queryByRole('button', { name: 'Безопасность' })).toBeNull();
     expect(within(drawer).queryByRole('button', { name: 'Оформление подписки' })).toBeNull();
     expect(within(drawer).queryByRole('button', { name: /Учётная запись/ })).toBeNull();
+    expect(within(drawer).getByRole('button', { name: 'Документация' })).toBeEnabled();
   });
 
   it('главное действие раздела в шапке подписано для скринридера', () => {
