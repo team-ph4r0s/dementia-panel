@@ -19,6 +19,7 @@ function details(p: ProbeResult): string {
   } else {
     parts.push('TCP-порт, без подтверждения на ноде');
   }
+  if (p.gp_total) parts.push(`Globalping (${p.gp_eyeball ? 'сети провайдеров' : 'дата-центры'}): ${p.gp_ok ?? 0} из ${p.gp_total}`);
   if (p.rtt_ms !== null) parts.push(`${p.rtt_ms} мс`);
   return parts.join(', ');
 }

@@ -33,6 +33,7 @@ SQLite (`node:sqlite`, Node ≥ 22.13), файл `data/dementia.db`, режим 
 | v16 | Транспорт VLESS: `xray_transport` (`tcp`/`xhttp`), `xhttp_path` (существующим VLESS-нодам — случайный), `xhttp_mode`; вход через CDN: `cdn_enabled`, `cdn_domain`, `cdn_port`, `cdn_address`, `cdn_zone`, `cdn_record`, `cdn_origin_ip`, `cdn_cert`, `cdn_key` (приватный ключ, `encryptSecret`, в API не отдаётся), `cdn_expires_at`, `cdn_error` — см. [vless.md](vless.md#cdn) |
 | v17 | `bridges.panel_forward` — мост пересылает порт панели; режим привязки `main` (значение `bridge_links.mode`); резервный домен подписок — `settings` (`failover_domain`, `failover_zone`, `failover_records` — JSON «IP → ID записи», `failover_include_panel`, `failover_error`), `panel_origin_ip`, `ssl_alt_names` — см. [bridges.md](bridges.md#failover) |
 | v18 | Запасные порты ноды AmneziaWG: `servers.extra_ports` (JSON-список), `extra_ports_hash` (SHA-256 применённых на ноде правил, `NULL` — не применены), `extra_ports_error` — см. [node-management.md](node-management.md#extra-ports) |
+| v19 | Globalping в проверке из стран: `probe_results.gp_ok`, `gp_total`, `gp_eyeball` — см. [probes.md](probes.md) |
 
 ## Таблицы
 

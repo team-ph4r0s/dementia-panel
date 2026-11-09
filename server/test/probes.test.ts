@@ -146,7 +146,7 @@ describe('настройки и страны', () => {
   it('по умолчанию проверка выключена, результатов нет, адреса нод никуда не отправляются', async () => {
     const res = await api('/api/probes');
     expect(res.status).toBe(200);
-    expect(res.body.settings).toEqual({ enabled: false, countries: [], interval_minutes: 30, show_in_name: true, show_in_description: true });
+    expect(res.body.settings).toEqual({ enabled: false, countries: [], interval_minutes: 30, show_in_name: true, show_in_description: true, globalping: false });
     expect(res.body.results).toEqual([]);
     expect(res.body.servers).toEqual([expect.objectContaining({ id: serverId, host: '203.0.113.9', probe_port: null, stub_port: null })]);
     expect(provider.calls).toEqual([]);
@@ -200,7 +200,7 @@ describe('настройки и страны', () => {
   it('настройки сохраняются: коды приводятся к нижнему регистру, дубли убираются', async () => {
     const res = await api('/api/probes', 'PUT', { settings: { enabled: true, countries: ['RU', 'kz', 'ru'], interval_minutes: 15, show_in_description: false } });
     expect(res.status).toBe(200);
-    expect(res.body.settings).toEqual({ enabled: true, countries: ['ru', 'kz'], interval_minutes: 15, show_in_name: true, show_in_description: false });
+    expect(res.body.settings).toEqual({ enabled: true, countries: ['ru', 'kz'], interval_minutes: 15, show_in_name: true, show_in_description: false, globalping: false });
     expect(getSetting('probe_countries')).toBe('["ru","kz"]');
   });
 });

@@ -96,6 +96,8 @@ export const ProbesCard: React.FC<{ onChanged?: () => void }> = ({ onChanged }) 
       const data = await api.updateProbes({ settings, servers: portUpdates });
       setOverview(data);
       setSettings(data.settings);
+      // Список стран зависит от того, включён ли Globalping
+      setCountries(null);
       setPorts(Object.fromEntries(data.servers.map((s) => [s.id, s.probe_port ? String(s.probe_port) : ''])));
       setMessage({
         type: 'success',
@@ -225,14 +227,21 @@ export const ProbesCard: React.FC<{ onChanged?: () => void }> = ({ onChanged }) 
                       <input type="checkbox" checked={selected} disabled={disabled} onChange={() => toggleCountry(c.code)} />
                       <span>{countryFlag(c.code)}</span>
                       <span className="truncate">{countryName(c.code)}</span>
-                      <span className="ml-auto text-xs text-faint">{c.nodes.length}</span>
+                      <span className="ml-auto text-xs text-faint">{c.nodes.length}{c.gp_probes ? ` + ${c.gp_probes}` : ''}</span>
                     </label>
                   );
                 })}
                 {filtered.length === 0 && <p className="text-xs text-faint col-span-full">Ничего не найдено</p>}
               </div>
             )}
-            <p className="text-xs text-faint">Число справа — сколько узлов check-host.net в стране. Из каждой страны привлекаются до двух узлов.</p>
+            <p className="text-xs text-faint">Число справа — сколько узлов check-host.net в стране (после «+» — пробы Globalping). Из каждой страны привлекаются до двух узлов каждого источника.</p>
+            <label className="flex items-start gap-2 text-xs text-ink cursor-pointer">
+              <input type="checkbox" className="mt-0.5" checked={Boolean(settings.globalping)} onChange={(e) => update('globalping', e.target.checked)} />
+              <span>
+                Дополнительно проверять через <b>Globalping</b> — пробы в сетях провайдеров и больше стран. Адреса нод будут передаваться
+                и этому сервису (api.globalping.io). Проверяется только TCP; бесплатно до 250 проб в час.
+              </span>
+            </label>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-end">

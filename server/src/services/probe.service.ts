@@ -5,6 +5,7 @@ import { HttpError } from '../utils/http.js';
 import { PANEL_VERSION } from './version.service.js';
 import { ProvisionService } from './provision.service.js';
 import type { StubHit } from './stub.service.js';
+import { globalpingCountries, GlobalpingRateLimitError, startGlobalpingHttp, waitGlobalping, type GlobalpingMeasurement } from './globalping.service.js';
 
 /**
  * Проверка доступности нод из выбранных стран. Сама панель стоит в одной стране, поэтому проверку выполняют узлы публичного
@@ -49,6 +50,8 @@ export interface ProbeSettings {
   show_in_name: boolean;
   /** Дописывать пояснение к описанию подписки */
   show_in_description: boolean;
+  /** Второй источник — Globalping (пробы в сетях провайдеров); выключен, пока администратор не включит (инвариант 32) */
+  globalping: boolean;
 }
 
 export interface ProbeCountry {
@@ -57,6 +60,9 @@ export interface ProbeCountry {
   name: string;
   nodes: string[];
   cities: string[];
+  /** Пробы Globalping в стране: всего и в сетях провайдеров (есть, только если источник включён) */
+  gp_probes?: number;
+  gp_eyeball?: number;
 }
 
 export type ProbeStatus = 'ok' | 'partial' | 'fail';
@@ -80,6 +86,11 @@ export interface ProbeResult {
   rtt_ms: number | null;
   checked_at: string;
   status: ProbeStatus;
+  /** Globalping: сколько проб дошло до заглушки и сколько участвовало (входят в ok_nodes/total_nodes); null — не использовался */
+  gp_ok: number | null;
+  gp_total: number | null;
+  /** Пробы Globalping были в сетях провайдеров (false — в стране нашлись только пробы в дата-центрах) */
+  gp_eyeball: boolean | null;
 }
 
 interface CountryAggregate {
@@ -89,7 +100,13 @@ interface CountryAggregate {
   tcpOk: number | null;
   udpOk: number | null;
   spoofed: number;
+  gpOk?: number;
+  gpTotal?: number;
+  gpEyeball?: boolean;
 }
+
+/** Сколько ждать пробы Globalping (обычно отвечают за несколько секунд) */
+const GLOBALPING_WAIT_MS = 30 * 1000;
 
 interface CheckOutcome {
   method: ProbeMethod;
@@ -212,6 +229,9 @@ export class ProbeService {
   /** Вызывается после каждого обхода (мосты пересчитывают, кому нужен мост); задаёт index.ts */
   static afterRun: (() => Promise<void>) | null = null;
   private static countriesCache: { at: number; list: ProbeCountry[]; ips: Map<string, string> } | null = null;
+  private static gpCountriesCache: { at: number; counts: Map<string, { total: number; eyeball: number }> } | null = null;
+  /** Лимит Globalping исчерпан в текущем обходе — до конца обхода к нему не обращаемся */
+  private static gpLimited = false;
 
   // ---- Настройки ----
 
@@ -230,6 +250,7 @@ export class ProbeService {
       interval_minutes: Number.isInteger(interval) && interval >= MIN_INTERVAL_MINUTES && interval <= MAX_INTERVAL_MINUTES ? interval : DEFAULT_INTERVAL_MINUTES,
       show_in_name: getSetting('probe_in_name') !== '0',
       show_in_description: getSetting('probe_in_description') !== '0',
+      globalping: getSetting('probe_globalping') === '1',
     };
   }
 
@@ -253,6 +274,7 @@ export class ProbeService {
     if (body.show_in_name !== undefined) next.show_in_name = Boolean(body.show_in_name);
     if (body.show_in_description !== undefined) next.show_in_description = Boolean(body.show_in_description);
     if (body.enabled !== undefined) next.enabled = Boolean(body.enabled);
+    if (body.globalping !== undefined) next.globalping = Boolean(body.globalping);
     if (next.enabled && next.countries.length === 0) throw new HttpError(400, 'Выберите хотя бы одну страну для проверки');
 
     const wasEnabled = this.readSettings().enabled;
@@ -261,6 +283,7 @@ export class ProbeService {
     setSetting('probe_interval', next.interval_minutes === DEFAULT_INTERVAL_MINUTES ? null : String(next.interval_minutes));
     setSetting('probe_in_name', next.show_in_name ? null : '0');
     setSetting('probe_in_description', next.show_in_description ? null : '0');
+    setSetting('probe_globalping', next.globalping ? '1' : null);
     // Включение (или смена списка стран) — первая проверка при ближайшем обходе
     if (next.enabled && !wasEnabled) setSetting('probe_last_run', null);
 
@@ -328,13 +351,44 @@ export class ProbeService {
     }
   }
 
-  /** Страны, в которых у check-host.net есть проверяющие узлы (кэш на сутки) */
+  /** Число проб Globalping по странам (кэш на сутки); при сбое — прежний кэш или пусто: источник необязательный */
+  private static async loadGlobalpingCountries(): Promise<Map<string, { total: number; eyeball: number }>> {
+    const cached = this.gpCountriesCache;
+    if (cached && Date.now() - cached.at < COUNTRIES_TTL_MS) return cached.counts;
+    try {
+      this.gpCountriesCache = { at: Date.now(), counts: await globalpingCountries() };
+      return this.gpCountriesCache.counts;
+    } catch {
+      return cached?.counts ?? new Map();
+    }
+  }
+
+  /**
+   * Страны, в которых есть проверяющие узлы (кэш на сутки): check-host.net, а при включённом Globalping — и страны,
+   * где есть только его пробы (у них `nodes` пуст). К Globalping панель не обращается, пока источник выключен.
+   */
   static async listCountries(): Promise<ProbeCountry[]> {
-    return (await this.loadNodes()).list;
+    const gp = this.readSettings().globalping ? await this.loadGlobalpingCountries() : new Map<string, { total: number; eyeball: number }>();
+    let list: ProbeCountry[];
+    try {
+      list = (await this.loadNodes()).list;
+    } catch (err) {
+      if (gp.size === 0) throw err;
+      list = [];
+    }
+    const merged = new Map(list.map((c) => [c.code, { ...c }]));
+    for (const [code, count] of gp) {
+      const country = merged.get(code) ?? { code, name: code.toUpperCase(), nodes: [], cities: [] };
+      country.gp_probes = count.total;
+      country.gp_eyeball = count.eyeball;
+      merged.set(code, country);
+    }
+    return [...merged.values()].sort((a, b) => a.code.localeCompare(b.code));
   }
 
   static resetCountriesCache(): void {
     this.countriesCache = null;
+    this.gpCountriesCache = null;
   }
 
   // ---- Проверка ----
@@ -413,17 +467,28 @@ export class ProbeService {
     nodeIds: string[],
     countryOfNode: Map<string, string>,
     ipOfNode = new Map<string, string>(),
-    errors: string[] = []
+    errors: string[] = [],
+    globalpingCountries: string[] = []
   ): Promise<CheckOutcome> {
     const nonce = crypto.randomBytes(8).toString('hex');
     const host = net.isIPv6(server.host) ? `[${server.host}]` : server.host;
     const since = Math.floor(Date.now() / 1000) - 5;
+    // Нет узлов check-host.net в выбранных странах (страны только с пробами Globalping) — этот источник пропускается
+    const empty: StartedCheck = { requestId: '', nodes: new Map() };
 
-    const [http, udp] = await Promise.all([
-      this.startCheck('http', `http://${host}:${server.stub_port}/${nonce}`, nodeIds, countryOfNode, ipOfNode),
-      this.startCheck('udp', `${host}:${server.stub_port}`, nodeIds, countryOfNode, ipOfNode).catch(() => null),
+    // Globalping идёт одновременно с check-host.net; журнал заглушки читается один раз, после обоих
+    const gpPromise = this.runGlobalping(server, globalpingCountries, errors);
+    const [http, udp] = nodeIds.length
+      ? await Promise.all([
+        this.startCheck('http', `http://${host}:${server.stub_port}/${nonce}`, nodeIds, countryOfNode, ipOfNode),
+        this.startCheck('udp', `${host}:${server.stub_port}`, nodeIds, countryOfNode, ipOfNode).catch(() => null),
+      ])
+      : [empty, null];
+    const [httpResults, udpResults] = await Promise.all([
+      nodeIds.length ? this.pollResults(http, 3000) : Promise.resolve({} as Record<string, unknown>),
+      udp ? this.pollResults(udp, 3000) : Promise.resolve({} as Record<string, unknown>),
     ]);
-    const [httpResults, udpResults] = await Promise.all([this.pollResults(http, 3000), udp ? this.pollResults(udp, 3000) : Promise.resolve({} as Record<string, unknown>)]);
+    const gp = await gpPromise;
 
     let hits: StubHit[] | null = null;
     try {
@@ -439,7 +504,7 @@ export class ProbeService {
       if (!known) nodes.set(id, info);
       else if (!known.ip && info.ip) nodes.set(id, { ...known, ip: info.ip });
     }
-    const matched = hits ? matchStubHits(hits, nonce, since, nodes, (id) => parseHttpResult(httpResults[id])?.ok === true) : null;
+    const matched = hits ? matchStubHits(hits.filter((h) => !gp.some((item) => h.path.includes(item.nonce))), nonce, since, nodes, (id) => parseHttpResult(httpResults[id])?.ok === true) : null;
     // UDP-пакеты check-host.net в этот раз до ноды не дошли ни от одного узла — данных по UDP нет
     const udpKnown = Boolean(udp && matched && matched.udp.size > 0);
 
@@ -463,7 +528,60 @@ export class ProbeService {
         this.addToCountry(countries, info.country, { ok, rtt: ok ? httpResult!.rtt : null, tcpOk: ok, udpOk: null, spoofed: false });
       }
     }
-    return { method: 'stub', verified: matched !== null, countries };
+
+    // Пробы Globalping: у каждой страны своя метка, адреса проб неизвестны — считаются разные адреса в журнале с этой меткой
+    for (const item of gp) {
+      const confirmed = hits
+        ? Math.min(new Set(hits.filter((h) => h.proto === 'tcp' && h.path.includes(item.nonce)).map((h) => h.ip)).size, item.probes)
+        : item.claimedOk;
+      const a = countries.get(item.country) ?? { ok: 0, total: 0, rtts: [], tcpOk: null, udpOk: null, spoofed: 0 };
+      a.total += item.probes;
+      a.ok += confirmed;
+      a.tcpOk = (a.tcpOk ?? 0) + confirmed;
+      // Проба сообщила об ответе, а до ноды её запрос не дошёл — ответ подделан по дороге
+      if (hits) a.spoofed += Math.max(0, item.claimedOk - confirmed);
+      a.gpOk = confirmed;
+      a.gpTotal = item.probes;
+      a.gpEyeball = item.eyeball;
+      countries.set(item.country, a);
+    }
+    return { method: 'stub', verified: hits !== null, countries };
+  }
+
+  /**
+   * Запросы к заглушке ноды с проб Globalping: на каждую страну — отдельное измерение со своей меткой в пути. Сбой или
+   * исчерпанный лимит не ломают проверку: в итог попадает то, что успело выполниться, остальное — в примечания.
+   */
+  private static async runGlobalping(
+    server: { host: string; stub_port: number },
+    countries: string[],
+    errors: string[]
+  ): Promise<(GlobalpingMeasurement & { country: string; nonce: string; claimedOk: number })[]> {
+    // IPv6-адрес ноды Globalping как цель HTTP не принимает
+    if (!countries.length || this.gpLimited || net.isIPv6(server.host)) return [];
+    const started: (GlobalpingMeasurement & { country: string; nonce: string })[] = [];
+    for (const country of countries) {
+      const nonce = crypto.randomBytes(8).toString('hex');
+      try {
+        const measurement = await startGlobalpingHttp(server.host, server.stub_port, `/${nonce}`, country, NODES_PER_COUNTRY);
+        if (measurement) started.push({ ...measurement, country, nonce });
+      } catch (err: any) {
+        if (err instanceof GlobalpingRateLimitError) {
+          this.gpLimited = true;
+          errors.push(err.message);
+          break;
+        }
+        errors.push(`Globalping (${country.toUpperCase()}): ${err.message}`);
+      }
+    }
+    return Promise.all(started.map(async (item) => {
+      try {
+        const { claimedOk } = await waitGlobalping(item.id, Math.min(this.pollTotalMs, GLOBALPING_WAIT_MS), this.pollDelayMs ?? 2000);
+        return { ...item, claimedOk };
+      } catch {
+        return { ...item, claimedOk: 0 };
+      }
+    }));
   }
 
   static isDue(): boolean {
@@ -477,16 +595,18 @@ export class ProbeService {
     const now = new Date().toISOString();
     transaction(() => {
       const upsert = db.prepare(`
-        INSERT INTO probe_results (server_id, country, method, ok_nodes, total_nodes, tcp_ok, udp_ok, spoofed, verified, rtt_ms, checked_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO probe_results (server_id, country, method, ok_nodes, total_nodes, tcp_ok, udp_ok, spoofed, verified, rtt_ms, checked_at, gp_ok, gp_total, gp_eyeball)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(server_id, country) DO UPDATE SET method = excluded.method, ok_nodes = excluded.ok_nodes,
           total_nodes = excluded.total_nodes, tcp_ok = excluded.tcp_ok, udp_ok = excluded.udp_ok, spoofed = excluded.spoofed,
-          verified = excluded.verified, rtt_ms = excluded.rtt_ms, checked_at = excluded.checked_at
+          verified = excluded.verified, rtt_ms = excluded.rtt_ms, checked_at = excluded.checked_at,
+          gp_ok = excluded.gp_ok, gp_total = excluded.gp_total, gp_eyeball = excluded.gp_eyeball
       `);
       for (const [country, a] of outcome.countries) {
         upsert.run(
           serverId, country, outcome.method, a.ok, a.total, a.tcpOk, a.udpOk, a.spoofed, outcome.verified ? 1 : 0,
-          a.rtts.length ? Math.round(a.rtts.reduce((x, y) => x + y, 0) / a.rtts.length) : null, now
+          a.rtts.length ? Math.round(a.rtts.reduce((x, y) => x + y, 0) / a.rtts.length) : null, now,
+          a.gpTotal === undefined ? null : a.gpOk ?? 0, a.gpTotal ?? null, a.gpTotal === undefined ? null : a.gpEyeball ? 1 : 0
         );
       }
     });
@@ -499,10 +619,20 @@ export class ProbeService {
     if (this.running) throw new HttpError(409, 'Проверка уже выполняется');
 
     this.running = true;
+    this.gpLimited = false;
     const errors: string[] = [];
     let checked = 0;
     try {
-      const { list: countries, ips: ipOfNode } = await this.loadNodes();
+      // Страны, в которых есть пробы Globalping (если источник включён)
+      const gpCounts = settings.globalping ? await this.loadGlobalpingCountries() : new Map<string, { total: number; eyeball: number }>();
+      const gpCountries = settings.countries.filter((code) => gpCounts.has(code));
+      if (settings.globalping && gpCounts.size === 0) errors.push('Globalping недоступен — проверка только через check-host.net');
+      // Без Globalping check-host.net обязателен; с ним обход продолжается и при недоступном check-host.net
+      const { list: countries, ips: ipOfNode } = await this.loadNodes().catch((err) => {
+        if (!gpCountries.length) throw err;
+        errors.push(err.message);
+        return { list: [] as ProbeCountry[], ips: new Map<string, string>() };
+      });
       const byCode = new Map(countries.map((c) => [c.code, c]));
       const countryOfNode = new Map<string, string>();
       for (const c of countries) for (const id of c.nodes) countryOfNode.set(id, c.code);
@@ -512,10 +642,10 @@ export class ProbeService {
       for (const code of settings.countries) {
         const country = byCode.get(code);
         if (country) nodeIds.push(...country.nodes.slice(0, NODES_PER_COUNTRY));
-        else missing.push(code.toUpperCase());
+        else if (!gpCountries.includes(code)) missing.push(code.toUpperCase());
       }
       if (missing.length) errors.push(`нет проверяющих узлов в странах: ${missing.join(', ')}`);
-      if (nodeIds.length === 0) throw new Error('для выбранных стран нет проверяющих узлов');
+      if (nodeIds.length === 0 && gpCountries.length === 0) throw new Error('для выбранных стран нет проверяющих узлов');
 
       const servers = db.prepare("SELECT id, name, host, status, probe_port, stub_port, remote_panel_id FROM servers WHERE status != 'uninstalled' AND (protocol IS NULL OR protocol = 'awg') ORDER BY id").all() as {
         id: number;
@@ -545,9 +675,13 @@ export class ProbeService {
           let outcome: CheckOutcome;
           if (server.stub_port) {
             const notes: string[] = [];
-            outcome = await this.checkStub({ id: server.id, host: server.host, stub_port: server.stub_port }, nodeIds, countryOfNode, ipOfNode, notes);
-            for (const note of notes) errors.push(`${server.name}: ${note}`);
-          } else if (server.probe_port) {
+            outcome = await this.checkStub({ id: server.id, host: server.host, stub_port: server.stub_port }, nodeIds, countryOfNode, ipOfNode, notes, gpCountries);
+            // Сообщение о лимите Globalping одно на весь обход, остальные — с именем ноды
+            for (const note of notes) {
+              if (!note.startsWith('Globalping: исчерпан')) errors.push(`${server.name}: ${note}`);
+              else if (!errors.includes(note)) errors.push(note);
+            }
+          } else if (server.probe_port && nodeIds.length) {
             outcome = await this.checkTcp(server.host, server.probe_port, nodeIds, countryOfNode, ipOfNode);
           } else {
             errors.push(
@@ -609,6 +743,9 @@ export class ProbeService {
       rtt_ms: r.rtt_ms ?? null,
       checked_at: r.checked_at,
       status: probeStatus(r.ok_nodes, r.total_nodes),
+      gp_ok: r.gp_ok ?? null,
+      gp_total: r.gp_total ?? null,
+      gp_eyeball: r.gp_eyeball === null || r.gp_eyeball === undefined ? null : Boolean(r.gp_eyeball),
     };
   }
 

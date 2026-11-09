@@ -425,6 +425,10 @@ export interface ProbeResult {
   rtt_ms: number | null;
   checked_at: string;
   status: ProbeStatus;
+  /** Globalping: дошло проб / участвовало; gp_eyeball — пробы в сетях провайдеров */
+  gp_ok?: number | null;
+  gp_total?: number | null;
+  gp_eyeball?: boolean | null;
 }
 
 export interface ProbeSettings {
@@ -433,6 +437,8 @@ export interface ProbeSettings {
   interval_minutes: number;
   show_in_name: boolean;
   show_in_description: boolean;
+  /** Второй источник — Globalping (пробы в сетях провайдеров) */
+  globalping?: boolean;
 }
 
 export interface ProbeCountry {
@@ -440,6 +446,8 @@ export interface ProbeCountry {
   name: string;
   nodes: string[];
   cities: string[];
+  gp_probes?: number;
+  gp_eyeball?: number;
 }
 
 export interface ProbesOverview {

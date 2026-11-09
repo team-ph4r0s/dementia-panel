@@ -513,6 +513,13 @@ const migrations: Array<() => void> = [
     addColumn('servers', 'extra_ports_hash TEXT');
     addColumn('servers', 'extra_ports_error TEXT');
   },
+  // v19: второй источник проверки из стран — Globalping (docs/probes.md): сколько проб страны дошло до заглушки ноды и
+  // сколько участвовало, и были ли это пробы в сетях провайдеров (1) или только в дата-центрах (0). NULL — источник не использовался
+  () => {
+    addColumn('probe_results', 'gp_ok INTEGER');
+    addColumn('probe_results', 'gp_total INTEGER');
+    addColumn('probe_results', 'gp_eyeball INTEGER');
+  },
 ];
 
 /** Версия схемы, которую умеет эта сборка панели (число миграций) */
