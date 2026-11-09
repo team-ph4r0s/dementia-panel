@@ -13,6 +13,7 @@ Dementia Panel — агентлесс-панель управления нода
 | [docs/node-management.md](docs/node-management.md) | Установка, синхронизация, применение параметров, сканирование и импорт, мониторинг |
 | [docs/vless.md](docs/vless.md) | Второй протокол VLESS + Reality (Xray): контракт данных, установка, подписки, ограничения |
 | [docs/awg-protocol.md](docs/awg-protocol.md) | Параметры обфускации AmneziaWG 1.x / 3.x, ограничения, генерация |
+| [docs/direct-routing.md](docs/direct-routing.md) | «Напрямую, мимо VPN»: страны, домены и сети мимо туннеля — правила mihomo и AllowedIPs для AWG, источник сетей стран |
 | [docs/subscriptions.md](docs/subscriptions.md) | Форматы подписок (Incy, mihomo, JSON), заголовки, оформление, лимиты |
 | [docs/partners.md](docs/partners.md) | Партнёрский доступ к нодам между панелями: модель и API `/api/federation/v1` |
 | [docs/amnezia-import.md](docs/amnezia-import.md) | Перенос серверов из AmneziaVPN по ключу «Полный доступ» (`vpn://`) |
@@ -281,6 +282,11 @@ CI на `main`. Подробно — [docs/releases.md](docs/releases.md).
     только при метке `/opt/dementia-xray/dementia.env`. Транспорт (`tcp`/`xhttp`) меняет только явное действие — «Сгенерировать новые» его
     сохраняет; с XHTTP flow пустой (`effectiveFlow`: Vision без VLESS Encryption работает только на RAW). Вход через CDN (`CdnService`) — второй inbound `vless-cdn` с сертификатом из БД прямо в config.json; `cdn_key` шифруется и не
     отдаётся (как приватные ключи, инвариант 1), запись в подписке «· CDN» — отдельная, мост её не меняет. Подробно — docs/vless.md.
+
+48. **«Напрямую, мимо VPN» не должно ломать подписку.** Выдача подписки синхронная и не ходит в сеть: `awgAllowedIps` берёт только кэш сетей стран
+    (`geo_v4_<cc>`), без списка — прежнее `0.0.0.0/0, ::/0`; IPv6 всегда остаётся в туннеле. Скачанные списки — внешние данные: принимаются
+    только строки IPv4 CIDR (`parseGeoList`), при ошибке прежний кэш не затирается. Домены и сети проходят валидацию до записи (они попадают в
+    YAML клиентов). Подробно — docs/direct-routing.md.
 
 ## Чек-лист перед коммитом
 

@@ -8,6 +8,7 @@ import { contentDisposition } from '../utils/http.js';
 import { paramsFromRow } from '../utils/awg-params.js';
 import { countryFlag, ProbeService } from '../services/probe.service.js';
 import { BridgeService } from '../services/bridge.service.js';
+import { buildClashDirectRules } from '../services/direct-routing.service.js';
 import { renderSubscriptionPage, SUBSCRIPTION_PAGE_SCRIPT } from './subscription-page.js';
 
 /** Названия доп. параметров AWG 3.x в amnezia-wg-option mihomo */
@@ -112,7 +113,8 @@ export function buildClashConfig(entries: { name: string; server: any; client: a
       'log-level': 'warning',
       proxies,
       'proxy-groups': [{ name: group, type: 'select', proxies: proxies.length ? proxies.map((p) => p.name) : ['DIRECT'] }],
-      rules: [`MATCH,${group}`],
+      // «Напрямую» (страны, домены, сети) идёт до итогового правила (docs/direct-routing.md)
+      rules: [...buildClashDirectRules(), `MATCH,${group}`],
     },
     null,
     2
