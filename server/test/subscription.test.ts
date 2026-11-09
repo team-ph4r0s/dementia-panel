@@ -82,4 +82,16 @@ describe('форматы подписки', () => {
     expect(config['proxy-groups'][0].proxies).toEqual(['🇩🇪 Германия', '🇩🇪 Германия 2']);
     expect(config.rules).toEqual(['MATCH,Dementia']);
   });
+
+  it('mihomo: прокси с именем группы переименовывается; с одной нодой группы «Авто» нет', () => {
+    const server = { host: '1.2.3.4', awg_port: 51820, server_public_key: 'PUB', jc: 4, jmin: 40, jmax: 70, s1: 30, s2: 100, h1: 1, h2: 2, h3: 3, h4: 4 };
+    const client = { client_ip: '10.8.0.2', client_private_key: 'PRIV' };
+    const config = JSON.parse(buildClashConfig([{ name: 'Авто', server, client }, { name: 'Dementia', server, client }], ['1.1.1.1'], 1280, true));
+    expect(config.proxies.map((p: any) => p.name)).toEqual(['Авто 2', 'Dementia 2']);
+    expect(config['proxy-groups'].map((g: any) => g.name)).toEqual(['Dementia', 'Авто']);
+    expect(config['proxy-groups'][1].proxies).toEqual(['Авто 2', 'Dementia 2']);
+
+    const single = JSON.parse(buildClashConfig([{ name: 'n', server, client }], ['1.1.1.1'], 1280, true));
+    expect(single['proxy-groups']).toEqual([{ name: 'Dementia', type: 'select', proxies: ['n'] }]);
+  });
 });

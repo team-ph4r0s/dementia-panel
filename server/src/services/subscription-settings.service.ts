@@ -18,6 +18,8 @@ export interface SubscriptionSettings {
   web_page_url: string;
   sort_order: '' | 'ping' | 'name' | 'none';
   hide_url: boolean;
+  /** mihomo: группа «Авто» (fallback) — приложение само переходит на следующую работающую ноду */
+  clash_auto: boolean;
 }
 
 export const TITLE_MAX = 25;
@@ -36,6 +38,7 @@ const DEFAULTS: SubscriptionSettings = {
   web_page_url: '',
   sort_order: '',
   hide_url: false,
+  clash_auto: true,
 };
 
 export function readSubscriptionSettings(): SubscriptionSettings {
@@ -52,6 +55,7 @@ export function readSubscriptionSettings(): SubscriptionSettings {
     web_page_url: getSetting('sub_web_page_url') || '',
     sort_order: (SORT_ORDERS as readonly string[]).includes(sort) ? (sort as SubscriptionSettings['sort_order']) : '',
     hide_url: getSetting('sub_hide_url') === '1',
+    clash_auto: getSetting('sub_clash_auto') !== '0',
   };
 }
 
@@ -118,6 +122,7 @@ export function updateSubscriptionSettings(body: Record<string, unknown>): Subsc
     next.sort_order = sort as SubscriptionSettings['sort_order'];
   }
   if (body.hide_url !== undefined) next.hide_url = Boolean(body.hide_url);
+  if (body.clash_auto !== undefined) next.clash_auto = Boolean(body.clash_auto);
 
   const store = (key: string, value: string) => setSetting(key, value || null);
   store('sub_title', next.title === DEFAULTS.title ? '' : next.title);
@@ -130,6 +135,7 @@ export function updateSubscriptionSettings(body: Record<string, unknown>): Subsc
   store('sub_web_page_url', next.web_page_url);
   store('sub_sort_order', next.sort_order);
   store('sub_hide_url', next.hide_url ? '1' : '');
+  store('sub_clash_auto', next.clash_auto ? '' : '0');
 
   return next;
 }

@@ -144,7 +144,8 @@ describe('VLESS + Reality в подписках', () => {
       'public-key': expect.any(String),
       'short-id': '0123456789abcdef',
     });
-    expect(config['proxy-groups'][0].proxies).toEqual(config.proxies.map((proxy: any) => proxy.name));
+    expect(config['proxy-groups'][0].proxies).toEqual(['Авто', ...config.proxies.map((proxy: any) => proxy.name)]);
+    expect(config['proxy-groups'][1]).toMatchObject({ name: 'Авто', type: 'fallback', proxies: config.proxies.map((proxy: any) => proxy.name) });
   });
 
   it('v2ray по параметру и User-Agent отдаёт только VLESS и пропускает клиента без UUID', async () => {

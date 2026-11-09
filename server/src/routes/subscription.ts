@@ -73,11 +73,23 @@ export function detectFormat(query: unknown, userAgent: string | undefined): For
   return 'awg';
 }
 
+/** Группа автопереключения в профиле mihomo и адрес, по которому приложение проверяет ноды (через саму ноду) */
+export const CLASH_AUTO_GROUP = 'Авто';
+const CLASH_GROUP = 'Dementia';
+const CLASH_HEALTH_URL = 'https://www.gstatic.com/generate_204';
+const CLASH_HEALTH_INTERVAL = 300;
+
 /**
- * Конфигурация mihomo в виде JSON (валидный YAML 1.2): прокси, группа выбора и правило по умолчанию
+ * Конфигурация mihomo в виде JSON (валидный YAML 1.2): прокси, группа выбора и правило по умолчанию.
+ *
+ * `auto` добавляет группу «Авто» типа fallback и ставит её первой в группе выбора: приложение идёт через первую
+ * работающую ноду в порядке подписки (мост → прямой адрес → следующая нода) и само переходит дальше, когда она
+ * перестаёт отвечать. Сервер видит доступность только из дата-центров, а приложение — из сети пользователя.
+ * Выбранная пользователем вручную нода остаётся выбранной. С одной нодой переключаться не на что — группа не нужна.
  */
-export function buildClashConfig(entries: { name: string; server: any; client: any }[], dns: string[], mtu: number): string {
-  const used = new Set<string>();
+export function buildClashConfig(entries: { name: string; server: any; client: any }[], dns: string[], mtu: number, auto = false): string {
+  // Имена групп заняты заранее: прокси с таким же именем сломал бы профиль
+  const used = new Set<string>([CLASH_GROUP, CLASH_AUTO_GROUP]);
   const proxies = entries.map(({ name, server, client }) => {
     let unique = name;
     for (let i = 2; used.has(unique); i++) unique = `${name} ${i}`;
@@ -104,7 +116,14 @@ export function buildClashConfig(entries: { name: string; server: any; client: a
     };
   });
 
-  const group = 'Dementia';
+  const group = CLASH_GROUP;
+  const names = proxies.map((p) => p.name);
+  const groups: Record<string, unknown>[] = auto && names.length > 1
+    ? [
+      { name: group, type: 'select', proxies: [CLASH_AUTO_GROUP, ...names] },
+      { name: CLASH_AUTO_GROUP, type: 'fallback', proxies: names, url: CLASH_HEALTH_URL, interval: CLASH_HEALTH_INTERVAL, lazy: true },
+    ]
+    : [{ name: group, type: 'select', proxies: names.length ? names : ['DIRECT'] }];
   return JSON.stringify(
     {
       'mixed-port': 7890,
@@ -112,7 +131,7 @@ export function buildClashConfig(entries: { name: string; server: any; client: a
       mode: 'rule',
       'log-level': 'warning',
       proxies,
-      'proxy-groups': [{ name: group, type: 'select', proxies: proxies.length ? proxies.map((p) => p.name) : ['DIRECT'] }],
+      'proxy-groups': groups,
       // «Напрямую» (страны, домены, сети) идёт до итогового правила (docs/direct-routing.md)
       rules: [...buildClashDirectRules(), `MATCH,${group}`],
     },
@@ -226,7 +245,7 @@ subscriptionRouter.get('/:token', (req, res) => {
 
   if (format === 'clash') {
     const dns = settings.dns.split(',').map((s) => s.trim()).filter(Boolean);
-    return res.type('text/yaml; charset=utf-8').send(buildClashConfig(entries, dns, settings.mtu));
+    return res.type('text/yaml; charset=utf-8').send(buildClashConfig(entries, dns, settings.mtu, subscriptionSettings.clash_auto));
   }
 
   if (format === 'json') {

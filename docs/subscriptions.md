@@ -32,7 +32,7 @@
 |---|---|---|
 | Incy (по умолчанию) | `?format=awg`/`incy` или запрос, для которого не выбраны HTML, mihomo и v2ray | base64 смешанного списка `awg://<base64url(.conf)>#<имя>` и `vless://…#<имя>` ([спецификация](https://docs.incy.cc/en/subscription-format/)) |
 | JSON Incy | `?format=json` | `{"type":"amneziawg","version":1,"servers":[…]}`; AWG — `{name,config}`, VLESS — `{name,protocol:"vless",link}` |
-| mihomo | `?format=clash`/`mihomo` или UA `mihomo`, `clash-meta`, `clash-verge`, `flclash`, `clashmi`, `clash.party` | JSON (валидный YAML): AWG `type: wireguard` + `amnezia-wg-option`, VLESS `type: vless` + `reality-opts`, группа `Dementia`, `rules: …, MATCH,Dementia` (перед `MATCH` — правила [«Напрямую»](direct-routing.md), если включены) |
+| mihomo | `?format=clash`/`mihomo` или UA `mihomo`, `clash-meta`, `clash-verge`, `flclash`, `clashmi`, `clash.party` | JSON (валидный YAML): AWG `type: wireguard` + `amnezia-wg-option`, VLESS `type: vless` + `reality-opts`, группа `Dementia` (и «Авто», см. ниже), `rules: …, MATCH,Dementia` (перед `MATCH` — правила [«Напрямую»](direct-routing.md), если включены) |
 | v2ray | `?format=v2ray` или UA `v2rayN`, `v2rayNG`, `Hiddify`, `Streisand`, `Happ`, `NekoBox` | base64 списка только `vless://…`; записи AWG пропускаются |
 
 VLESS-ссылка имеет вид `vless://<uuid>@<host>:<port>?type=tcp&security=reality&pbk=…&fp=…&sni=…&sid=…&flow=…&encryption=none#<имя>`.
@@ -44,6 +44,21 @@ VLESS-ссылка имеет вид `vless://<uuid>@<host>:<port>?type=tcp&secu
 В `[Peer]` строка `PresharedKey` (в mihomo — `pre-shared-key`) пишется только если у клиента или сервера есть PSK.
 `AllowedIPs = 0.0.0.0/0, ::/0` — намеренно (если администратор не включил [«Напрямую, мимо VPN»](direct-routing.md) для AWG; тогда IPv4 за вычетом выбранных сетей, `::/0` остаётся): у нод нет IPv6, и маршрут `::/0` в туннель не даёт IPv6-трафику клиента идти
 мимо VPN (утечка реального адреса); так же настроены конфиги приложения AmneziaVPN. Не убирайте `::/0`.
+
+### Автопереключение в mihomo
+
+Если в подписке больше одной записи и включена настройка «Автопереключение в приложениях mihomo» (`clash_auto`, по умолчанию
+включена; `settings.sub_clash_auto = '0'` — выключена), профиль содержит две группы:
+
+- `Dementia` (`select`) — `Авто` первой, затем все ноды: пользователь по-прежнему может выбрать ноду вручную, и уже сделанный
+  им выбор сохраняется;
+- `Авто` (`fallback`) — все ноды **в порядке подписки**; приложение проверяет их через саму ноду (`generate_204`, раз в 300 с,
+  `lazy`) и ведёт трафик через первую работающую.
+
+Порядок подписки уже содержит нужный приоритет: мост в режиме `main` идёт перед запасной прямой записью ([bridges.md](bridges.md)),
+вход VLESS через CDN — после прямого. Поэтому `fallback`, а не `url-test`: выбор по задержке гонял бы пользователя между адресами.
+Смысл группы — решение принимает приложение в сети пользователя, а не панель по проверкам из дата-центров ([probes.md](probes.md)).
+Прокси, названный как группа (`Авто`, `Dementia`), получает суффикс ` 2`. Incy, JSON и v2ray групп не имеют — там выбор за приложением.
 
 ### Приложения AWG по платформам
 

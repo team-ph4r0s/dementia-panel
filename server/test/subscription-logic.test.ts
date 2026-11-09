@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { db, initDatabase } from '../src/db/index.js';
 import { ProvisionService } from '../src/services/provision.service.js';
 import { SubscriptionService } from '../src/services/subscription.service.js';
+import { updateSubscriptionSettings } from '../src/services/subscription-settings.service.js';
 import { createAdminApi } from './helpers/api.js';
 import { insertClient, insertServer, insertSubscriber } from './helpers/db.js';
 import { stubSsh } from './helpers/ssh-stub.js';
@@ -183,7 +184,18 @@ describe('публичная ссылка подписки', () => {
     const config = JSON.parse(await byAgent.text());
     expect(config.proxies.map((p: any) => p.name)).toEqual(['Второй', '🇩🇪 Германия']);
     expect(config.proxies[0]).toMatchObject({ type: 'wireguard', server: '203.0.113.22', 'allowed-ips': ['0.0.0.0/0', '::/0'] });
-    expect(config['proxy-groups'][0].proxies).toEqual(['Второй', '🇩🇪 Германия']);
+    // Группа выбора начинается с «Авто» (fallback по порядку подписки); выключается настройкой clash_auto
+    expect(config['proxy-groups']).toEqual([
+      { name: 'Dementia', type: 'select', proxies: ['Авто', 'Второй', '🇩🇪 Германия'] },
+      { name: 'Авто', type: 'fallback', proxies: ['Второй', '🇩🇪 Германия'], url: 'https://www.gstatic.com/generate_204', interval: 300, lazy: true },
+    ]);
+    updateSubscriptionSettings({ clash_auto: false });
+    try {
+      const manual = JSON.parse(await (await env.request(`/sub/${token}?format=clash`)).text());
+      expect(manual['proxy-groups']).toEqual([{ name: 'Dementia', type: 'select', proxies: ['Второй', '🇩🇪 Германия'] }]);
+    } finally {
+      updateSubscriptionSettings({ clash_auto: true });
+    }
 
     const byQuery = await env.request(`/sub/${token}?format=mihomo`);
     expect(byQuery.headers.get('content-type')).toContain('text/yaml');

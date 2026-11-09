@@ -222,6 +222,13 @@ export const SubscriptionSettingsView: React.FC<{ subscribers: Subscriber[]; pub
                 <input type="checkbox" checked={settings.hide_url} onChange={(e) => update('hide_url', e.target.checked)} />
                 <span>Скрыть ссылку подписки от пользователя</span>
               </label>
+              <label className="flex items-start gap-2 text-xs text-muted cursor-pointer sm:col-span-2">
+                <input type="checkbox" className="mt-0.5" checked={settings.clash_auto} onChange={(e) => update('clash_auto', e.target.checked)} />
+                <span>
+                  Автопереключение в приложениях mihomo (FlClash, Clash Verge): группа «Авто» ведёт через первую работающую ноду по
+                  порядку подписки и сама переходит на следующую, если нода или мост перестали отвечать
+                </span>
+              </label>
             </div>
           </div>
 

@@ -320,6 +320,7 @@ export interface SubscriptionSettings {
   web_page_url: string;
   sort_order: '' | 'ping' | 'name' | 'none';
   hide_url: boolean;
+  clash_auto: boolean;
 }
 
 /** «Напрямую, мимо VPN»: страны, домены и сети, трафик к которым идёт не через туннель */
