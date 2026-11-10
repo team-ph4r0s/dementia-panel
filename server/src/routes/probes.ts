@@ -12,9 +12,11 @@ export const probesRouter = Router();
 probesRouter.use(requireAuth);
 
 function overview() {
+  const settings = ProbeService.readSettings();
   const servers = db.prepare("SELECT id, name, host, status, probe_port, stub_port, remote_panel_id FROM servers WHERE status != 'uninstalled' ORDER BY id").all();
   return {
-    settings: ProbeService.readSettings(),
+    settings,
+    globalping_budget: ProbeService.globalpingBudget(settings),
     status: ProbeService.getStatus(),
     max_countries: MAX_PROBE_COUNTRIES,
     servers,

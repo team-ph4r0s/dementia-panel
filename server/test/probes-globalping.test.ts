@@ -240,4 +240,86 @@ describe('Globalping — второй источник проверки из с�
     await ProbeService.runAll();
     expect(resultOf('ru')).toMatchObject({ gp_ok: 1, gp_total: 2, verified: 0 });
   });
+
+  describe('Оценка расхода лимита Globalping (globalping_budget)', () => {
+    it('отдаёт нули при выключенной проверке или выключенном Globalping', async () => {
+      await settings({ enabled: false, globalping: false, countries: ['ru', 'de'] });
+      const res = await api('/api/probes');
+      expect(res.body.globalping_budget).toEqual({ per_run: 0, per_hour: 0, limit: 250 });
+
+      await settings({ enabled: true, globalping: false, countries: ['ru', 'de'] });
+      const res2 = await api('/api/probes');
+      expect(res2.body.globalping_budget).toEqual({ per_run: 0, per_hour: 0, limit: 250 });
+
+      await settings({ enabled: true, globalping: true, countries: [] });
+      const res3 = await api('/api/probes');
+      expect(res3.body.globalping_budget).toEqual({ per_run: 0, per_hour: 0, limit: 250 });
+    });
+
+    it('считает 2 ноды × 3 страны = 12 за обход, при 15 мин = 48 в час; проверяет исключённые ноды и не обращается к Globalping', async () => {
+      const callsBefore = gp.calls.length;
+      // Первая нода (serverId) уже имеет stub_port: 33333
+      // Вторая подходящая нода
+      const s2 = insertServer({ name: 'SecondAWG', host: '198.51.100.2', protocol: 'awg' });
+      db.prepare('UPDATE servers SET stub_port = 44444 WHERE id = ?').run(s2);
+
+      // Исключённые ноды:
+      // 1. uninstalled
+      const sUninstalled = insertServer({ name: 'Uninstalled', host: '198.51.100.3', protocol: 'awg' });
+      db.prepare("UPDATE servers SET stub_port = 44444, status = 'uninstalled' WHERE id = ?").run(sUninstalled);
+
+      // 2. Без stub_port (только probe_port)
+      const sNoStub = insertServer({ name: 'NoStub', host: '198.51.100.4', protocol: 'awg', probePort: 8080 });
+
+      // 3. Партнёрская нода (remote_panel_id IS NOT NULL)
+      const rp = db.prepare("INSERT INTO remote_panels (name, base_url, token, status) VALUES ('TestPanel', 'https://example.com', 'tok123', 'active')").run();
+      const rpId = Number(rp.lastInsertRowid);
+      const sPartner = insertServer({ name: 'Partner', host: '198.51.100.5', protocol: 'awg' });
+      db.prepare('UPDATE servers SET stub_port = 44444, remote_panel_id = ? WHERE id = ?').run(rpId, sPartner);
+
+      // 4. VLESS нода
+      const sVless = insertServer({ name: 'Vless', host: '198.51.100.6' });
+      db.prepare("UPDATE servers SET stub_port = 44444, protocol = 'vless' WHERE id = ?").run(sVless);
+
+      // 5. IPv6 нода
+      const sIpv6 = insertServer({ name: 'Ipv6AWG', host: '2001:db8::1', protocol: 'awg' });
+      db.prepare('UPDATE servers SET stub_port = 44444 WHERE id = ?').run(sIpv6);
+
+      // Проверка через PUT
+      const putRes = await api('/api/probes', 'PUT', {
+        settings: {
+          enabled: true,
+          globalping: true,
+          countries: ['ru', 'de', 'nl'],
+          interval_minutes: 15,
+        },
+      });
+      // 2 подходящие ноды * 3 страны * 2 = 12 за обход
+      // 12 * 60 / 15 = 48 в час
+      expect(putRes.body.globalping_budget).toEqual({ per_run: 12, per_hour: 48, limit: 250 });
+
+      // Проверка через GET
+      const getRes = await api('/api/probes');
+      expect(getRes.body.globalping_budget).toEqual({ per_run: 12, per_hour: 48, limit: 250 });
+
+      // GET/PUT не должны обращаться к API Globalping
+      expect(gp.calls.length).toBe(callsBefore);
+
+      // Проверка округления ceil при дробном значении per_hour:
+      // интервал 70 минут: 12 * 60 / 70 = 720 / 70 = 10.2857... -> Math.ceil = 11
+      const roundRes = await api('/api/probes', 'PUT', {
+        settings: {
+          enabled: true,
+          globalping: true,
+          countries: ['ru', 'de', 'nl'],
+          interval_minutes: 70,
+        },
+      });
+      expect(roundRes.body.globalping_budget).toEqual({ per_run: 12, per_hour: 11, limit: 250 });
+
+      // Очистка добавленных серверов
+      db.prepare('DELETE FROM servers WHERE id IN (?, ?, ?, ?, ?, ?)').run(s2, sUninstalled, sNoStub, sPartner, sVless, sIpv6);
+      db.prepare('DELETE FROM remote_panels WHERE id = ?').run(rpId);
+    });
+  });
 });

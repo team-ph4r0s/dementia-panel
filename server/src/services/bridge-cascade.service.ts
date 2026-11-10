@@ -1,5 +1,8 @@
 import crypto from 'node:crypto';
-import { shellQuote } from '../utils/net.js';
+import net from 'node:net';
+import { HttpError } from '../utils/http.js';
+import { isValidHost, shellQuote } from '../utils/net.js';
+import { DEFAULT_REALITY_TARGETS } from '../utils/vless-params.js';
 import { SshService, type SshCredentials } from './ssh.service.js';
 
 export type CascadeSecret = {
@@ -8,9 +11,19 @@ export type CascadeSecret = {
   publicKey: string;
   shortId: string;
   path: string;
+  sni?: string;
 };
 
-export function generateCascadeSecret(): CascadeSecret {
+export function parseCascadeSni(value: unknown): string | undefined {
+  if (value === undefined) return;
+  const name = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (!isValidHost(name) || !name.includes('.') || net.isIP(name) || /^[0-9.]+$/.test(name)) {
+    throw new HttpError(400, 'Сайт маскировки должен быть доменным именем без порта, например dl.google.com');
+  }
+  return name;
+}
+
+export function generateCascadeSecret(sni: string = DEFAULT_REALITY_TARGETS[crypto.randomInt(DEFAULT_REALITY_TARGETS.length)]): CascadeSecret {
   const { privateKey, publicKey } = crypto.generateKeyPairSync('x25519');
   return {
     uuid: crypto.randomUUID(),
@@ -18,6 +31,7 @@ export function generateCascadeSecret(): CascadeSecret {
     publicKey: publicKey.export({ format: 'jwk' }).x!,
     shortId: crypto.randomBytes(8).toString('hex'),
     path: `/${crypto.randomBytes(16).toString('hex')}`,
+    sni,
   };
 }
 
@@ -33,11 +47,14 @@ export interface CascadeLink {
   secret: CascadeSecret;
 }
 
-const SNI = 'dl.google.com';
 const LABEL = 'org.dementia.cascade';
 const XRAY = '/usr/local/bin/xray';
 // Xray 26.10.31: для ограничения отдельных XUDP-датаграмм нужны Freedom finalRules.
 export const CASCADE_XRAY_IMAGE = 'ghcr.io/xtls/xray-core@sha256:ceabeac03a89d991d2a247361825c1d1d2e9c91cd5dc010f298c7dc0c2f325c9';
+
+export function cascadeSni(secret: CascadeSecret): string {
+  return secret.sni ?? 'dl.google.com';
+}
 
 export function cascadeContainer(link: Pick<CascadeLink, 'bridgeId' | 'serverId' | 'secret'>, role: 'bridge' | 'node'): string {
   return `dementia-cascade-${role}-${link.bridgeId}-${link.serverId}-${link.secret.shortId}`;
@@ -46,6 +63,7 @@ export function cascadeContainer(link: Pick<CascadeLink, 'bridgeId' | 'serverId'
 /** Каждый вход на мосту имеет ровно один адрес назначения. На ноде разрешены только эти loopback-порты. */
 export function cascadeConfigs(link: CascadeLink): { bridge: string; node: string } {
   const { secret } = link;
+  const sni = cascadeSni(secret);
   const transport = {
     network: 'xhttp',
     security: 'reality',
@@ -70,7 +88,7 @@ export function cascadeConfigs(link: CascadeLink): { bridge: string; node: strin
         settings: { vnext: [{ address: link.host, port: link.port, users: [{ id: secret.uuid, encryption: 'none' }] }] },
         streamSettings: {
           ...transport,
-          realitySettings: { serverName: SNI, fingerprint: 'chrome', password: secret.publicKey, shortId: secret.shortId },
+          realitySettings: { serverName: sni, fingerprint: 'chrome', password: secret.publicKey, shortId: secret.shortId },
         },
       }],
     }),
@@ -83,7 +101,7 @@ export function cascadeConfigs(link: CascadeLink): { bridge: string; node: strin
         settings: { clients: [{ id: secret.uuid }], decryption: 'none' },
         streamSettings: {
           ...transport,
-          realitySettings: { dest: `${SNI}:443`, serverNames: [SNI], privateKey: secret.privateKey, shortIds: [secret.shortId] },
+          realitySettings: { dest: `${sni}:443`, serverNames: [sni], privateKey: secret.privateKey, shortIds: [secret.shortId] },
         },
       }],
       outbounds: [
@@ -134,6 +152,35 @@ export const clearBridgeConntrack = `clear_bridge_conntrack() (
   done
 )`;
 
+/** Проверяем и скачиваем образ отдельно, до любых изменений контейнеров и DNAT. */
+export async function prepareCascadeImage(creds: SshCredentials): Promise<void> {
+  const image = shellQuote(CASCADE_XRAY_IMAGE);
+  const script = [
+    'docker info >/dev/null 2>&1 || exit 2',
+    `docker image inspect ${image} >/dev/null 2>&1 || timeout -s TERM -k 30 1080 docker pull ${image} >/dev/null 2>&1`,
+  ].join('\n');
+  let code: number;
+  try {
+    ({ code } = await SshService.executeCommand(creds, `${SshService.sudo(creds)}sh -c ${shellQuote(script)}`, {
+      timeoutMs: 20 * 60 * 1000,
+    }));
+  } catch (err) {
+    throw new Error('Не удалось скачать образ Xray для каскада по SSH', { cause: err });
+  }
+  if (code === 2) throw new Error('Для каскада нужен запущенный Docker');
+  if (code !== 0) throw new Error('Не удалось скачать образ Xray для каскада. Проверьте доступ к реестру образов с сервера.');
+}
+
+/** AWG в Docker с опубликованным портом принимает трафик на loopback через docker-proxy. */
+export async function requireAwgLoopback(creds: SshCredentials, port: number): Promise<void> {
+  const endpoint = port.toString(16).toUpperCase().padStart(4, '0');
+  const awk = `$2 ~ /^(00000000|0100007F):${endpoint}$/ && $3 == "00000000:0000" { found = 1 } END { exit !found }`;
+  const result = await SshService.executeCommand(creds, `awk ${shellQuote(awk)} /proc/net/udp`, { timeoutMs: 10000 });
+  if (result.code !== 0) {
+    throw new Error(`AmneziaWG недоступен на 127.0.0.1:${port}/udp. Для опубликованного порта контейнера включите userland-proxy в Docker на ноде.`);
+  }
+}
+
 /** Файл с секретами передаётся через stdin. Старый контейнер и конфиг возвращаются при сбое запуска. */
 export async function applyCascadeContainer(creds: SshCredentials, name: string, config: string): Promise<void> {
   const dir = `/etc/dementia-cascade/${name}`;
@@ -146,10 +193,8 @@ export async function applyCascadeContainer(creds: SshCredentials, name: string,
     `cd "${dir}"`,
     'trap \'rm -f config.new.json\' EXIT',
     'cat > config.new.json',
-    `image=$(docker image inspect -f '{{.Id}}' ${shellQuote(CASCADE_XRAY_IMAGE)} 2>/dev/null) || {
-      docker pull ${shellQuote(CASCADE_XRAY_IMAGE)} >/dev/null
-      image=$(docker image inspect -f '{{.Id}}' ${shellQuote(CASCADE_XRAY_IMAGE)})
-    }`,
+    `image=$(docker image inspect -f '{{.Id}}' ${shellQuote(CASCADE_XRAY_IMAGE)} 2>/dev/null) ||
+      { echo "Образ Xray для каскада отсутствует" >&2; exit 1; }`,
     `old_image=$(docker inspect -f '{{.Image}}' "${name}" 2>/dev/null || true)`,
     `if [ "$old_image" = "$image" ] && cmp -s config.json config.new.json && { ${cascadeRunning(name)}; }; then exit 0; fi`,
     `docker run --rm --network none --user 0:0 --entrypoint ${XRAY} -v "${dir}/config.new.json:/etc/cascade.json:ro" "$image" run -test -c /etc/cascade.json >/dev/null 2>&1 ||
@@ -181,7 +226,7 @@ export async function applyCascadeContainer(creds: SshCredentials, name: string,
     timeoutMs: 180000,
   });
   if (result.code !== 0) {
-    const message = result.stderr.split(/\r?\n/).find((line) => /^(Для каскада|Имя контейнера|Xray не принял|Не удалось запустить)/.test(line));
+    const message = result.stderr.split(/\r?\n/).find((line) => /^(Для каскада|Имя контейнера|Образ Xray|Xray не принял|Не удалось запустить)/.test(line));
     throw new Error(message || 'Не удалось применить конфигурацию Xray каскада по SSH');
   }
 }

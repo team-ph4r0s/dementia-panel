@@ -6,15 +6,16 @@ import { fileURLToPath } from 'node:url';
 import { db, getSetting, transaction } from '../db/index.js';
 import { HttpError } from '../utils/http.js';
 import { formatEndpointHost, isValidHost, isValidPort, shellQuote } from '../utils/net.js';
-import { nodeProtocol } from '../utils/vless-params.js';
+import { checkRealityCertificate } from '../utils/reality-check.js';
+import { nodeProtocol, vlessParamsFromRow } from '../utils/vless-params.js';
 import { HostKeyMismatchError, SshCredentials, SshService } from './ssh.service.js';
 import { decryptSecret, encryptSecret } from './secrets.service.js';
 import { OperationResult, ProvisionService, runExclusive } from './provision.service.js';
 import { ProbeService, ProbeResult } from './probe.service.js';
 import { stubPortCandidates } from './stub.service.js';
 import {
-  CASCADE_XRAY_IMAGE, applyCascadeContainer, cascadeConfigs, cascadeContainer, cascadePortReachable, cascadeRunning,
-  clearBridgeConntrack, generateCascadeSecret, removeCascadeContainer, type CascadeLink,
+  CASCADE_XRAY_IMAGE, applyCascadeContainer, cascadeConfigs, cascadeContainer, cascadePortReachable, cascadeRunning, cascadeSni,
+  clearBridgeConntrack, generateCascadeSecret, parseCascadeSni, prepareCascadeImage, removeCascadeContainer, requireAwgLoopback, type CascadeLink,
 } from './bridge-cascade.service.js';
 
 /**
@@ -407,24 +408,37 @@ export class BridgeService {
     }
   }
 
-  private static async changeCascadeNode(link: CascadeLink, apply: boolean): Promise<void> {
+  private static async withCascadeNode(link: CascadeLink, action: (creds: SshCredentials) => Promise<void>): Promise<void> {
     await runExclusive(link.serverId, async () => {
       const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(link.serverId) as any;
       if (!server || server.remote_panel_id) throw new Error('Нужна локальная нода с доступом по SSH');
-      const creds = ProvisionService.getCredentials(server);
+      await action(ProvisionService.getCredentials(server));
+    });
+  }
+
+  private static changeCascadeNode(link: CascadeLink, apply: boolean): Promise<void> {
+    return this.withCascadeNode(link, async (creds) => {
       const name = cascadeContainer(link, 'node');
-      if (apply) await applyCascadeContainer(creds, name, cascadeConfigs(link).node);
-      else await removeCascadeContainer(creds, name);
+      if (apply) {
+        if (link.protocol === 'awg') await requireAwgLoopback(creds, link.vpnPort);
+        await applyCascadeContainer(creds, name, cascadeConfigs(link).node);
+      } else {
+        await removeCascadeContainer(creds, name);
+      }
     });
   }
 
   private static async applyCascades(bridge: any, creds: SshCredentials): Promise<void> {
     const links = cascadeLinks(bridge.id);
     if (links.length) {
-      const command = `${SshService.sudo(creds)}sh -c 'command -v conntrack && command -v ip'`;
-      const result = await SshService.executeCommand(creds, command, { timeoutMs: 10000 });
-      if (result.code !== 0) throw new Error('Установите conntrack и iproute2 на мосту для смены транспорта');
+      const command = `${SshService.sudo(creds)}timeout -s TERM -k 30 600 bash -s -- --cascade-dependencies`;
+      const message = 'Не удалось установить зависимости каскада на мосту (Docker, conntrack, iproute2). Проверьте доступ к репозиториям и запуск Docker.';
+      const result = await SshService.executeCommand(creds, command, { input: readDeployScript(), timeoutMs: 12 * 60 * 1000 })
+        .catch((err: unknown) => { throw new Error(message, { cause: err }); });
+      if (result.code !== 0) throw new Error(message);
+      await prepareCascadeImage(creds);
     }
+    for (const link of links) await this.withCascadeNode(link, prepareCascadeImage);
     for (const link of links) {
       await this.changeCascadeNode(link, true);
       await applyCascadeContainer(creds, cascadeContainer(link, 'bridge'), cascadeConfigs(link).bridge);
@@ -612,8 +626,9 @@ export class BridgeService {
     return { success: false, error: `${result.error}. Привязки моста возвращены к прежним.` };
   }
 
-  static setCascade(id: number, serverId: number, port: unknown): Promise<OperationResult> {
+  static setCascade(id: number, serverId: number, port: unknown, requestedSni?: unknown): Promise<OperationResult> {
     if (port !== null && (typeof port !== 'number' || !isValidPort(port))) throw new HttpError(400, 'Укажите TCP-порт каскада от 1 до 65535');
+    const sni = port === null ? undefined : parseCascadeSni(requestedSni);
     return runExclusive(queueKey(id), async () => {
       const bridge = loadBridge(id);
       const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as any;
@@ -629,6 +644,7 @@ export class BridgeService {
         if (bridge.host.toLowerCase() === server.host.toLowerCase()) throw new HttpError(400, 'Мост и нода должны быть на разных хостах');
         if (!isValidHost(server.host) || net.isIPv6(server.host)) throw new HttpError(400, 'Для каскада нужен IPv4-адрес или домен ноды');
         if (previous && port !== previous.port) throw new HttpError(409, 'Для смены порта сначала отключите каскад');
+        if (previous && sni && sni !== cascadeSni(previous.secret)) throw new HttpError(409, 'Для смены сайта маскировки сначала отключите каскад');
         const busy = [server.ssh_port, server.stub_port, server.cdn_port,
           ...(nodeProtocol(server) === 'vless' ? [server.awg_port, server.deployed_port] : [])];
         if (busy.includes(port) || db.prepare('SELECT 1 FROM bridge_links WHERE server_id = ? AND bridge_id != ? AND cascade_port = ?').get(serverId, id, port)) {
@@ -654,7 +670,8 @@ export class BridgeService {
           return { success: false, error: err.message };
         }
       }
-      update.run(port as number | null, port === null ? null : (link.cascade_secret || encryptSecret(JSON.stringify(generateCascadeSecret()))), null, null, id, serverId);
+      const secret = port === null ? null : (link.cascade_secret || encryptSecret(JSON.stringify(generateCascadeSecret(sni))));
+      update.run(port, secret, null, null, id, serverId);
       const result = await this.doApply(id, port === null ? previous : undefined);
       if (result.success) return result;
 
@@ -699,6 +716,7 @@ export class BridgeService {
       lastHealth.set(bridge.id, Date.now());
       await runExclusive(queueKey(bridge.id), () => this.checkHealth(bridge.id, expectedRuleCount(ruleLinks(bridge.id), panelForwardOf(bridge)))).catch(() => {});
     }
+    await this.checkLinks('vless', HEALTH_INTERVAL_MS);
     // Мост ушёл в offline или вернулся — A-записи резервного домена подписок следуют за ним (без изменений Cloudflare не трогается)
     const { FailoverService } = await import('./failover.service.js');
     await FailoverService.reconcile().catch(() => {});
@@ -739,37 +757,53 @@ export class BridgeService {
     }
   }
 
-  /**
-   * Сквозная проверка пересылки: панель открывает http://мост:порт/ — мост пересылает TCP этого порта на заглушку ноды,
-   * и ответ должен содержать метку заглушки. Мост с неработающей пересылкой в подписку не попадает.
-   */
-  static async checkLinks(): Promise<void> {
+  /** AWG подтверждается меткой заглушки, VLESS — доверенным сертификатом Reality. */
+  static async checkLinks(protocol: 'awg' | 'vless' = 'awg', intervalMs = 0): Promise<void> {
+    const cutoff = intervalMs ? new Date(Date.now() - intervalMs).toISOString() : null;
     const links = db.prepare(`
-      SELECT l.bridge_id, l.server_id, l.listen_port, l.cascade_port, b.host AS bridge_host, s.stub_token
+      SELECT l.bridge_id, l.server_id, l.listen_port, l.cascade_port, b.host AS bridge_host, s.stub_token,
+        s.reality_sni, s.reality_dest, s.awg_port
       FROM bridge_links l JOIN bridges b ON b.id = l.bridge_id JOIN servers s ON s.id = l.server_id
-      WHERE b.status = 'online' AND s.stub_port IS NOT NULL AND s.stub_token IS NOT NULL AND l.mode != 'off'
+      WHERE b.status = 'online' AND l.mode != 'off'
         AND l.cascade_pending = 0 AND (l.cascade_port IS NULL OR b.needs_apply = 0)
-    `).all() as any[];
-    await Promise.all(
-      links.map(async (l) => {
-        let ok = false;
+        AND COALESCE(s.protocol, 'awg') = ?
+        AND CASE WHEN s.protocol = 'vless' THEN b.needs_apply = 0
+                 ELSE s.stub_port IS NOT NULL AND s.stub_token IS NOT NULL END
+        AND (? IS NULL OR l.checked_at IS NULL OR l.checked_at <= ?)
+    `).all(protocol, cutoff, cutoff) as {
+      bridge_id: number; server_id: number; listen_port: number; cascade_port: number | null;
+      bridge_host: string; stub_token: string | null; reality_sni: string | null; reality_dest: string | null; awg_port: number;
+    }[];
+    const check = async (link: typeof links[number]) => {
+      let ok = false;
+      if (protocol === 'vless') {
+        ok = await checkRealityCertificate(link.bridge_host, link.listen_port, vlessParamsFromRow(link).reality_sni);
+      } else {
         try {
-          const res = await fetch(`http://${formatEndpointHost(l.bridge_host)}:${l.listen_port}/${crypto.randomBytes(8).toString('hex')}`, {
+          const res = await fetch(`http://${formatEndpointHost(link.bridge_host)}:${link.listen_port}/${crypto.randomBytes(8).toString('hex')}`, {
             signal: AbortSignal.timeout(8000),
             redirect: 'manual',
           });
-          ok = res.status === 200 && (await res.text()).slice(0, 4096).includes(l.stub_token);
+          ok = res.status === 200 && (await res.text()).slice(0, 4096).includes(link.stub_token!);
         } catch {
           ok = false;
         }
-        db.prepare(`
-          UPDATE bridge_links SET check_ok = ?, checked_at = ?
-          WHERE bridge_id = ? AND server_id = ? AND listen_port = ? AND cascade_port IS ? AND cascade_pending = 0
-        `).run(
-          ok ? 1 : 0, new Date().toISOString(), l.bridge_id, l.server_id, l.listen_port, l.cascade_port
-        );
-      })
-    );
+      }
+      db.prepare(`
+        UPDATE bridge_links SET check_ok = ?, checked_at = ?
+        WHERE bridge_id = ? AND server_id = ? AND listen_port = ? AND cascade_port IS ? AND cascade_pending = 0 AND mode != 'off'
+          AND EXISTS (SELECT 1 FROM bridges WHERE id = bridge_id AND host = ? AND status = 'online'
+            AND (needs_apply = 0 OR (bridge_links.cascade_port IS NULL AND ? = 'awg')))
+          AND EXISTS (SELECT 1 FROM servers WHERE id = server_id AND awg_port = ? AND COALESCE(protocol, 'awg') = ?
+            AND reality_sni IS ? AND reality_dest IS ?)
+      `).run(ok ? 1 : 0, new Date().toISOString(), link.bridge_id, link.server_id, link.listen_port, link.cascade_port,
+        link.bridge_host, protocol, link.awg_port, protocol, link.reality_sni, link.reality_dest);
+    };
+    // Проверки VLESS идут из статистического цикла. Не открываем одновременно сокет для каждой привязки.
+    const batchSize = protocol === 'vless' ? 8 : Math.max(links.length, 1);
+    for (let i = 0; i < links.length; i += batchSize) {
+      await Promise.all(links.slice(i, i + batchSize).map(check));
+    }
   }
 
   // ---- Решение: кому нужен мост ----

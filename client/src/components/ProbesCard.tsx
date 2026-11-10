@@ -73,6 +73,19 @@ export const ProbesCard: React.FC<{ onChanged?: () => void }> = ({ onChanged }) 
     return (countries ?? []).filter((c) => !query || c.code.includes(query) || countryName(c.code).toLowerCase().includes(query) || c.name.toLowerCase().includes(query));
   }, [countries, search]);
 
+  const settingsDirty = useMemo(() => {
+    if (!overview || !settings) return false;
+    const o = overview.settings;
+    if (settings.enabled !== o.enabled) return true;
+    if (settings.interval_minutes !== o.interval_minutes) return true;
+    if (Boolean(settings.globalping) !== Boolean(o.globalping)) return true;
+    if (settings.countries.length !== o.countries.length) return true;
+    for (let i = 0; i < settings.countries.length; i++) {
+      if (settings.countries[i] !== o.countries[i]) return true;
+    }
+    return false;
+  }, [overview, settings]);
+
   if (!overview || !settings) return null;
 
   const update = <K extends keyof ProbeSettings>(key: K, value: ProbeSettings[K]) => setSettings({ ...settings, [key]: value });
@@ -242,6 +255,23 @@ export const ProbesCard: React.FC<{ onChanged?: () => void }> = ({ onChanged }) 
                 и этому сервису (api.globalping.io). Проверяется только TCP; бесплатно до 250 проб в час.
               </span>
             </label>
+
+            {Boolean(settings.globalping) && overview.globalping_budget && (
+              <div className="text-xs space-y-1 pl-5">
+                {settingsDirty && (
+                  <p className="text-faint">(оценка для сохранённых настроек)</p>
+                )}
+                <p className="text-muted">
+                  ≈ {overview.globalping_budget.per_hour} проб в час из {overview.globalping_budget.limit}
+                </p>
+                {overview.globalping_budget.per_hour > overview.globalping_budget.limit && (
+                  <p className="text-warn flex items-center gap-1">
+                    <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+                    Оценка выше лимита (250 в час). Рекомендуется увеличить интервал проверки или сократить число выбранных стран.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-end">

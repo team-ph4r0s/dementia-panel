@@ -15,6 +15,7 @@ import { ProbeService } from '../services/probe.service.js';
 import { EventService } from '../services/event.service.js';
 import { BridgeService } from '../services/bridge.service.js';
 import { ExtraPortsService, parseExtraPorts, validateExtraPorts } from '../services/extra-ports.service.js';
+import { RealityTargetsService, isValidDnsDomain } from '../services/reality-targets.service.js';
 import {
   DEFAULT_VLESS_PORT, generateVlessParams, NODE_PROTOCOLS, NodeProtocol, nodeProtocol,
   validateVlessParams, vlessParamsFromRow, vlessParamsToColumns, XRAY_API_PORT, XRAY_CONF_PATH, XRAY_CONTAINER,
@@ -567,6 +568,27 @@ serversRouter.delete('/:id/cdn', asyncHandler(async (req, res) => {
 serversRouter.post('/:id/test-ssh', asyncHandler(async (req, res) => {
   const server = getLocalServerOr404(parseId(req.params.id));
   const result = await SshService.testConnection(ProvisionService.getCredentials(server));
+  res.json(result);
+}));
+
+// POST /:id/reality-candidates — подбор сайта маскировки Reality с ноды
+serversRouter.post('/:id/reality-candidates', asyncHandler(async (req, res) => {
+  const id = parseId(req.params.id);
+  const server = getLocalServerOr404(id);
+  if (nodeProtocol(server) !== 'vless') {
+    throw new HttpError(400, 'Подбор сайта маскировки доступен только для VLESS-нод');
+  }
+
+  let domain: string | undefined;
+  if (req.body?.domain !== undefined && req.body?.domain !== null && req.body?.domain !== '') {
+    const raw = String(req.body.domain).trim().toLowerCase();
+    if (!isValidDnsDomain(raw)) {
+      throw new HttpError(400, 'Укажите корректное доменное имя (без http://, IP и порта)');
+    }
+    domain = raw;
+  }
+
+  const result = await RealityTargetsService.checkCandidates(id, domain);
   res.json(result);
 }));
 

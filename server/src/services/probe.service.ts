@@ -235,6 +235,28 @@ export class ProbeService {
 
   // ---- Настройки ----
 
+  static globalpingBudget(settings: ProbeSettings): { per_run: number; per_hour: number; limit: number } {
+    const limit = 250;
+    if (!settings.enabled || !settings.globalping || settings.countries.length === 0) {
+      return { per_run: 0, per_hour: 0, limit };
+    }
+
+    const rows = db.prepare(`
+      SELECT host FROM servers
+      WHERE status != 'uninstalled'
+        AND remote_panel_id IS NULL
+        AND stub_port IS NOT NULL
+        AND (protocol IS NULL OR protocol = 'awg')
+    `).all() as { host: string }[];
+
+    const eligibleNodesCount = rows.filter((r) => !net.isIPv6(r.host)).length;
+    const countriesCount = settings.countries.length;
+    const per_run = eligibleNodesCount * countriesCount * NODES_PER_COUNTRY;
+    const per_hour = Math.ceil((per_run * 60) / settings.interval_minutes);
+
+    return { per_run, per_hour, limit };
+  }
+
   static readSettings(): ProbeSettings {
     let countries: string[] = [];
     try {

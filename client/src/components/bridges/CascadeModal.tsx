@@ -10,6 +10,7 @@ export function CascadeModal({ bridge, link, onClose, onChanged }: {
   onChanged: () => void;
 }) {
   const [port, setPort] = useState(String(link.cascade_port ?? 8443));
+  const [sni, setSni] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -17,7 +18,7 @@ export function CascadeModal({ bridge, link, onClose, onChanged }: {
     setBusy(true);
     setError(null);
     try {
-      await api.setBridgeCascade(bridge.id, link.server_id, value);
+      await api.setBridgeCascade(bridge.id, link.server_id, value, link.cascade_port ? undefined : sni.trim() || undefined);
       onChanged();
       onClose();
     } catch (err) {
@@ -41,7 +42,7 @@ export function CascadeModal({ bridge, link, onClose, onChanged }: {
           Между мостом и нодой VPN-трафик пойдёт внутри VLESS XHTTP Reality.
         </p>
         <p className="text-sm text-muted">
-          Нужен запущенный Docker на обоих серверах и conntrack с iproute2 на мосту. Разрешите в фаерволе ноды вход на выбранный TCP-порт с адреса моста,
+          На ноде нужен запущенный Docker. Панель установит недостающие зависимости на мосту. Разрешите в фаерволе ноды вход на выбранный TCP-порт с адреса моста,
           а на мосту проверьте, что его клиентский порт доступен.
         </p>
         <label className="block space-y-1 text-sm text-ink">
@@ -52,6 +53,17 @@ export function CascadeModal({ bridge, link, onClose, onChanged }: {
             className="block min-h-10 w-full rounded-lg border border-line bg-paper px-3 font-mono text-ink"
           />
         </label>
+        {!link.cascade_port && (
+          <label className="block space-y-1 text-sm text-ink">
+            <span>Сайт маскировки Reality (необязательно)</span>
+            <input
+              type="text" value={sni} disabled={busy} placeholder="выберет панель"
+              onChange={(event) => setSni(event.target.value)}
+              className="block min-h-10 w-full rounded-lg border border-line bg-paper px-3 font-mono text-ink"
+            />
+            <span className="block text-xs text-muted">Домен с TLS 1.3, доступный с ноды. Сменить его позже можно, только отключив каскад.</span>
+          </label>
+        )}
         {error && <p role="alert" className="text-sm text-bad">{error}</p>}
         <div className="flex flex-wrap justify-end gap-2">
           <button type="button" disabled={busy} onClick={onClose} className="min-h-10 rounded-lg px-3 text-sm text-muted hover:bg-soft">Закрыть</button>

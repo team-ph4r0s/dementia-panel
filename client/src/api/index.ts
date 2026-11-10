@@ -258,6 +258,14 @@ export const api = {
     return request(`${API_BASE}/servers/${id}/test-ssh`, { method: 'POST' }, 'Ошибка проверки SSH');
   },
 
+  realityCandidates(id: number, domain?: string): Promise<{ candidates: { domain: string; latency_ms: number | null; suitable: boolean }[] }> {
+    return request(
+      `${API_BASE}/servers/${id}/reality-candidates`,
+      { method: 'POST', ...json({ domain }) },
+      'Ошибка проверки сайтов маскировки Reality'
+    );
+  },
+
   enableCdn(id: number, input: CdnInput): Promise<Server> {
     return request(`${API_BASE}/servers/${id}/cdn`, { method: 'POST', ...json(input) }, 'Не удалось включить вход через CDN');
   },
@@ -549,8 +557,9 @@ export const api = {
     return request(`${API_BASE}/bridges/${id}/links`, { method: 'PUT', ...json({ links }) }, 'Ошибка привязки нод к мосту');
   },
 
-  setBridgeCascade(id: number, serverId: number, port: number | null): Promise<BridgeOperationResult> {
-    return request(`${API_BASE}/bridges/${id}/links/${serverId}/cascade`, { method: 'PUT', ...json({ port }) }, 'Ошибка настройки каскада');
+  /** sni — сайт маскировки Reality для нового каскада; без него панель выберет сама */
+  setBridgeCascade(id: number, serverId: number, port: number | null, sni?: string): Promise<BridgeOperationResult> {
+    return request(`${API_BASE}/bridges/${id}/links/${serverId}/cascade`, { method: 'PUT', ...json({ port, ...(sni ? { sni } : {}) }) }, 'Ошибка настройки каскада');
   },
 
   installBridge(id: number): Promise<BridgeOperationResult> {

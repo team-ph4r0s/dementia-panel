@@ -1,6 +1,6 @@
 {
   "name": "dementia-panel",
-  "version": "0.2.34",
+  "version": "0.2.35",
   "description": "Agentless server management software for AmneziaWG nodes",
   "private": true,
   "scripts": {

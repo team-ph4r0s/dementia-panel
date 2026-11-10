@@ -1,7 +1,12 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import net from 'node:net';
+import tls from 'node:tls';
+import { generate } from 'selfsigned';
 import { db, initDatabase, setSetting } from '../src/db/index.js';
 import { BRIDGE_HOLD_MS, BridgeService, buildBridgeRules, expectedRuleCount, parseHealth } from '../src/services/bridge.service.js';
-import { decryptSecret } from '../src/services/secrets.service.js';
+import { decryptSecret, encryptSecret } from '../src/services/secrets.service.js';
+import { DEFAULT_REALITY_TARGETS } from '../src/utils/vless-params.js';
+import * as realityCheck from '../src/utils/reality-check.js';
 import { createAdminApi } from './helpers/api.js';
 import { getServer, insertClient, insertServer, insertSubscriber } from './helpers/db.js';
 import { stubSsh, type SshCall } from './helpers/ssh-stub.js';
@@ -47,6 +52,82 @@ function bridgeSsh(health = { rules: -1, first: true }, fail?: (call: SshCall) =
   });
 }
 
+async function withLocalServer<T>(server: net.Server, test: (port: number) => Promise<T>): Promise<T> {
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  try {
+    return await test((server.address() as net.AddressInfo).port);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+describe('проверка сертификата Reality', () => {
+  it('проверяет доверие к цепочке и имя SNI, даже когда подключение идёт по IP', async () => {
+    const name = 'mask.example';
+    const { private: key, cert } = await generate([{ name: 'commonName', value: name }], {
+      extensions: [{ name: 'subjectAltName', altNames: [{ type: 2, value: name }] }],
+    });
+    await withLocalServer(tls.createServer({ key, cert }), async (port) => {
+      expect(await realityCheck.checkRealityCertificate('127.0.0.1', port, name, { ca: cert })).toBe(true);
+      expect(await realityCheck.checkRealityCertificate('127.0.0.1', port, 'wrong.example', { ca: cert })).toBe(false);
+      expect(await realityCheck.checkRealityCertificate('127.0.0.1', port, name)).toBe(false);
+    });
+  });
+
+  it('закрывает молчащий или слишком большой ответ TLS', async () => {
+    await withLocalServer(net.createServer((socket) => socket.resume()), async (port) => {
+      expect(await realityCheck.checkRealityCertificate('127.0.0.1', port, 'mask.example', { timeoutMs: 50 })).toBe(false);
+    });
+    await withLocalServer(net.createServer((socket) => {
+      socket.on('error', () => {});
+      socket.resume();
+      socket.write(Buffer.alloc(256 * 1024));
+    }), async (port) => {
+      expect(await realityCheck.checkRealityCertificate('127.0.0.1', port, 'mask.example')).toBe(false);
+    });
+  });
+
+  it('проверяет VLESS из статистического цикла и исключает нерабочий мост из подписок', async () => {
+    bridgeSsh();
+    const probe = vi.spyOn(realityCheck, 'checkRealityCertificate').mockResolvedValue(false);
+    const server = insertServer({ name: 'Reality exit', awgPort: 443 });
+    db.prepare("UPDATE servers SET protocol = 'vless', reality_sni = 'mask.example' WHERE id = ?").run(server);
+    const result = await api('/api/bridges', 'POST', {
+      name: 'Reality entrance', host: 'bridge.example', country: 'nz', ssh_password: 'secret',
+      links: [{ server_id: server }],
+    });
+    const bridge = result.body.bridge.id as number;
+    try {
+      setSetting('probe_enabled', '0');
+      await BridgeService.checkAll();
+      expect(probe).toHaveBeenCalledWith('bridge.example', 443, 'mask.example');
+      expect(BridgeService.get(bridge).links[0].check_ok).toBe(false);
+      expect(BridgeService.routesFor('nz').has(server)).toBe(false);
+      await BridgeService.checkAll();
+      expect(probe).toHaveBeenCalledTimes(1);
+
+      probe.mockResolvedValue(true);
+      await BridgeService.checkLinks('vless');
+      expect(BridgeService.get(bridge).links[0].check_ok).toBe(true);
+      expect(BridgeService.routesFor('nz').get(server)?.bridge_id).toBe(bridge);
+      probe.mockClear();
+      const update = db.prepare('UPDATE bridge_links SET cascade_pending = ?, mode = ? WHERE bridge_id = ?');
+      update.run(1, 'main', bridge);
+      await BridgeService.checkLinks('vless');
+      update.run(0, 'off', bridge);
+      await BridgeService.checkLinks('vless');
+      expect(probe).not.toHaveBeenCalled();
+    } finally {
+      db.prepare('DELETE FROM bridges WHERE id = ?').run(bridge);
+      db.prepare('DELETE FROM servers WHERE id = ?').run(server);
+      setSetting('probe_enabled', null);
+    }
+  });
+});
+
 describe('правила пересылки', () => {
   it('DNAT только для пакетов на адреса моста, UDP на порт AmneziaWG, TCP — на заглушку ноды', () => {
     const rules = buildBridgeRules([
@@ -88,6 +169,14 @@ describe('правила пересылки', () => {
 });
 
 describe('каскад XHTTP', () => {
+  const fixtures: { bridge: number; server: number }[] = [];
+  afterEach(() => {
+    for (const { bridge, server } of fixtures.splice(0)) {
+      db.prepare('DELETE FROM bridges WHERE id = ?').run(bridge);
+      db.prepare('DELETE FROM servers WHERE id = ?').run(server);
+    }
+  });
+
   const setup = async () => {
     const server = insertServer({ name: 'Cascade exit', awgPort: 52301 });
     const result = await api('/api/bridges', 'POST', {
@@ -96,6 +185,7 @@ describe('каскад XHTTP', () => {
     });
     expect(result.body.success).toBe(true);
     const bridge = result.body.bridge.id as number;
+    fixtures.push({ bridge, server });
     const endpoint = `/api/bridges/${bridge}/links/${server}/cascade`;
     return { server, bridge, endpoint };
   };
@@ -152,6 +242,110 @@ describe('каскад XHTTP', () => {
     expect(ssh.calls.filter((call) => call.command.includes('rmdir "/etc/dementia-cascade/'))).toHaveLength(2);
     expect(ssh.calls.findLast((call) => call.command.includes('rules.sh.new'))?.input).toContain('forward udp 52301');
     expect(BridgeService.routesFor('ca').get(server)?.bridge_id).toBe(bridge);
+  });
+
+  it('ждёт скачивания образа на обеих сторонах до замены контейнеров и DNAT', async () => {
+    const pullStarted = Promise.withResolvers<void>();
+    const pullFinished = Promise.withResolvers<void>();
+    let pulls = 0;
+    const ssh = stubSsh(async (call) => {
+      if (call.command.includes('deploy-bridge')) return { stdout: '---DEMENTIA_BRIDGE_OK---' };
+      if (call.command.includes('docker pull') && ++pulls === 2) {
+        pullStarted.resolve();
+        await pullFinished.promise;
+      }
+    });
+    const { endpoint } = await setup();
+    const applying = api(endpoint, 'PUT', { port: 8443 });
+    try {
+      await Promise.race([pullStarted.promise, applying.then(() => { throw new Error('Каскад завершился до загрузки образа'); })]);
+      expect(ssh.calls.some((call) => call.command.includes('config.new.json') || call.command.includes('rules.sh.new'))).toBe(false);
+      const downloads = ssh.spy.mock.calls.filter(([, command]) => command.includes('docker pull'));
+      expect(downloads).toHaveLength(2);
+      for (const [, command, options] of downloads) {
+        expect(command).toContain('timeout -s TERM -k 30 1080 docker pull');
+        expect(options).toMatchObject({ timeoutMs: 20 * 60 * 1000 });
+      }
+    } finally {
+      pullFinished.resolve();
+    }
+    expect((await applying).body.success).toBe(true);
+  });
+
+  it.each([
+    ['docker pull', 'Не удалось скачать образ Xray'],
+    ['/proc/net/udp', 'включите userland-proxy'],
+    ['--cascade-dependencies', 'Не удалось установить зависимости каскада'],
+  ])('возвращает DNAT, если предварительная проверка %s не прошла', async (command, error) => {
+    const ssh = bridgeSsh(undefined, (call) => call.command.includes(command));
+    const { bridge, endpoint, server } = await setup();
+    const result = await api(endpoint, 'PUT', { port: 8443 });
+    expect(result.status).toBe(502);
+    expect(result.body.error).toContain(error);
+    expect(result.body.bridge).toMatchObject({ needs_apply: false, links: [{ cascade_port: null, listen_port: 52301 }] });
+    expect(ssh.calls.some((call) => call.input?.startsWith('{"log":'))).toBe(false);
+    expect(ssh.calls.findLast((call) => call.command.includes('rules.sh.new'))?.input).toContain('forward udp 52301');
+    expect(BridgeService.routesFor('ca').get(server)?.bridge_id).toBe(bridge);
+  });
+
+  it('проверяет и устанавливает зависимости только для каскада до скачивания Xray', async () => {
+    const ssh = bridgeSsh();
+    const { endpoint } = await setup();
+    expect(ssh.calls.some((call) => call.command.includes('--cascade-dependencies'))).toBe(false);
+    expect((await api(endpoint, 'PUT', { port: 8443 })).status).toBe(200);
+    const dependencyCheck = ssh.calls.findIndex((call) => call.command.includes('--cascade-dependencies'));
+    const download = ssh.calls.findIndex((call) => call.command.includes('docker pull'));
+    expect(dependencyCheck).toBeGreaterThanOrEqual(0);
+    expect(download).toBeGreaterThan(dependencyCheck);
+    expect(ssh.calls[dependencyCheck].input).toContain('install_cascade_dependencies');
+  });
+
+  it('API каскада передаёт сайт маскировки из запроса; неверное имя — 400 без обращения к серверам', async () => {
+    const ssh = bridgeSsh();
+    const { bridge, server } = await setup();
+    const before = ssh.calls.length;
+    const bad = await api(`/api/bridges/${bridge}/links/${server}/cascade`, 'PUT', { port: 8443, sni: 'https://mask.example' });
+    expect(bad.status).toBe(400);
+    expect(ssh.calls).toHaveLength(before);
+    const ok = await api(`/api/bridges/${bridge}/links/${server}/cascade`, 'PUT', { port: 8443, sni: 'api.mask.example' });
+    expect(ok.status).toBe(200);
+    const configs = ssh.calls.filter((call) => call.input?.startsWith('{"log":')).map((call) => JSON.parse(call.input!));
+    expect(configs[0].inbounds[0].streamSettings.realitySettings.serverNames).toEqual(['api.mask.example']);
+    // Имя сайта маскировки хранится только в зашифрованном секрете и в ответе API не раскрывается
+    expect(JSON.stringify(ok.body)).not.toContain('api.mask.example');
+  });
+
+  it('сохраняет выбранный SNI зашифрованным и использует его на обеих сторонах', async () => {
+    const ssh = bridgeSsh();
+    const { bridge, server } = await setup();
+    for (const bad of [42, 'localhost', '127.0.0.1', 'test.example:443', 'https://test.example', 'test.example\nother']) {
+      expect(() => BridgeService.setCascade(bridge, server, 8443, bad)).toThrow(/Сайт маскировки/);
+    }
+    expect(await BridgeService.setCascade(bridge, server, 8443, ' Mask.Example ')).toEqual({ success: true });
+    const configs = ssh.calls.filter((call) => call.input?.startsWith('{"log":')).map((call) => JSON.parse(call.input!));
+    expect(configs[0].inbounds[0].streamSettings.realitySettings).toMatchObject({ dest: 'mask.example:443', serverNames: ['mask.example'] });
+    expect(configs[1].outbounds[0].streamSettings.realitySettings.serverName).toBe('mask.example');
+    const stored = db.prepare('SELECT cascade_secret FROM bridge_links WHERE bridge_id = ?').get(bridge) as { cascade_secret: string };
+    expect(stored.cascade_secret).toMatch(/^enc:v1:/);
+    expect(JSON.parse(decryptSecret(stored.cascade_secret)!).sni).toBe('mask.example');
+    expect(JSON.stringify(BridgeService.get(bridge))).not.toContain('mask.example');
+    await expect(BridgeService.setCascade(bridge, server, 8443, 'other.example')).rejects.toThrow(/сначала отключите/);
+  });
+
+  it('выбирает SNI из списка только для новой привязки и оставляет прежний SNI старой', async () => {
+    const ssh = bridgeSsh();
+    const { bridge, server, endpoint } = await setup();
+    expect((await api(endpoint, 'PUT', { port: 8443 })).status).toBe(200);
+    const row = db.prepare('SELECT cascade_secret FROM bridge_links WHERE bridge_id = ?').get(bridge) as { cascade_secret: string };
+    const secret = JSON.parse(decryptSecret(row.cascade_secret)!);
+    expect(DEFAULT_REALITY_TARGETS).toContain(secret.sni);
+    delete secret.sni;
+    const legacy = encryptSecret(JSON.stringify(secret));
+    db.prepare('UPDATE bridge_links SET cascade_secret = ? WHERE bridge_id = ?').run(legacy, bridge);
+    expect((await api(endpoint, 'PUT', { port: 8443 })).status).toBe(200);
+    const nodeConfig = ssh.calls.findLast((call) => call.input?.startsWith('{"log":') && call.input.includes('"inbounds"') && call.input.includes('"privateKey"'))?.input;
+    expect(JSON.parse(nodeConfig!).inbounds[0].streamSettings.realitySettings.dest).toBe('dl.google.com:443');
+    expect(db.prepare('SELECT cascade_secret FROM bridge_links WHERE bridge_id = ? AND server_id = ?').get(bridge, server)).toEqual({ cascade_secret: legacy });
   });
 });
 

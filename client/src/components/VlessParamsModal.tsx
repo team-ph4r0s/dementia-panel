@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { Cloud, Shuffle, X } from 'lucide-react';
+import { Cloud, Loader2, Search, Shuffle, X } from 'lucide-react';
 import { api } from '../api';
 import type { Server } from '../types';
 import { useFeedback } from './ui/feedback-context';
@@ -49,6 +49,31 @@ export function VlessParamsModal({ server, onClose, onUpdated }: VlessParamsModa
   const [busy, setBusy] = useState(false);
   const [cdn, setCdn] = useState(() => toCdnForm(server));
   const [current, setCurrent] = useState(server);
+  const [probing, setProbing] = useState(false);
+  const [candidatesError, setCandidatesError] = useState<string | null>(null);
+  const [candidates, setCandidates] = useState<{ domain: string; latency_ms: number | null; suitable: boolean }[] | null>(null);
+
+  const pickCandidate = (domain: string) => {
+    setForm((prev) => ({
+      ...prev,
+      sni: domain,
+      dest: `${domain}:443`,
+    }));
+  };
+
+  const probeCandidates = async () => {
+    setProbing(true);
+    setCandidatesError(null);
+    try {
+      const extraDomain = form.sni.trim() || undefined;
+      const res = await api.realityCandidates(current.id, extraDomain);
+      setCandidates(res.candidates);
+    } catch (err) {
+      setCandidatesError(err instanceof Error ? err.message : 'Не удалось проверить сайты маскировки');
+    } finally {
+      setProbing(false);
+    }
+  };
 
   const update = async (request: () => Promise<Server>, randomize = false) => {
     setBusy(true);
@@ -141,6 +166,72 @@ export function VlessParamsModal({ server, onClose, onUpdated }: VlessParamsModa
         <form onSubmit={save} className="p-6 overflow-y-auto">
           <fieldset disabled={busy} className="space-y-4 min-w-0 disabled:opacity-50">
             <p className="p-3 bg-warn-soft text-warn rounded-lg text-xs">{warning}</p>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-medium text-ink">Сайт маскировки Reality</span>
+              <button
+                type="button"
+                onClick={probeCandidates}
+                disabled={probing || busy}
+                className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg border border-line bg-card hover:bg-soft text-ink disabled:opacity-50 transition"
+                title="Проверить доступность сайтов-кандидатов (TLS 1.3, HTTP/2) с сервера ноды"
+              >
+                {probing ? <Loader2 className="w-3.5 h-3.5 animate-spin text-brand" /> : <Search className="w-3.5 h-3.5 text-muted" />}
+                <span>{probing ? 'Подбор...' : 'Подобрать'}</span>
+              </button>
+            </div>
+
+            {candidatesError && (
+              <div className="p-3 bg-bad-soft border border-line text-bad text-xs rounded-lg">
+                {candidatesError}
+              </div>
+            )}
+
+            {candidates && candidates.length > 0 && (
+              <div className="space-y-1.5 p-3 bg-paper border border-line rounded-xl">
+                <div className="text-xs text-muted font-medium mb-1">Кандидаты маскировки (проверка с ноды):</div>
+                <div className="divide-y divide-line text-xs">
+                  {candidates.map((c) => {
+                    const isSelected = form.sni === c.domain;
+                    return (
+                      <div
+                        key={c.domain}
+                        className="py-1.5 flex flex-wrap items-center justify-between gap-2"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <span className="font-mono text-ink font-medium break-all">{c.domain}</span>
+                          <span className="ml-2 font-mono text-faint">
+                            {c.latency_ms !== null ? `${c.latency_ms} мс` : '—'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[11px] font-medium ${
+                              c.suitable ? 'bg-ok-soft text-ok' : 'bg-bad-soft text-bad'
+                            }`}
+                          >
+                            {c.suitable ? 'Подходит' : 'Не подходит'}
+                          </span>
+                          {c.suitable && (
+                            <button
+                              type="button"
+                              onClick={() => pickCandidate(c.domain)}
+                              className={`px-2 py-0.5 rounded text-xs transition border ${
+                                isSelected
+                                  ? 'bg-brand text-on-accent border-brand font-medium'
+                                  : 'bg-card text-ink border-line hover:bg-soft'
+                              }`}
+                            >
+                              {isSelected ? 'Выбран' : 'Выбрать'}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             <label className="block text-xs text-muted">
               SNI
               <input required value={form.sni} onChange={(e) => setForm({ ...form, sni: e.target.value })} className={inputClass} />

@@ -178,7 +178,7 @@ const LinkState: React.FC<{ bridge: Bridge; link: Bridge['links'][number] }> = (
       ) : link.cascade_pending ? (
         <span className="text-warn">каскад ожидает применения</span>
       ) : broken ? (
-        <span className="inline-flex items-center gap-1 text-bad" title="Панель не получила ответ заглушки ноды через мост — мост не выдаётся">
+        <span className="inline-flex items-center gap-1 text-bad" title="Сквозная проверка через мост не прошла (заглушка ноды AmneziaWG или сертификат сайта маскировки VLESS) — мост не выдаётся">
           <XCircle className="w-3.5 h-3.5" /> пересылка не работает
         </span>
       ) : via ? (

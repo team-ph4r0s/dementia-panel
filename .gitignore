@@ -15,3 +15,6 @@ Thumbs.db
 data/
 server/data/
 .claude/
+/.audit/
+/design-concepts/
+/promo-video/

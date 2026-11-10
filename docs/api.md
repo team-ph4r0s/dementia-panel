@@ -47,6 +47,7 @@ HTTP-кодом. Тела — JSON.
 | POST | `/:id/sync` | Синхронизировать пиры |
 | POST | `/:id/apply` | Применить параметры (перезапуск) |
 | POST | `/:id/randomize-params` | Новые параметры текущей версии + применение (при неудаче — 502, как у PUT, параметры прежние) |
+| POST | `/:id/reality-candidates` | `{domain?}` → `{candidates: [{domain, latency_ms, suitable}]}` — подбор сайта маскировки Reality с VLESS-ноды по SSH (TLS 1.3, HTTP/2, публичный IP) |
 | POST | `/:id/upgrade-protocol` | Переход на AWG 3.x + переустановка |
 
 Для нод партнёра доступны GET, sync и изменение локальной метки через `PUT /:id/country`.
@@ -115,7 +116,7 @@ UUID не входит в списки и обычные ответы API. Пр�
 `GET /`, `POST /` (добавить и установить), `PUT /:id`, `PUT /:id/links` (`links[{server_id, mode}]`), `POST /:id/install`, `POST /:id/apply`,
 `POST /:id/test-ssh`, `DELETE /:id` (`?teardown=1&force=1`), см. [bridges.md](bridges.md). SSH-секреты мостов в ответах не отдаются.
 
-`PUT /:id/links/:serverId/cascade` принимает `{port: number | null}` и включает каскад XHTTP на указанном TCP-порту ноды
+`PUT /:id/links/:serverId/cascade` принимает `{port: number | null, sni?: string}` (`sni` — сайт маскировки Reality для нового каскада, по умолчанию выбирает панель) и включает каскад XHTTP на указанном TCP-порту ноды
 или возвращает DNAT. Ответ содержит обновлённый мост с `cascade_port` в привязке. Секреты каскада остаются на сервере.
 
 ## События, уведомления и резервные копии

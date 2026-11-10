@@ -69,6 +69,10 @@ AmneziaWG она не проверяет, а узлы check-host.net стоят 
 - Ограничения: только TCP (UDP — `udp_ok` от check-host.net), не для нод партнёров, VLESS и нод с IPv6-адресом. Без ключа — 250 проб
   в час с адреса панели (ноды × страны × 2 за обход); при ответе 429 Globalping пропускается до следующего обхода, в `probe_error` —
   одно сообщение.
+- **Оценка расхода лимита (`globalping_budget`)**: `GET /api/probes` и `PUT /api/probes` возвращают объект `{ per_run, per_hour, limit: 250 }`.
+  Расчёт синхронный и оценивает `число подходящих нод × число стран × 2` за обход и `ceil(per_run × 60 / interval_minutes)` в час.
+  В расчёте учитываются только свои AWG-ноды с уже установленной заглушкой (`stub_port IS NOT NULL`), со статусом `!= 'uninstalled'` и IPv4/доменным адресом.
+  Ограничения оценки: она не учитывает отсутствие проб в конкретной стране, ручные внеплановые запуски, ещё не развёрнутые заглушки и не ходит во внешнюю сеть. При выключенной проверке или выключенном Globalping возвращаются нули.
 
 ## Приватность
 
@@ -95,7 +99,7 @@ AmneziaWG она не проверяет, а узлы check-host.net стоят 
 
 | Метод | Путь | Описание |
 |---|---|---|
-| GET | `/` | `{settings, status:{running,last_run,error,next_run}, max_countries, servers:[{id,name,host,status,probe_port,stub_port,remote_panel_id}], results}` |
+| GET | `/` | `{settings, globalping_budget:{per_run,per_hour,limit}, status:{running,last_run,error,next_run}, max_countries, servers:[{id,name,host,status,probe_port,stub_port,remote_panel_id}], results}` |
 | GET | `/countries` | Страны, где есть проверяющие узлы: `[{code, name, nodes[], cities[]}]` (кэш сутки; 502, если сервис недоступен) |
 | PUT | `/` | `{settings?:{enabled, countries[], interval_minutes, show_in_name, show_in_description}, servers?:[{id, probe_port}]}`; включение требует хотя бы одну страну; смена способа проверки сервера или списка стран удаляет прежние результаты |
 | POST | `/run` | Проверить сейчас (фоном, 202); не чаще раза в минуту (429), не при выключенной функции (400) |

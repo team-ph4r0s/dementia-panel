@@ -452,6 +452,7 @@ export interface ProbeCountry {
 
 export interface ProbesOverview {
   settings: ProbeSettings;
+  globalping_budget?: { per_run: number; per_hour: number; limit: number };
   status: { running: boolean; last_run: string | null; error: string | null; next_run: string | null };
   max_countries: number;
   servers: { id: number; name: string; host: string; status: ServerStatus; probe_port: number | null; stub_port: number | null; remote_panel_id: number | null }[];
