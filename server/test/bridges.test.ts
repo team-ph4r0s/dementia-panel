@@ -307,6 +307,10 @@ describe('каскад XHTTP', () => {
       expect(run(listing, [8443]).code).toBe(3);
       expect(run(listing, [8443, 2053]).code).toBe(4);
       expect(run('', [8443]).code).toBe(5);
+      // порт опубликован Docker без userland-proxy (сокета нет) или занят чужим DNAT — тоже считается занятым
+      fs.writeFileSync(path.join(dir, 'docker'), "#!/bin/sh\necho '0.0.0.0:2053->2053/tcp, :::2053->2053/tcp'\n", { mode: 0o755 });
+      fs.writeFileSync(path.join(dir, 'iptables'), "#!/bin/sh\necho '-A DOCKER ! -i docker0 -p tcp -m tcp --dport 2083 -j DNAT --to-destination 172.17.0.2:2083'\n", { mode: 0o755 });
+      expect(run('tcp LISTEN 0 4096 0.0.0.0:8443 0.0.0.0:*', [8443, 2053, 2083, 2087]).out).toBe('---CASCADE_PORT 2087\n');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
