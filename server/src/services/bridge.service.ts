@@ -12,9 +12,11 @@ import { HostKeyMismatchError, SshCredentials, SshService } from './ssh.service.
 import { decryptSecret, encryptSecret } from './secrets.service.js';
 import { OperationResult, ProvisionService, runExclusive } from './provision.service.js';
 import { ProbeService, ProbeResult } from './probe.service.js';
+import { parseExtraPorts } from './extra-ports.service.js';
 import { stubPortCandidates } from './stub.service.js';
 import {
-  CASCADE_XRAY_IMAGE, applyCascadeContainer, cascadeConfigs, cascadeContainer, cascadePortReachable, cascadeRunning, cascadeSni,
+  CASCADE_XRAY_IMAGE, applyCascadeContainer, cascadeConfigs, cascadeContainer, cascadePortCandidates, cascadePortReachable, cascadeRunning, cascadeSni,
+  openCascadeFirewall, pickCascadePort,
   clearBridgeConntrack, generateCascadeSecret, parseCascadeSni, prepareCascadeImage, removeCascadeContainer, requireAwgLoopback, type CascadeLink,
 } from './bridge-cascade.service.js';
 
@@ -424,12 +426,36 @@ export class BridgeService {
     }
   }
 
-  private static async withCascadeNode(link: CascadeLink, action: (creds: SshCredentials) => Promise<void>): Promise<void> {
-    await runExclusive(link.serverId, async () => {
-      const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(link.serverId) as any;
+  private static async withNode(serverId: number, action: (creds: SshCredentials) => Promise<void>): Promise<void> {
+    await runExclusive(serverId, async () => {
+      const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as any;
       if (!server || server.remote_panel_id) throw new Error('Нужна локальная нода с доступом по SSH');
       await action(ProvisionService.getCredentials(server));
     });
+  }
+
+  private static withCascadeNode(link: CascadeLink, action: (creds: SshCredentials) => Promise<void>): Promise<void> {
+    return this.withNode(link.serverId, action);
+  }
+
+  /**
+   * TCP-порты, которые панель считает занятыми на хосте ноды: порты всех локальных нод с тем же адресом (VPN, заглушка, CDN, SSH,
+   * запасные) и порты каскадов других мостов. Реально слушающие порты проверяются отдельно на самой ноде (`pickCascadePort`).
+   */
+  private static reservedNodePorts(server: any, bridgeId: number): Set<number> {
+    const reserved = new Set<number>();
+    const peers = db.prepare(
+      'SELECT * FROM servers WHERE remote_panel_id IS NULL AND (id = ? OR lower(host) = lower(?))'
+    ).all(server.id, server.host) as any[];
+    for (const peer of peers) {
+      for (const value of [peer.ssh_port, peer.awg_port, peer.deployed_port, peer.stub_port, peer.cdn_port, ...parseExtraPorts(peer.extra_ports)]) {
+        if (Number.isInteger(value)) reserved.add(value);
+      }
+      const others = db.prepare('SELECT cascade_port FROM bridge_links WHERE server_id = ? AND bridge_id != ? AND cascade_port IS NOT NULL')
+        .all(peer.id, bridgeId) as { cascade_port: number }[];
+      for (const other of others) reserved.add(other.cascade_port);
+    }
+    return reserved;
   }
 
   private static changeCascadeNode(link: CascadeLink, apply: boolean): Promise<void> {
@@ -437,6 +463,8 @@ export class BridgeService {
       const name = cascadeContainer(link, 'node');
       if (apply) {
         if (link.protocol === 'awg') await requireAwgLoopback(creds, link.vpnPort);
+        // Порт каскада открывается в ufw/firewalld при каждом применении: идемпотентно и чинит порт, закрытый вручную
+        await openCascadeFirewall(creds, link.port);
         await applyCascadeContainer(creds, name, cascadeConfigs(link).node);
       } else {
         await removeCascadeContainer(creds, name);
@@ -660,7 +688,8 @@ export class BridgeService {
   }
 
   static setCascade(id: number, serverId: number, port: unknown, requestedSni?: unknown): Promise<OperationResult> {
-    if (port !== null && (typeof port !== 'number' || !isValidPort(port))) throw new HttpError(400, 'Укажите TCP-порт каскада от 1 до 65535');
+    const auto = port === 'auto';
+    if (port !== null && !auto && (typeof port !== 'number' || !isValidPort(port))) throw new HttpError(400, 'Укажите TCP-порт каскада от 1 до 65535 или выберите автоматический подбор');
     const sni = port === null ? undefined : parseCascadeSni(requestedSni);
     return runExclusive(queueKey(id), async () => {
       const bridge = loadBridge(id);
@@ -670,6 +699,7 @@ export class BridgeService {
       const previous = cascadeLinks(id).find((item) => item.serverId === serverId);
       if (port === null && !previous) return { success: true };
       if (bridge.status === 'uninstalled' || installing.has(id)) throw new HttpError(409, 'Сначала установите мост');
+      if (auto && previous) port = previous.port; // повторное применение уже включённого каскада: порт не меняется
       if (port !== null) {
         if (server.remote_panel_id || server.status !== 'online' || !server.deployed_port || ProvisionService.isInstalling(serverId)) {
           throw new HttpError(400, 'Для каскада нужна работающая локальная нода с доступом по SSH');
@@ -678,13 +708,22 @@ export class BridgeService {
         if (!isValidHost(server.host) || net.isIPv6(server.host)) throw new HttpError(400, 'Для каскада нужен IPv4-адрес или домен ноды');
         if (previous && port !== previous.port) throw new HttpError(409, 'Для смены порта сначала отключите каскад');
         if (previous && sni && sni !== cascadeSni(previous.secret)) throw new HttpError(409, 'Для смены сайта маскировки сначала отключите каскад');
+        const reserved = this.reservedNodePorts(server, id);
         const busy = [server.ssh_port, server.stub_port, server.cdn_port,
           ...(nodeProtocol(server) === 'vless' ? [server.awg_port, server.deployed_port] : [])];
-        if (busy.includes(port) || db.prepare('SELECT 1 FROM bridge_links WHERE server_id = ? AND bridge_id != ? AND cascade_port = ?').get(serverId, id, port)) {
-          throw new HttpError(409, 'TCP-порт каскада на ноде уже используется');
+        if (auto && !previous) {
+          // Свободный порт выбирает сама нода: из кандидатов без известных панели занятых, по списку реально слушающих (ss)
+          const candidates = cascadePortCandidates(reserved);
+          await this.withNode(serverId, async (creds) => { port = await pickCascadePort(creds, candidates); });
+        } else if (!previous) {
+          if (busy.includes(port as number) || (reserved.has(port as number) && !(nodeProtocol(server) === 'awg' && port === server.awg_port))) {
+            throw new HttpError(409, 'TCP-порт каскада на ноде уже используется');
+          }
+          await this.withNode(serverId, async (creds) => { await pickCascadePort(creds, [port as number]); });
         }
       }
 
+      const cascadePort = port as number | null;
       const update = db.prepare(`
         UPDATE bridge_links SET cascade_port = ?, cascade_secret = ?, check_ok = ?, checked_at = ?
         WHERE bridge_id = ? AND server_id = ?
@@ -693,7 +732,7 @@ export class BridgeService {
         db.prepare('UPDATE bridges SET needs_apply = 1 WHERE id = ?').run(id);
         db.prepare('UPDATE bridge_links SET cascade_pending = 1 WHERE bridge_id = ? AND server_id = ?').run(id, serverId);
       });
-      if (port === null && previous) {
+      if (cascadePort === null && previous) {
         // До удаления записи держим секрет и идентификаторы, чтобы повторить очистку при недоступности одной стороны.
         try {
           await this.changeCascadeNode(previous, false);
@@ -703,9 +742,9 @@ export class BridgeService {
           return { success: false, error: err.message };
         }
       }
-      const secret = port === null ? null : (link.cascade_secret || encryptSecret(JSON.stringify(generateCascadeSecret(sni))));
-      update.run(port, secret, null, null, id, serverId);
-      const result = await this.doApply(id, port === null ? previous : undefined, port === null ? undefined : serverId);
+      const secret = cascadePort === null ? null : (link.cascade_secret || encryptSecret(JSON.stringify(generateCascadeSecret(sni))));
+      update.run(cascadePort, secret, null, null, id, serverId);
+      const result = await this.doApply(id, cascadePort === null ? previous : undefined, cascadePort === null ? undefined : serverId);
       if (result.success) return result;
 
       // Сначала снимаем новый каскад. Если очистка прервалась, запись остаётся доступной для повторного отключения.

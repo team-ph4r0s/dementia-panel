@@ -245,3 +245,76 @@ export async function removeCascadeContainer(creds: SshCredentials, name: string
   const result = await SshService.executeCommand(creds, `${SshService.sudo(creds)}sh -c ${shellQuote(script)}`, { timeoutMs: 60000 });
   if (result.code !== 0) throw new Error('Не удалось снять конфигурацию Xray каскада по SSH');
 }
+
+/** Порты, которые панель пробует для каскада по порядку: привычные для HTTPS-подобного трафика, затем случайные высокие. */
+const PREFERRED_CASCADE_PORTS = [8443, 2053, 2083, 2087, 2096, 8843, 9443];
+
+/** Список кандидатов без портов, заведомо занятых по данным панели (`reserved`); случайные добавляются для запаса. */
+export function cascadePortCandidates(reserved: Set<number>, random: () => number = () => crypto.randomInt(20000, 50000)): number[] {
+  const result: number[] = PREFERRED_CASCADE_PORTS.filter((port) => !reserved.has(port));
+  for (let attempt = 0; attempt < 200 && result.length < PREFERRED_CASCADE_PORTS.length + 40; attempt++) {
+    const port = random();
+    if (!reserved.has(port) && !result.includes(port)) result.push(port);
+  }
+  return result;
+}
+
+/**
+ * Скрипт на ноде: выбирает первый порт из списка, который никто не слушает (TCP и UDP, `ss`, запасной путь — /proc/net).
+ * Коды выхода: 3 — порт занят (при `candidates` из одного порта), 4 — свободных нет, 5 — список слушающих портов не получен.
+ * Последняя строка успешного вывода — `---CASCADE_PORT <порт>`. Числа проверяются здесь, в shell попадают только они.
+ */
+export function cascadePortScript(candidates: number[]): string {
+  const ports = candidates.map((port) => {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Некорректный порт каскада');
+    return port;
+  });
+  if (!ports.length) throw new Error('Нет портов для проверки');
+  return [
+    'listening() {',
+    '  if command -v ss >/dev/null 2>&1; then ss -Hlntu 2>/dev/null | awk \'{print $5}\' | sed \'s/.*://\'',
+    '  else',
+    '    (cd /proc/net && cat tcp tcp6 udp udp6) 2>/dev/null |',
+    '      awk \'$4 == "0A" || $4 == "07" { n = index($2, ":"); print substr($2, n + 1) }\' |',
+    '      while read -r h; do printf "%d\\n" "0x$h"; done',
+    '  fi',
+    '}',
+    'used=$(listening | sort -u)',
+    '[ -n "$used" ] || exit 5',
+    `for p in ${ports.join(' ')}; do`,
+    '  if ! printf \'%s\\n\' "$used" | grep -qx "$p"; then echo "---CASCADE_PORT $p"; exit 0; fi',
+    'done',
+    `if [ ${ports.length} -eq 1 ]; then exit 3; fi`,
+    'exit 4',
+  ].join('\n');
+}
+
+/** Проверяет порт (или подбирает из списка) на самой ноде. Возвращает свободный порт. */
+export async function pickCascadePort(creds: SshCredentials, candidates: number[]): Promise<number> {
+  const result = await SshService.executeCommand(creds, `${SshService.sudo(creds)}sh -c ${shellQuote(cascadePortScript(candidates))}`, { timeoutMs: 20000 })
+    .catch(() => { throw new HttpError(502, 'Не удалось проверить порты на ноде по SSH'); });
+  if (result.code === 3) throw new HttpError(409, `TCP-порт каскада ${candidates[0]} на ноде уже занят другой службой`);
+  if (result.code === 4) throw new HttpError(409, 'На ноде не нашлось свободного порта для каскада');
+  if (result.code === 5) throw new HttpError(502, 'Не удалось получить список занятых портов на ноде');
+  if (result.code !== 0) throw new HttpError(502, 'Не удалось проверить порты на ноде');
+  const picked = Number(/^---CASCADE_PORT (\d+)$/m.exec(result.stdout)?.[1]);
+  if (Number.isInteger(picked) && candidates.includes(picked)) return picked;
+  // Ответ без метки допустим только для явно заданного порта (проверка прошла по коду выхода)
+  if (candidates.length === 1) return candidates[0];
+  throw new HttpError(502, 'Нода не вернула выбранный порт каскада');
+}
+
+/** Открывает TCP-порт в активном ufw или firewalld на ноде. Идемпотентно; без активного фаервола ничего не меняет. */
+export async function openCascadeFirewall(creds: SshCredentials, port: number): Promise<void> {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Некорректный порт каскада');
+  const script = [
+    `port=${port}`,
+    'if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then',
+    '  ufw allow "$port/tcp" >/dev/null 2>&1 || true',
+    'elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then',
+    '  firewall-cmd --permanent --add-port="$port/tcp" >/dev/null 2>&1 || true',
+    '  firewall-cmd --reload >/dev/null 2>&1 || true',
+    'fi',
+  ].join('\n');
+  await SshService.executeCommand(creds, `${SshService.sudo(creds)}sh -c ${shellQuote(script)}`, { timeoutMs: 30000 });
+}
