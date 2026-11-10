@@ -45,6 +45,11 @@ export function CascadeModal({ bridge, link, onClose, onChanged }: {
           На ноде нужен запущенный Docker. Панель установит недостающие зависимости на мосту. Разрешите в фаерволе ноды вход на выбранный TCP-порт с адреса моста,
           а на мосту проверьте, что его клиентский порт доступен.
         </p>
+        <ol className="list-decimal space-y-1 pl-5 text-xs text-muted">
+          <li>Выберите свободный TCP-порт на ноде (например, 8443) и откройте его в фаерволе ноды для адреса моста.</li>
+          <li>Убедитесь, что клиентский порт моста {link.listen_port} открыт на мосту.</li>
+          <li>Сайт маскировки можно не указывать: панель выберет его сама.</li>
+        </ol>
         <label className="block space-y-1 text-sm text-ink">
           <span>TCP-порт каскада на ноде</span>
           <input
@@ -61,7 +66,10 @@ export function CascadeModal({ bridge, link, onClose, onChanged }: {
               onChange={(event) => setSni(event.target.value)}
               className="block min-h-10 w-full rounded-lg border border-line bg-paper px-3 font-mono text-ink"
             />
-            <span className="block text-xs text-muted">Домен с TLS 1.3, доступный с ноды. Сменить его позже можно, только отключив каскад.</span>
+            <span className="block text-xs text-muted">
+              Это чужой популярный сайт (например, dl.google.com), под который Reality маскирует трафик, а не ваш домен и не домен панели.
+              Нужен TLS 1.3 и HTTP/2, и он должен открываться с ноды по TCP 443. Ничего не указывайте, если не уверены. Сменить его позже можно, только отключив каскад.
+            </span>
           </label>
         )}
         {error && <p role="alert" className="text-sm text-bad">{error}</p>}
