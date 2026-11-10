@@ -100,6 +100,21 @@ export class TelegramService {
     }
   }
 
+  /** Произвольное сообщение администратору (напоминания об оплате). false — Telegram выключен, не настроен или не принял сообщение */
+  static async notify(text: string): Promise<boolean> {
+    try {
+      if (getSetting('telegram_enabled') !== '1') return false;
+      const rawToken = decryptSecret(getSetting('telegram_bot_token'));
+      const token = rawToken ? normalizeBotToken(rawToken) : '';
+      const chatId = getSetting('telegram_chat_id');
+      if (!token || !chatId || MigrationService.isBackgroundPaused()) return false;
+      return (await this.send(token, chatId, text)).success;
+    } catch (err) {
+      console.error('Не удалось отправить уведомление в Telegram:', err instanceof Error ? err.message : 'неизвестная ошибка');
+      return false;
+    }
+  }
+
   private static async send(token: string, chatId: string, text: string): Promise<{ success: boolean; message: string }> {
     try {
       const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {

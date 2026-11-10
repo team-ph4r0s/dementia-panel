@@ -32,6 +32,11 @@ import type {
   EventLevel,
   EventsPage,
   TelegramSettings,
+  ProvidersData,
+  ProviderInput,
+  ProviderItem,
+  ProviderSettings,
+  ProviderTargetType,
   BackupSettings,
   RemoteBackup,
   GuestAccess,
@@ -680,6 +685,27 @@ export const api = {
 
   detectTelegramChat(data?: { bot_token?: string }): Promise<{ success: boolean; chat_id?: string; name?: string; message: string }> {
     return request(`${API_BASE}/telegram/detect-chat`, { method: 'POST', ...(data ? json(data) : {}) }, 'Ошибка определения чата Telegram');
+  },
+
+  getProviders(): Promise<ProvidersData> {
+    return request(`${API_BASE}/providers`, {}, 'Ошибка загрузки провайдеров');
+  },
+
+  async saveProvider(type: ProviderTargetType, id: number, data: ProviderInput): Promise<ProviderItem[]> {
+    const body = {
+      url: data.url, login: data.login, amount: data.amount, currency: data.currency,
+      pay_day: data.pay_day, pay_month: data.pay_month,
+      ...(data.password !== undefined ? { password: data.password } : {}),
+    };
+    return (await request<{ items: ProviderItem[] }>(`${API_BASE}/providers/${type}/${id}`, { method: 'PUT', ...json(body) }, 'Ошибка сохранения данных провайдера')).items;
+  },
+
+  async getProviderPassword(type: ProviderTargetType, id: number): Promise<string> {
+    return (await request<{ password: string }>(`${API_BASE}/providers/${type}/${id}/password`, {}, 'Не удалось получить пароль')).password;
+  },
+
+  async saveProviderSettings(data: ProviderSettings): Promise<ProviderSettings> {
+    return (await request<{ settings: ProviderSettings }>(`${API_BASE}/providers/settings`, { method: 'PUT', ...json(data) }, 'Ошибка сохранения напоминаний')).settings;
   },
 
   async getBackupSettings(): Promise<BackupSettings> {
