@@ -558,7 +558,7 @@ export const api = {
   },
 
   /** sni — сайт маскировки Reality для нового каскада; без него панель выберет сама */
-  setBridgeCascade(id: number, serverId: number, port: number | null, sni?: string): Promise<BridgeOperationResult> {
+  setBridgeCascade(id: number, serverId: number, port: number | 'auto' | null, sni?: string): Promise<BridgeOperationResult> {
     return request(`${API_BASE}/bridges/${id}/links/${serverId}/cascade`, { method: 'PUT', ...json({ port, ...(sni ? { sni } : {}) }) }, 'Ошибка настройки каскада');
   },
 

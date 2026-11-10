@@ -82,7 +82,7 @@ bridgesRouter.put('/:id/links', asyncHandler(async (req, res) => {
   res.status(result.success ? 200 : 502).json({ ...result, bridge: BridgeService.get(id) });
 }));
 
-// PUT /api/bridges/:id/links/:serverId/cascade — {port: number | null, sni?: string} (sni — сайт маскировки Reality, только при включении)
+// PUT /api/bridges/:id/links/:serverId/cascade — {port: number | 'auto' | null, sni?: string} ('auto' — нода сама подбирает свободный порт и открывает его в фаерволе) (sni — сайт маскировки Reality, только при включении)
 bridgesRouter.put('/:id/links/:serverId/cascade', asyncHandler(async (req, res) => {
   const id = parseId(req.params.id);
   const result = await BridgeService.setCascade(id, parseId(req.params.serverId), req.body?.port, req.body?.sni ?? undefined);

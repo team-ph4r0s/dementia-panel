@@ -1,9 +1,14 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import net from 'node:net';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import tls from 'node:tls';
 import { generate } from 'selfsigned';
 import { db, initDatabase, setSetting } from '../src/db/index.js';
 import { BRIDGE_HOLD_MS, BridgeService, buildBridgeRules, expectedRuleCount, parseHealth } from '../src/services/bridge.service.js';
+import { cascadeFirewallRemoval, cascadeFirewallScript, cascadePortCandidates, cascadePortScript } from '../src/services/bridge-cascade.service.js';
 import { decryptSecret, encryptSecret } from '../src/services/secrets.service.js';
 import { DEFAULT_REALITY_TARGETS } from '../src/utils/vless-params.js';
 import * as realityCheck from '../src/utils/reality-check.js';
@@ -41,8 +46,10 @@ const linkName = (link: string) => decodeURIComponent(link.split('#')[1] ?? '');
 const linkConf = (link: string) => Buffer.from(link.slice('awg://'.length).split('#')[0], 'base64url').toString();
 
 /** SSH-ответы моста: установка — успех, проверка — по состоянию `health` */
-function bridgeSsh(health = { rules: -1, first: true }, fail?: (call: SshCall) => boolean) {
+function bridgeSsh(health = { rules: -1, first: true }, fail?: (call: SshCall) => boolean, extra?: (call: SshCall) => { code?: number; stdout?: string } | undefined) {
   return stubSsh((call) => {
+    const custom = extra?.(call);
+    if (custom) return custom;
     if (fail?.(call)) return { code: 1, stderr: 'iptables: No chain/target/match by that name.' };
     if (call.command.includes('deploy-bridge')) return { stdout: '[1/4] ...\n---DEMENTIA_BRIDGE_OK---\n' };
     if (call.command.includes('RULES $(')) {
@@ -168,6 +175,8 @@ describe('правила пересылки', () => {
   });
 });
 
+let candidates_n = 0;
+
 describe('каскад XHTTP', () => {
   const fixtures: { bridge: number; server: number }[] = [];
   afterEach(() => {
@@ -231,6 +240,139 @@ describe('каскад XHTTP', () => {
     expect((await api(endpoint, 'PUT', { port: null })).status).toBe(200);
     expect(ssh.calls.findLast((call) => call.command.includes('rules.sh.new'))?.input).toContain('forward udp 52301');
     expect(BridgeService.get(bridge).links[0].cascade_port).toBeNull();
+  });
+
+  /** Нода по SSH: свободный порт — первый из списка кандидатов, не входящий в `busy` (как это делает скрипт на ноде) */
+  const nodeSsh = (busy: number[] = [], code = 0) => bridgeSsh(undefined, undefined, (call) => {
+    if (!call.command.includes('---CASCADE_PORT')) return undefined;
+    const list = /for p in ([\d ]+); do/.exec(call.command)?.[1].split(' ').map(Number) ?? [];
+    const free = list.find((p) => !busy.includes(p));
+    if (code) return { code };
+    return free ? { stdout: `---CASCADE_PORT ${free}\n` } : { code: 4 };
+  });
+
+  it('подбирает свободный порт сам, обходит порты соседних нод и открывает его в фаерволе ноды', async () => {
+    const ssh = nodeSsh([8443]); // 8443 слушает чужая служба
+    const { server, bridge, endpoint } = await setup();
+    const host = (db.prepare('SELECT host FROM servers WHERE id = ?').get(server) as { host: string }).host;
+    const sibling = insertServer({ name: 'Neighbour', host, awgPort: 52399 });
+    db.prepare('UPDATE servers SET stub_port = 2053, extra_ports = ? WHERE id = ?').run(JSON.stringify([2083]), sibling);
+    fixtures.push({ bridge: 0, server: sibling });
+    const result = await api(endpoint, 'PUT', { port: 'auto' });
+    expect(result.status).toBe(200);
+    const check = ssh.calls.find((call) => call.command.includes('---CASCADE_PORT'))!;
+    const candidates = /for p in ([\d ]+); do/.exec(check.command)![1].split(' ').map(Number);
+    expect(candidates).toContain(8443);
+    expect(candidates).not.toContain(2053); // заглушка соседней ноды
+    expect(candidates).not.toContain(2083); // её запасной порт
+    expect(candidates).not.toContain(52399);
+    expect(result.body.bridge.links[0].cascade_port).toBe(2087);
+    const firewall = ssh.calls.find((call) => call.command.includes('ufw allow') && call.command.includes('port=2087'));
+    expect(firewall).toBeTruthy();
+    expect(db.prepare('SELECT cascade_port FROM bridge_links WHERE bridge_id = ?').get(bridge)).toEqual({ cascade_port: 2087 });
+  });
+
+  it('заданный вручную порт, который кто-то слушает на ноде, отклоняется до изменений', async () => {
+    const ssh = nodeSsh([], 3);
+    const { bridge, endpoint } = await setup();
+    const result = await api(endpoint, 'PUT', { port: 8443 });
+    expect(result.status).toBe(409);
+    expect(result.body.error).toMatch(/занят/);
+    expect(db.prepare('SELECT cascade_port FROM bridge_links WHERE bridge_id = ?').get(bridge)).toEqual({ cascade_port: null });
+    expect(ssh.calls.some((call) => call.command.includes('config.new.json'))).toBe(false);
+  });
+
+  it('автоподбор без свободных портов и без списка слушающих завершается понятной ошибкой', async () => {
+    nodeSsh([], 4);
+    const { endpoint } = await setup();
+    expect((await api(endpoint, 'PUT', { port: 'auto' })).status).toBe(409);
+    vi.restoreAllMocks();
+    nodeSsh([], 5);
+    expect((await api(endpoint, 'PUT', { port: 'auto' })).status).toBe(502);
+  });
+
+  it('скрипт подбора на ноде пропускает слушающие порты (ss) и не доверяет пустому списку', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cascade-ss-'));
+    try {
+      const run = (listing: string, ports: number[]) => {
+        fs.writeFileSync(path.join(dir, 'ss'), `#!/bin/sh\ncat <<'EOF'\n${listing}\nEOF\n`, { mode: 0o755 });
+        try {
+          return { code: 0, out: execFileSync('sh', ['-c', cascadePortScript(ports)], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } }).toString() };
+        } catch (err: any) {
+          return { code: err.status as number, out: '' };
+        }
+      };
+      const listing = 'tcp LISTEN 0 4096 0.0.0.0:8443 0.0.0.0:*\nudp UNCONN 0 0 [::]:2053 [::]:*\ntcp LISTEN 0 128 *:22 *:*';
+      expect(run(listing, [8443, 2053, 2083]).out).toBe('---CASCADE_PORT 2083\n');
+      expect(run(listing, [8443]).code).toBe(3);
+      expect(run(listing, [8443, 2053]).code).toBe(4);
+      expect(run('', [8443]).code).toBe(5);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('голый iptables: правило ACCEPT ставится только при ограничивающем INPUT, переживает перезагрузку и снимается с каскадом', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cascade-fw-'));
+    try {
+      const bin = path.join(root, 'bin');
+      const state = path.join(root, 'rules');
+      const dir = path.join(root, 'cascade');
+      const units = path.join(root, 'units');
+      fs.mkdirSync(bin);
+      fs.mkdirSync(units);
+      const fake = (name: string, body: string) => fs.writeFileSync(path.join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+      // Подмена iptables: -S INPUT печатает политику, -C/-I/-D работают с файлом-состоянием
+      fake('iptables', `S=${state}; touch $S
+case "$1" in
+  -S) echo "$POLICY" ;;
+  -C) shift 2; grep -qx -- "$*" $S ;;
+  -I) shift 3; echo "$*" >> $S ;;
+  -D) shift 2; grep -qxF -- "$*" $S || exit 1; grep -vxF -- "$*" $S > $S.new; mv $S.new $S ;;
+esac`);
+      fake('systemctl', `echo "$*" >> ${root}/systemctl.log`);
+      const name = 'dementia-cascade-node-1-2-abcd';
+      const env = (policy: string) => ({ PATH: `${bin}:/usr/bin:/bin`, POLICY: policy });
+      const run = (script: string, policy = '-P INPUT DROP') => execFileSync('sh', ['-c', script], { env: env(policy) });
+      const rules = () => (fs.existsSync(state) ? fs.readFileSync(state, 'utf8').split('\n').filter(Boolean) : []);
+
+      run(cascadeFirewallScript(8443, name, dir, units), '-P INPUT ACCEPT');
+      expect(rules()).toEqual([]); // INPUT ничего не режет — ничего не меняем
+      expect(fs.existsSync(path.join(dir, name))).toBe(false);
+
+      run(cascadeFirewallScript(8443, name, dir, units));
+      run(cascadeFirewallScript(8443, name, dir, units)); // повтор не дублирует правило
+      expect(rules()).toEqual(['-p tcp --dport 8443 -m comment --comment dementia-cascade -j ACCEPT']);
+      expect(fs.readFileSync(path.join(dir, name, 'port'), 'utf8').trim()).toBe('8443');
+      expect(fs.readFileSync(path.join(units, 'dementia-cascade-ports.service'), 'utf8')).toContain(`ExecStart=/bin/sh ${dir}/open-ports.sh`);
+      expect(fs.readFileSync(path.join(root, 'systemctl.log'), 'utf8')).toContain('enable dementia-cascade-ports.service');
+
+      fs.writeFileSync(state, ''); // «перезагрузка»: правила потеряны, служба применяет сохранённые порты
+      run(`sh ${dir}/open-ports.sh`);
+      expect(rules()).toHaveLength(1);
+
+      // Снятие каскада (фрагмент removeCascadeContainer) убирает правило и файл порта
+      run(cascadeFirewallRemoval(path.join(dir, name)));
+      expect(rules()).toEqual([]);
+      expect(fs.existsSync(path.join(dir, name, 'port'))).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('включение каскада вызывает открытие порта с именем контейнера ноды', async () => {
+    const ssh = nodeSsh([]);
+    const { endpoint } = await setup();
+    expect((await api(endpoint, 'PUT', { port: 8443 })).status).toBe(200);
+    const open = ssh.calls.find((call) => call.command.includes('port=8443') && call.command.includes('iptables -S INPUT'));
+    expect(open?.command).toContain('dementia-cascade-node-');
+  });
+
+  it('кандидаты не содержат занятых панелью портов и не повторяются', () => {
+    const candidates = cascadePortCandidates(new Set([8443, 30000]), () => 30000 + (candidates_n++ % 5));
+    expect(candidates).not.toContain(8443);
+    expect(candidates).not.toContain(30000);
+    expect(new Set(candidates).size).toBe(candidates.length);
   });
 
   it('снимает частично развёрнутый каскад и восстанавливает прежнюю пересылку после сбоя', async () => {

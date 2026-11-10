@@ -10,11 +10,12 @@ export function CascadeModal({ bridge, link, onClose, onChanged }: {
   onChanged: () => void;
 }) {
   const [port, setPort] = useState(String(link.cascade_port ?? 8443));
+  const [auto, setAuto] = useState(true);
   const [sni, setSni] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const apply = async (value: number | null) => {
+  const apply = async (value: number | 'auto' | null) => {
     setBusy(true);
     setError(null);
     try {
@@ -33,7 +34,7 @@ export function CascadeModal({ bridge, link, onClose, onChanged }: {
     <ModalShell label="Каскад XHTTP" onClose={() => { if (!busy) onClose(); }}>
       <form className="w-full max-w-lg space-y-4 rounded-2xl border border-line bg-card p-5" onSubmit={(event) => {
         event.preventDefault();
-        void apply(link.cascade_port ?? Number(port));
+        void apply(link.cascade_port ?? (auto ? 'auto' : Number(port)));
       }}>
         <h2 className="text-lg font-bold text-ink">Каскад XHTTP</h2>
         <p className="text-sm text-muted">{bridge.name} → {link.server_name}</p>
@@ -42,22 +43,31 @@ export function CascadeModal({ bridge, link, onClose, onChanged }: {
           Между мостом и нодой VPN-трафик пойдёт внутри VLESS XHTTP Reality.
         </p>
         <p className="text-sm text-muted">
-          На ноде нужен запущенный Docker. Панель установит недостающие зависимости на мосту. Разрешите в фаерволе ноды вход на выбранный TCP-порт с адреса моста,
+          На ноде нужен запущенный Docker. Панель установит недостающие зависимости на мосту. Порт на ноде панель подберёт сама (его никто не слушает,
+          он не занят другими нодами панели) и откроет в ufw, firewalld или iptables, если фаервол что-то режет. Фаервол у хостинг-провайдера открывайте вручную,
           а на мосту проверьте, что его клиентский порт доступен.
         </p>
         <ol className="list-decimal space-y-1 pl-5 text-xs text-muted">
-          <li>Выберите свободный TCP-порт на ноде (например, 8443) и откройте его в фаерволе ноды для адреса моста.</li>
+          <li>Оставьте автоподбор порта или укажите свой свободный TCP-порт на ноде. Если у хостинга есть внешний фаервол, откройте выбранный порт в нём.</li>
           <li>Убедитесь, что клиентский порт моста {link.listen_port} открыт на мосту.</li>
           <li>Сайт маскировки можно не указывать: панель выберет его сама.</li>
         </ol>
-        <label className="block space-y-1 text-sm text-ink">
-          <span>TCP-порт каскада на ноде</span>
-          <input
-            type="number" required min={1} max={65535} value={link.cascade_port ?? port} disabled={busy || Boolean(link.cascade_port)}
-            onChange={(event) => setPort(event.target.value)}
-            className="block min-h-10 w-full rounded-lg border border-line bg-paper px-3 font-mono text-ink"
-          />
-        </label>
+        {!link.cascade_port && (
+          <label className="flex items-center gap-2 text-sm text-ink">
+            <input type="checkbox" checked={auto} disabled={busy} onChange={(event) => setAuto(event.target.checked)} />
+            <span>Подобрать свободный порт автоматически</span>
+          </label>
+        )}
+        {(link.cascade_port || !auto) && (
+          <label className="block space-y-1 text-sm text-ink">
+            <span>TCP-порт каскада на ноде</span>
+            <input
+              type="number" required min={1} max={65535} value={link.cascade_port ?? port} disabled={busy || Boolean(link.cascade_port)}
+              onChange={(event) => setPort(event.target.value)}
+              className="block min-h-10 w-full rounded-lg border border-line bg-paper px-3 font-mono text-ink"
+            />
+          </label>
+        )}
         {!link.cascade_port && (
           <label className="block space-y-1 text-sm text-ink">
             <span>Сайт маскировки Reality (необязательно)</span>
