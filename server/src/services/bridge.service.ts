@@ -485,7 +485,13 @@ export class BridgeService {
       const message = 'Не удалось установить зависимости каскада на мосту (Docker, conntrack, iproute2). Проверьте доступ к репозиториям и запуск Docker.';
       const result = await SshService.executeCommand(creds, command, { input: readDeployScript(), timeoutMs: 12 * 60 * 1000 })
         .catch((err: unknown) => { throw new Error(message, { cause: err }); });
-      if (result.code !== 0) throw new Error(message);
+      if (result.code !== 0) {
+        // Причина — в хвосте вывода скрипта (строки с меткой [каскад], затем последние строки apt/dnf): без неё не понять, что сломалось
+        const lines = `${result.stderr}\n${result.stdout}`.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+        const marked = lines.filter((line) => line.startsWith('[каскад]'));
+        const detail = (marked.length ? marked : lines).slice(-2).join(' ').slice(0, 300);
+        throw new Error(detail ? `${message} Подробности: ${detail}` : message);
+      }
       await prepareCascadeImage(creds);
     }
     const attempt = async (link: CascadeLink, step: () => Promise<void>) => {

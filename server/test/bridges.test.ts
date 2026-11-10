@@ -307,6 +307,10 @@ describe('каскад XHTTP', () => {
       expect(run(listing, [8443]).code).toBe(3);
       expect(run(listing, [8443, 2053]).code).toBe(4);
       expect(run('', [8443]).code).toBe(5);
+      // порт опубликован Docker без userland-proxy (сокета нет) или занят чужим DNAT — тоже считается занятым
+      fs.writeFileSync(path.join(dir, 'docker'), "#!/bin/sh\necho '0.0.0.0:2053->2053/tcp, :::2053->2053/tcp'\n", { mode: 0o755 });
+      fs.writeFileSync(path.join(dir, 'iptables'), "#!/bin/sh\necho '-A DOCKER ! -i docker0 -p tcp -m tcp --dport 2083 -j DNAT --to-destination 172.17.0.2:2083'\n", { mode: 0o755 });
+      expect(run('tcp LISTEN 0 4096 0.0.0.0:8443 0.0.0.0:*', [8443, 2053, 2083, 2087]).out).toBe('---CASCADE_PORT 2087\n');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -473,6 +477,57 @@ esac`);
     expect(dependencyCheck).toBeGreaterThanOrEqual(0);
     expect(download).toBeGreaterThan(dependencyCheck);
     expect(ssh.calls[dependencyCheck].input).toContain('install_cascade_dependencies');
+  });
+
+  it('ошибка зависимостей моста содержит причину из вывода скрипта', async () => {
+    bridgeSsh(undefined, undefined, (call) => call.command.includes('--cascade-dependencies')
+      ? { code: 1, stderr: 'noise\n[каскад] Docker установлен, но не запускается\n' } : undefined);
+    const { endpoint } = await setup();
+    const result = await api(endpoint, 'PUT', { port: 8443 });
+    expect(result.status).toBe(502);
+    expect(result.body.error).toContain('Не удалось установить зависимости каскада');
+    expect(result.body.error).toContain('Подробности: [каскад] Docker установлен, но не запускается');
+  });
+
+  describe('скрипт зависимостей каскада на мосту', () => {
+    const script = fs.readFileSync(path.join(import.meta.dirname, '../src/scripts/deploy-bridge.sh'), 'utf8');
+    const start = script.indexOf('# Каждая команда с явным');
+    const end = script.indexOf('if [[ "${1:-}" == --cascade-dependencies');
+    const functions = script.slice(start, end);
+    // Внешние команды подменены функциями: docker.com недоступен (curl падает), docker.io ставится из репозитория дистрибутива
+    const run = (distroInstallWorks: boolean) => {
+      const prelude = `
+        set -euo pipefail
+        log=$(mktemp)
+        command() { if [ "$1" = -v ]; then case "$2" in apt-get|ip|conntrack) return 0 ;; docker) [ -n "\${HAVE_DOCKER:-}" ] ;; *) type "$2" >/dev/null 2>&1 ;; esac; else builtin command "$@"; fi; }
+        ip() { return 0; }
+        conntrack() { return 0; }
+        install() { return 0; }
+        chmod() { return 0; }
+        curl() { return 22; }
+        gpg() { cat >/dev/null; }
+        systemctl() { return 0; }
+        apt-get() { echo "apt-get $*" >> "$log"; case "$*" in *docker.io*) ${distroInstallWorks ? 'HAVE_DOCKER=1; docker() { return 0; }' : 'return 100'} ;; esac; }
+      `;
+      try {
+        const out = execFileSync('bash', ['-c', `${prelude}\n${functions}\ninstall_cascade_dependencies; echo OK; cat "$log"`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+        return { code: 0, out, err: '' };
+      } catch (err: any) {
+        return { code: err.status as number, out: String(err.stdout), err: String(err.stderr) };
+      }
+    };
+
+    it('если download.docker.com недоступен, ставит docker.io из репозитория дистрибутива', () => {
+      const result = run(true);
+      expect(result.code).toBe(0);
+      expect(result.out).toContain('apt-get install -y docker.io');
+    });
+
+    it('если не получилось ни то, ни другое, завершается с понятной причиной', () => {
+      const result = run(false);
+      expect(result.code).not.toBe(0);
+      expect(result.err).toContain('[каскад] Не удалось установить Docker');
+    });
   });
 
   it('API каскада передаёт сайт маскировки из запроса; неверное имя — 400 без обращения к серверам', async () => {
