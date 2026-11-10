@@ -23,6 +23,57 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+# Каждая команда с явным `|| return 1`: функция вызывается в условии `if`, где `set -e` не действует.
+install_docker_official() {
+  local pm=$1 os_id codename
+  case "$pm" in
+    apt-get)
+      apt-get update -y </dev/null || echo '[каскад] apt-get update завершился с ошибкой, продолжаю' >&2
+      apt-get install -y ca-certificates curl gnupg </dev/null || return 1
+      install -m 0755 -d /etc/apt/keyrings || return 1
+      os_id=$(. /etc/os-release && echo "$ID")
+      codename=$(. /etc/os-release && echo "${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}")
+      case "$os_id" in
+        ubuntu|debian) ;;
+        *) if grep -qi ubuntu /etc/os-release; then os_id=ubuntu; else os_id=debian; fi ;;
+      esac
+      [ -n "$codename" ] || return 1
+      curl -fsSL --connect-timeout 15 --max-time 120 "https://download.docker.com/linux/${os_id}/gpg" |
+        gpg --batch --yes --dearmor -o /etc/apt/keyrings/docker.gpg || return 1
+      chmod a+r /etc/apt/keyrings/docker.gpg || return 1
+      printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/%s %s stable\n' \
+        "$(dpkg --print-architecture)" "$os_id" "$codename" > /etc/apt/sources.list.d/docker.list || return 1
+      chmod 644 /etc/apt/sources.list.d/docker.list
+      if ! apt-get update -y </dev/null || ! apt-get install -y docker-ce docker-ce-cli containerd.io </dev/null; then
+        rm -f /etc/apt/sources.list.d/docker.list # битый репозиторий не должен ломать дальнейшие apt-get
+        return 1
+      fi
+      ;;
+    dnf)
+      dnf install -y dnf-plugins-core </dev/null || return 1
+      dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo </dev/null || return 1
+      dnf install -y docker-ce docker-ce-cli containerd.io </dev/null || return 1
+      ;;
+    yum)
+      yum install -y yum-utils </dev/null || return 1
+      yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo </dev/null || return 1
+      yum install -y docker-ce docker-ce-cli containerd.io </dev/null || return 1
+      ;;
+    apk) apk add --no-cache docker </dev/null || return 1 ;;
+    *) echo '[каскад] Не удалось установить Docker: неизвестный менеджер пакетов' >&2; return 1 ;;
+  esac
+}
+
+install_docker_distro() {
+  case "$1" in
+    apt-get) apt-get update -y </dev/null || true; apt-get install -y docker.io </dev/null ;;
+    dnf) dnf install -y docker </dev/null || dnf install -y moby-engine </dev/null ;;
+    yum) yum install -y docker </dev/null ;;
+    apk) apk add --no-cache docker </dev/null ;;
+    *) return 1 ;;
+  esac
+}
+
 install_cascade_dependencies() {
   local pm='' conntrack_package='conntrack' ip_package='iproute2'
   local os_id codename
@@ -43,7 +94,7 @@ install_cascade_dependencies() {
 
   if (( ${#packages[@]} )); then
     case "$pm" in
-      apt-get) apt-get update -y </dev/null; apt-get install -y "${packages[@]}" </dev/null ;;
+      apt-get) apt-get update -y </dev/null || echo '[каскад] apt-get update завершился с ошибкой, продолжаю' >&2; apt-get install -y "${packages[@]}" </dev/null ;;
       dnf|yum) "$pm" install -y "${packages[@]}" </dev/null ;;
       apk) apk add --no-cache "${packages[@]}" </dev/null ;;
       *) echo 'Не удалось установить conntrack и iproute2: неизвестный менеджер пакетов' >&2; return 1 ;;
@@ -51,52 +102,25 @@ install_cascade_dependencies() {
   fi
 
   if ! command -v docker >/dev/null 2>&1; then
-    # Debian/Ubuntu и EL используют те же репозитории Docker CE, что deploy-awg.sh.
-    case "$pm" in
-      apt-get)
-        apt-get update -y </dev/null
-        apt-get install -y ca-certificates curl gnupg </dev/null
-        install -m 0755 -d /etc/apt/keyrings
-        os_id=$(. /etc/os-release && echo "$ID")
-        codename=$(. /etc/os-release && echo "${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}")
-        case "$os_id" in
-          ubuntu|debian) ;;
-          *) if grep -qi ubuntu /etc/os-release; then os_id=ubuntu; else os_id=debian; fi ;;
-        esac
-        curl -fsSL "https://download.docker.com/linux/${os_id}/gpg" | gpg --batch --yes --dearmor -o /etc/apt/keyrings/docker.gpg
-        chmod a+r /etc/apt/keyrings/docker.gpg
-        printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/%s %s stable\n' \
-          "$(dpkg --print-architecture)" "$os_id" "$codename" > /etc/apt/sources.list.d/docker.list
-        chmod 644 /etc/apt/sources.list.d/docker.list
-        apt-get update -y </dev/null
-        apt-get install -y docker-ce docker-ce-cli containerd.io </dev/null
-        ;;
-      dnf)
-        dnf install -y dnf-plugins-core </dev/null
-        dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo </dev/null
-        dnf install -y docker-ce docker-ce-cli containerd.io </dev/null
-        ;;
-      yum)
-        yum install -y yum-utils </dev/null
-        yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo </dev/null
-        yum install -y docker-ce docker-ce-cli containerd.io </dev/null
-        ;;
-      apk) apk add --no-cache docker </dev/null ;;
-      *) echo 'Не удалось установить Docker: неизвестный менеджер пакетов' >&2; return 1 ;;
-    esac
+    # Сначала репозиторий Docker CE (как в deploy-awg.sh); если он недоступен (download.docker.com часто закрыт
+    # в России) или не подошёл — пакет из репозиториев самого дистрибутива.
+    if ! install_docker_official "$pm"; then
+      echo '[каскад] Репозиторий Docker CE недоступен, ставлю Docker из репозиториев дистрибутива' >&2
+      install_docker_distro "$pm" || { echo '[каскад] Не удалось установить Docker ни из download.docker.com, ни из репозиториев дистрибутива' >&2; return 1; }
+    fi
   fi
 
   if ! docker info >/dev/null 2>&1; then
     if command -v systemctl >/dev/null 2>&1; then
-      systemctl enable --now docker </dev/null
+      systemctl enable --now docker </dev/null || echo '[каскад] systemctl enable --now docker завершился с ошибкой' >&2
     elif command -v rc-service >/dev/null 2>&1 && command -v rc-update >/dev/null 2>&1; then
-      rc-update add docker default </dev/null
-      rc-service docker start </dev/null
+      rc-update add docker default </dev/null || true
+      rc-service docker start </dev/null || echo '[каскад] rc-service docker start завершился с ошибкой' >&2
     fi
   fi
-  command -v conntrack >/dev/null 2>&1
-  ip -o -4 addr show >/dev/null 2>&1
-  docker info >/dev/null 2>&1
+  command -v conntrack >/dev/null 2>&1 || { echo '[каскад] conntrack не установлен' >&2; return 1; }
+  ip -o -4 addr show >/dev/null 2>&1 || { echo '[каскад] нет утилиты ip (iproute2)' >&2; return 1; }
+  docker info >/dev/null 2>&1 || { echo '[каскад] Docker установлен, но не запускается (docker info завершился с ошибкой; на OpenVZ/LXC без вложенных контейнеров Docker не работает)' >&2; return 1; }
 }
 
 if [[ "${1:-}" == --cascade-dependencies ]]; then
