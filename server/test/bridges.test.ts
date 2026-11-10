@@ -244,6 +244,39 @@ describe('каскад XHTTP', () => {
     expect(BridgeService.routesFor('ca').get(server)?.bridge_id).toBe(bridge);
   });
 
+  it('недоступная нода одной привязки не блокирует правила и другие привязки моста', async () => {
+    bridgeSsh();
+    const { server, bridge, endpoint } = await setup();
+    expect((await api(endpoint, 'PUT', { port: 8443 })).status).toBe(200);
+    const second = insertServer({ name: 'Second exit', host: `second-${server}.example.com`, awgPort: 52302 });
+    fixtures.push({ bridge: 0, server: second });
+
+    // нода первой привязки перестала отвечать по SSH
+    const nodeHost = (db.prepare('SELECT host FROM servers WHERE id = ?').get(server) as { host: string }).host;
+    const offline = stubSsh((call) => {
+      if (call.host === nodeHost) throw new Error('connect ETIMEDOUT');
+      if (call.command.includes('deploy-bridge')) return { stdout: '---DEMENTIA_BRIDGE_OK---' };
+      return {};
+    });
+    const result = await api(`/api/bridges/${bridge}/links`, 'PUT', { links: [{ server_id: server }, { server_id: second }] });
+    expect(result.status).toBe(200);
+    const stored = BridgeService.get(bridge);
+    expect(stored.links.map((l: any) => l.server_id).sort()).toEqual([server, second].sort());
+    // каскад проблемной привязки помечен неприменённым и в подписку не выдаётся; новая привязка применена
+    expect(stored.links.find((l: any) => l.server_id === server)).toMatchObject({ cascade_port: 8443, cascade_pending: true });
+    expect(stored.last_error).toContain('Каскад XHTTP не применён');
+    expect(stored.needs_apply).toBe(false);
+    expect(BridgeService.routesFor('ca').get(server)).toBeUndefined();
+    expect(BridgeService.routesFor('ca').get(second)?.bridge_id).toBe(bridge);
+    expect(offline.calls.findLast((call) => call.command.includes('rules.sh.new'))?.input).toContain(`forward udp 52302`);
+
+    // нода вернулась — следующая попытка применяет каскад и снимает пометку
+    bridgeSsh();
+    expect((await BridgeService.requestApply(bridge)).success).toBe(true);
+    expect(BridgeService.get(bridge).links.find((l: any) => l.server_id === server)).toMatchObject({ cascade_pending: false });
+    expect(BridgeService.get(bridge).last_error).toBeNull();
+  });
+
   it('ждёт скачивания образа на обеих сторонах до замены контейнеров и DNAT', async () => {
     const pullStarted = Promise.withResolvers<void>();
     const pullFinished = Promise.withResolvers<void>();

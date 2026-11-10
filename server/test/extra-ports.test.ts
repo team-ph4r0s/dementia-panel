@@ -71,6 +71,32 @@ describe('правила запасных портов', () => {
 });
 
 describe('API запасных портов', () => {
+  it('запасной порт не пересекается с портами соседних нод хоста в обе стороны', async () => {
+    const a = insertServer({ host: '198.51.100.88', awgPort: 51820 });
+    const b = insertServer({ host: '198.51.100.88', awgPort: 51821 });
+    stubSsh(nodeResponder());
+    const put = (id: number, ports: unknown) => admin.api(`/api/servers/${id}/extra-ports`, 'PUT', { ports });
+
+    expect((await put(a, [443])).status).toBe(200);
+    // два одинаковых запасных порта на одном хосте: правило первой ноды перехватывает трафик, второе — мёртвое
+    const clash = await put(b, [443]);
+    expect(clash.status).toBe(400);
+    expect(clash.body.error).toContain('запасным у ноды');
+    expect(getServer(b).extra_ports).toBeNull();
+
+    // основной порт соседней ноды, равный чужому запасному, перехватывался бы DNAT — молча ломал бы её клиентов
+    const create = await admin.api('/api/servers', 'POST', { name: 'C', host: '198.51.100.88', awg_port: 443, ssh_password: 'x-secret-pass' });
+    expect(create.status).toBe(409);
+    expect(create.body.error).toContain('запасным у ноды');
+    const edit = await admin.api(`/api/servers/${b}`, 'PUT', { awg_port: 443 });
+    expect(edit.status).toBe(409);
+    expect(getServer(b).awg_port).toBe(51821);
+
+    // другой хост и другой порт не затронуты
+    const other = await admin.api('/api/servers', 'POST', { name: 'D', host: '198.51.100.99', awg_port: 443, ssh_password: 'x-secret-pass' });
+    expect(other.status).toBe(201);
+  });
+
   it('проверка списка: не массив, лишние, основной порт, порт соседней ноды, VLESS и нода партнёра', async () => {
     const id = insertServer({ host: '198.51.100.10', awgPort: 51820 });
     insertServer({ host: '198.51.100.10', awgPort: 51821 });
