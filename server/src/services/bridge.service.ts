@@ -230,7 +230,7 @@ function ruleLinks(bridgeId: number): BridgeRuleLink[] {
 
 function cascadeLinks(bridgeId: number): CascadeLink[] {
   const rows = db.prepare(`
-    SELECT l.server_id, l.listen_port, l.cascade_port, l.cascade_secret, s.host, s.protocol,
+    SELECT l.server_id, l.listen_port, l.cascade_port, l.cascade_secret, l.cascade_pending, s.host, s.protocol,
       COALESCE(s.deployed_port, s.awg_port) AS vpn_port, s.stub_port
     FROM bridge_links l JOIN servers s ON s.id = l.server_id
     WHERE l.bridge_id = ? AND l.cascade_port IS NOT NULL ORDER BY l.server_id
@@ -238,6 +238,7 @@ function cascadeLinks(bridgeId: number): CascadeLink[] {
   return rows.map((row) => ({
     bridgeId, serverId: row.server_id, host: row.host, port: row.cascade_port, listenPort: row.listen_port,
     vpnPort: row.vpn_port, stubPort: row.stub_port, protocol: nodeProtocol(row), secret: JSON.parse(decryptSecret(row.cascade_secret)!),
+    pending: Boolean(row.cascade_pending),
   }));
 }
 
@@ -262,13 +263,28 @@ function rulesFor(bridge: any): string {
 
 const sha256 = (text: string) => crypto.createHash('sha256').update(text).digest('hex');
 
-function recordApplied(id: number, rules: string): void {
+/**
+ * Правила записаны на мосту. Привязки, у которых каскад применить не удалось (нода недоступна и т. п.), остаются
+ * `cascade_pending` — в подписку они не попадают, а остальные привязки моста работают; повтор — в `checkAll`.
+ */
+function recordApplied(id: number, rules: string, failed: Map<number, string> = new Map()): void {
+  const message = failed.size
+    ? `Каскад XHTTP не применён: ${[...failed].map(([serverId, error]) => {
+      const server = db.prepare('SELECT name FROM servers WHERE id = ?').get(serverId) as { name: string } | undefined;
+      return `«${server?.name ?? `#${serverId}`}»: ${error}`;
+    }).join('; ')}`.slice(0, 500)
+    : null;
   transaction(() => {
     db.prepare(`
-      UPDATE bridges SET status = 'online', rules_hash = ?, needs_apply = 0, fail_count = 0, last_error = NULL, last_seen = datetime('now')
+      UPDATE bridges SET status = 'online', rules_hash = ?, needs_apply = 0, fail_count = 0, last_error = ?, last_seen = datetime('now')
       WHERE id = ?
-    `).run(sha256(rules), id);
-    db.prepare('UPDATE bridge_links SET cascade_pending = 0 WHERE bridge_id = ? AND cascade_pending = 1').run(id);
+    `).run(sha256(rules), message, id);
+    for (const link of db.prepare('SELECT server_id FROM bridge_links WHERE bridge_id = ? AND cascade_pending = 1').all(id) as { server_id: number }[]) {
+      if (!failed.has(link.server_id)) db.prepare('UPDATE bridge_links SET cascade_pending = 0 WHERE bridge_id = ? AND server_id = ?').run(id, link.server_id);
+    }
+    for (const serverId of failed.keys()) {
+      db.prepare('UPDATE bridge_links SET cascade_pending = 1 WHERE bridge_id = ? AND server_id = ?').run(id, serverId);
+    }
   });
   lastHealth.set(id, Date.now());
 }
@@ -428,7 +444,13 @@ export class BridgeService {
     });
   }
 
-  private static async applyCascades(bridge: any, creds: SshCredentials): Promise<void> {
+  /**
+   * Зависимости и образ на мосту — общие: сбой здесь отменяет применение. Остальное идёт по привязкам: недоступная нода
+   * одной привязки не должна блокировать правила и другие привязки моста, её ошибка возвращается в `failed`.
+   * Привязка `strictServerId` (её сейчас настраивает администратор) при сбое бросает исключение, как и раньше.
+   */
+  private static async applyCascades(bridge: any, creds: SshCredentials, strictServerId?: number): Promise<Map<number, string>> {
+    const failed = new Map<number, string>();
     const links = cascadeLinks(bridge.id);
     if (links.length) {
       const command = `${SshService.sudo(creds)}timeout -s TERM -k 30 600 bash -s -- --cascade-dependencies`;
@@ -438,14 +460,25 @@ export class BridgeService {
       if (result.code !== 0) throw new Error(message);
       await prepareCascadeImage(creds);
     }
-    for (const link of links) await this.withCascadeNode(link, prepareCascadeImage);
+    const attempt = async (link: CascadeLink, step: () => Promise<void>) => {
+      if (failed.has(link.serverId)) return;
+      try {
+        await step();
+      } catch (err: any) {
+        if (link.serverId === strictServerId) throw err;
+        failed.set(link.serverId, String(err?.message ?? err).slice(0, 200));
+      }
+    };
+    for (const link of links) await attempt(link, () => this.withCascadeNode(link, prepareCascadeImage));
     for (const link of links) {
-      await this.changeCascadeNode(link, true);
-      await applyCascadeContainer(creds, cascadeContainer(link, 'bridge'), cascadeConfigs(link).bridge);
-      const check = cascadePortReachable(link.host, link.port);
-      const result = await SshService.executeCommand(creds, check, { timeoutMs: 10000 });
-      if (result.code !== 0) throw new Error(`С моста недоступен TCP-порт каскада ${link.host}:${link.port}`);
+      await attempt(link, async () => {
+        await this.changeCascadeNode(link, true);
+        await applyCascadeContainer(creds, cascadeContainer(link, 'bridge'), cascadeConfigs(link).bridge);
+        const result = await SshService.executeCommand(creds, cascadePortReachable(link.host, link.port), { timeoutMs: 10000 });
+        if (result.code !== 0) throw new Error(`С моста недоступен TCP-порт каскада ${link.host}:${link.port}`);
+      });
     }
+    return failed;
   }
 
   /** Установка моста: пересылка пакетов, правила из БД, автозапуск правил. Возвращает журнал установки. */
@@ -462,7 +495,7 @@ export class BridgeService {
           const rules = rulesFor(db.prepare('SELECT * FROM bridges WHERE id = ?').get(id));
           const script = [`export RULES_B64=${shellQuote(Buffer.from(rules).toString('base64'))}`, readDeployScript()].join('\n');
           const creds = credentials(bridge);
-          await this.applyCascades(bridge, creds);
+          const failed = await this.applyCascades(bridge, creds);
           const result = await SshService.executeCommand(
             creds,
             `${SshService.sudo(creds)}bash -c 'script=$(cat); exec bash -c "$script" deploy-bridge'`,
@@ -475,7 +508,7 @@ export class BridgeService {
             const detail = result.stderr.trim().split('\n').slice(-2).join(' ').slice(0, 300);
             throw new Error(`Скрипт установки моста завершился с ошибкой (код ${result.code}).${hint}${detail ? ` ${detail}` : ''}`);
           }
-          recordApplied(id, rules);
+          recordApplied(id, rules, failed);
           return { success: true, log };
         } catch (err: any) {
           db.prepare("UPDATE bridges SET status = 'error', last_error = ? WHERE id = ?").run(err.message, id);
@@ -500,7 +533,7 @@ export class BridgeService {
     return promise;
   }
 
-  private static async doApply(id: number, removedCascade?: CascadeLink): Promise<OperationResult> {
+  private static async doApply(id: number, removedCascade?: CascadeLink, strictServerId?: number): Promise<OperationResult> {
     const bridge = db.prepare('SELECT * FROM bridges WHERE id = ?').get(id) as any;
     if (!bridge) return { success: false, error: 'Мост удалён' };
     if (bridge.status === 'uninstalled' || bridge.status === 'installing' || installing.has(id)) {
@@ -509,7 +542,7 @@ export class BridgeService {
     try {
       const rules = rulesFor(db.prepare('SELECT * FROM bridges WHERE id = ?').get(id));
       const creds = credentials(bridge);
-      await this.applyCascades(bridge, creds);
+      const failed = await this.applyCascades(bridge, creds, strictServerId);
       const write = [
         'set -e',
         'umask 077',
@@ -525,7 +558,7 @@ export class BridgeService {
       ].join('\n');
       const result = await SshService.executeCommand(creds, `${SshService.sudo(creds)}sh -c ${shellQuote(write)}`, { input: rules, timeoutMs: 60000 });
       if (result.code !== 0) throw new Error(`Ошибка применения правил моста: ${result.stderr.trim() || `код ${result.code}`}`);
-      recordApplied(id, rules);
+      recordApplied(id, rules, failed);
       return { success: true };
     } catch (err: any) {
       db.prepare('UPDATE bridges SET last_error = ? WHERE id = ?').run(err.message, id);
@@ -672,7 +705,7 @@ export class BridgeService {
       }
       const secret = port === null ? null : (link.cascade_secret || encryptSecret(JSON.stringify(generateCascadeSecret(sni))));
       update.run(port, secret, null, null, id, serverId);
-      const result = await this.doApply(id, port === null ? previous : undefined);
+      const result = await this.doApply(id, port === null ? previous : undefined, port === null ? undefined : serverId);
       if (result.success) return result;
 
       // Сначала снимаем новый каскад. Если очистка прервалась, запись остаётся доступной для повторного отключения.
@@ -714,6 +747,11 @@ export class BridgeService {
       }
       if (Date.now() - (lastHealth.get(bridge.id) ?? 0) < HEALTH_INTERVAL_MS) continue;
       lastHealth.set(bridge.id, Date.now());
+      // Каскад привязки не применился (нода была недоступна) — повторная попытка раз в интервал проверки, не чаще
+      if (db.prepare('SELECT 1 FROM bridge_links WHERE bridge_id = ? AND cascade_port IS NOT NULL AND cascade_pending = 1').get(bridge.id)) {
+        await this.requestApply(bridge.id).catch(() => {});
+        continue;
+      }
       await runExclusive(queueKey(bridge.id), () => this.checkHealth(bridge.id, expectedRuleCount(ruleLinks(bridge.id), panelForwardOf(bridge)))).catch(() => {});
     }
     await this.checkLinks('vless', HEALTH_INTERVAL_MS);
@@ -738,7 +776,7 @@ export class BridgeService {
       const health = parseHealth(result.stdout);
       db.prepare("UPDATE bridges SET status = 'online', fail_count = 0, last_seen = datetime('now') WHERE id = ?").run(id);
       // Правила пропали (перезагрузка без systemd, чужой iptables-restore) или переход сдвинут ufw/Docker — применить заново
-      const cascadeMissing = cascades.some((link) => !result.stdout.split(/\r?\n/).includes(`CASCADE ${link.serverId}`));
+      const cascadeMissing = cascades.some((link) => !link.pending && !result.stdout.split(/\r?\n/).includes(`CASCADE ${link.serverId}`));
       if (cascadeMissing || health.rules !== expectedRules || (expectedRules > 0 && (!health.forwardFirst || !health.prerouting))) {
         db.prepare('UPDATE bridges SET needs_apply = 1 WHERE id = ?').run(id);
       } else if (bridge.last_error) {

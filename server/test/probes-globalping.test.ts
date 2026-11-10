@@ -24,6 +24,8 @@ const gp = {
   /** Сколько проб страны на самом деле дошло до ноды и сколько сообщило об ответе 200 */
   reach: {} as Record<string, number>,
   claimed: {} as Record<string, number>,
+  /** Все пробы выходят с одного адреса (CGNAT) */
+  sameIp: false,
   rateLimited: false,
   down: false,
   /** Созданные измерения: тело запроса и метка из пути */
@@ -78,7 +80,7 @@ function responder(state: StubNodeState) {
     const now = Math.floor(Date.now() / 1000);
     const lines: string[] = [];
     for (const measurement of gp.created) {
-      for (let i = 0; i < (gp.reach[measurement.country] ?? 0); i++) lines.push(`${now} tcp 192.0.2.${10 + lines.length} /${measurement.nonce}`);
+      for (let i = 0; i < (gp.reach[measurement.country] ?? 0); i++) lines.push(`${now} tcp ${gp.sameIp ? '192.0.2.10' : `192.0.2.${10 + lines.length}`} /${measurement.nonce}`);
     }
     return { ...answer, stdout: `${answer.stdout}${lines.join('\n')}\n` };
   };
@@ -113,6 +115,7 @@ beforeEach(() => {
     reach: { ru: 2, kz: 1, cn: 2 },
     claimed: {},
     rateLimited: false,
+    sameIp: false,
     down: false,
     created: [],
     calls: [],
@@ -184,6 +187,14 @@ describe('Globalping — второй источник проверки из с�
     await settings();
     await ProbeService.runAll();
     expect(resultOf('ru')).toMatchObject({ ok_nodes: 1, total_nodes: 4, gp_ok: 0, gp_total: 2, spoofed: 3 });
+  });
+
+  it('пробы за одним адресом (CGNAT) не считаются подделкой: подтверждается число обращений, а не число адресов', async () => {
+    gp.sameIp = true;
+    await settings();
+    await ProbeService.runAll();
+    expect(resultOf('ru')).toMatchObject({ gp_ok: 2, gp_total: 2, spoofed: 1 });
+    expect(resultOf('kz')).toMatchObject({ gp_ok: 1, gp_total: 1 });
   });
 
   it('обращения проб Globalping не приписываются узлам check-host.net', async () => {

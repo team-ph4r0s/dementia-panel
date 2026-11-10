@@ -14,7 +14,7 @@ import { AmneziaKeyError, decodeAmneziaKey, splitAmneziaKeys } from '../utils/am
 import { ProbeService } from '../services/probe.service.js';
 import { EventService } from '../services/event.service.js';
 import { BridgeService } from '../services/bridge.service.js';
-import { ExtraPortsService, parseExtraPorts, validateExtraPorts } from '../services/extra-ports.service.js';
+import { ExtraPortsService, extraPortOwner, parseExtraPorts, validateExtraPorts } from '../services/extra-ports.service.js';
 import { RealityTargetsService, isValidDnsDomain } from '../services/reality-targets.service.js';
 import {
   DEFAULT_VLESS_PORT, generateVlessParams, NODE_PROTOCOLS, NodeProtocol, nodeProtocol,
@@ -136,6 +136,9 @@ function assertEndpointFree(host: string, awgPort: number, protocol: NodeProtoco
     'SELECT id FROM servers WHERE LOWER(host) = LOWER(?) AND awg_port = ? AND protocol = ? AND remote_panel_id IS NULL AND id != ?'
   ).get(host, awgPort, protocol, exceptId);
   if (duplicate) throw new HttpError(409, `Сервер ${host} с портом ${label} ${awgPort} уже добавлен в панель`);
+  // Запасные порты соседней ноды (UDP) перехватывают трафик на этом порту: основной порт AmneziaWG не должен с ними совпадать
+  const spare = protocol === 'awg' ? extraPortOwner(host, awgPort, exceptId) : undefined;
+  if (spare) throw new HttpError(409, `Порт ${awgPort} на ${host} уже задан запасным у ноды «${spare.name}» — уберите его из запасных портов или выберите другой`);
 }
 
 const sameValue = (a: unknown, b: unknown) => (a ?? null) === (b ?? null) || (a != null && b != null && String(a) === String(b));

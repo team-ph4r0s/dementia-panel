@@ -551,10 +551,11 @@ export class ProbeService {
       }
     }
 
-    // Пробы Globalping: у каждой страны своя метка, адреса проб неизвестны — считаются разные адреса в журнале с этой меткой
+    // Пробы Globalping: у каждой страны своя метка, адреса проб неизвестны — считаются обращения в журнале с этой меткой
     for (const item of gp) {
+      // Считаются обращения с одноразовой меткой, а не разные адреса: пробы одной сети (CGNAT) выходят с общего IP
       const confirmed = hits
-        ? Math.min(new Set(hits.filter((h) => h.proto === 'tcp' && h.path.includes(item.nonce)).map((h) => h.ip)).size, item.probes)
+        ? Math.min(hits.filter((h) => h.proto === 'tcp' && h.path.includes(item.nonce)).length, item.probes)
         : item.claimedOk;
       const a = countries.get(item.country) ?? { ok: 0, total: 0, rtts: [], tcpOk: null, udpOk: null, spoofed: 0 };
       a.total += item.probes;

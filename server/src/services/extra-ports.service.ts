@@ -27,6 +27,18 @@ const lastHealth = new Map<number, number>();
 /** Время последней неудачной попытки применения: повтор не чаще раза в HEALTH_INTERVAL_MS */
 const lastFailure = new Map<number, number>();
 
+/**
+ * Нода AmneziaWG на том же хосте, чей запасной порт совпадает с `port`. Цепочка запасных портов стоит первой в PREROUTING,
+ * поэтому такой порт перехватил бы трафик чужой ноды (основной порт другой ноды хоста) или стал бы мёртвым правилом.
+ */
+export function extraPortOwner(host: string, port: number, exceptId = 0): { id: number; name: string } | undefined {
+  const rows = db.prepare(`
+    SELECT id, name, extra_ports FROM servers
+    WHERE id != ? AND remote_panel_id IS NULL AND lower(host) = lower(?) AND COALESCE(protocol, 'awg') != 'vless' AND extra_ports IS NOT NULL
+  `).all(exceptId, host) as { id: number; name: string; extra_ports: string }[];
+  return rows.find((row) => parseExtraPorts(row.extra_ports).includes(port));
+}
+
 /** Проверка списка от администратора; бросает HttpError(400) */
 export function validateExtraPorts(input: unknown, server: any): number[] {
   if (!Array.isArray(input)) throw new HttpError(400, 'Запасные порты: ожидается список чисел');
@@ -46,6 +58,8 @@ export function validateExtraPorts(input: unknown, server: any): number[] {
       WHERE id != ? AND remote_panel_id IS NULL AND lower(host) = lower(?) AND COALESCE(protocol, 'awg') != 'vless' AND awg_port = ?
     `).get(server.id, server.host, port) as { name: string } | undefined;
     if (other) throw new HttpError(400, `Порт ${port} — основной порт ноды «${other.name}» на этом же сервере`);
+    const sibling = extraPortOwner(server.host, port, server.id);
+    if (sibling) throw new HttpError(400, `Порт ${port} уже задан запасным у ноды «${sibling.name}» на этом же сервере`);
   }
   return ports;
 }

@@ -45,6 +45,8 @@ export interface CascadeLink {
   stubPort: number | null;
   protocol: 'awg' | 'vless';
   secret: CascadeSecret;
+  /** Каскад ещё не применён на обеих сторонах (в подписку не выдаётся) */
+  pending?: boolean;
 }
 
 const LABEL = 'org.dementia.cascade';
