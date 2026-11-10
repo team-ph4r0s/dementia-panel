@@ -463,8 +463,8 @@ export class BridgeService {
       const name = cascadeContainer(link, 'node');
       if (apply) {
         if (link.protocol === 'awg') await requireAwgLoopback(creds, link.vpnPort);
-        // Порт каскада открывается в ufw/firewalld при каждом применении: идемпотентно и чинит порт, закрытый вручную
-        await openCascadeFirewall(creds, link.port);
+        // Порт каскада открывается в ufw/firewalld/iptables при каждом применении: идемпотентно и чинит порт, закрытый вручную
+        await openCascadeFirewall(creds, link.port, name);
         await applyCascadeContainer(creds, name, cascadeConfigs(link).node);
       } else {
         await removeCascadeContainer(creds, name);

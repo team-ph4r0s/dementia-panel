@@ -51,6 +51,9 @@ export interface CascadeLink {
 
 const LABEL = 'org.dementia.cascade';
 const XRAY = '/usr/local/bin/xray';
+const CASCADE_DIR = '/etc/dementia-cascade';
+const FIREWALL_UNIT = 'dementia-cascade-ports.service';
+const RULE_COMMENT = 'dementia-cascade';
 // Xray 26.10.31: для ограничения отдельных XUDP-датаграмм нужны Freedom finalRules.
 export const CASCADE_XRAY_IMAGE = 'ghcr.io/xtls/xray-core@sha256:ceabeac03a89d991d2a247361825c1d1d2e9c91cd5dc010f298c7dc0c2f325c9';
 
@@ -233,12 +236,26 @@ export async function applyCascadeContainer(creds: SshCredentials, name: string,
   }
 }
 
+/** Убирает правило iptables порта каскада и файл порта (если открытие шло через iptables). */
+export function cascadeFirewallRemoval(dir: string): string {
+  return `if [ -f "${dir}/port" ]; then
+        p=$(cat "${dir}/port")
+        case "$p" in ''|*[!0-9]*) ;; *)
+          if command -v iptables >/dev/null 2>&1; then
+            while iptables -D INPUT -p tcp --dport "$p" -m comment --comment ${RULE_COMMENT} -j ACCEPT 2>/dev/null; do :; done
+          fi ;;
+        esac
+        rm -f "${dir}/port"
+      fi`;
+}
+
 export async function removeCascadeContainer(creds: SshCredentials, name: string): Promise<void> {
   const dir = `/etc/dementia-cascade/${name}`;
   const script = `set -e
     if [ -d "${dir}" ]; then
       docker info >/dev/null 2>&1
       if ${owned(name)}; then docker rm -f "${name}" >/dev/null; fi
+      ${cascadeFirewallRemoval(dir)}
       rm -f "${dir}/config.json" "${dir}/config.old.json" "${dir}/config.new.json"
       rmdir "${dir}"
     fi`;
@@ -304,17 +321,69 @@ export async function pickCascadePort(creds: SshCredentials, candidates: number[
   throw new HttpError(502, 'Нода не вернула выбранный порт каскада');
 }
 
-/** Открывает TCP-порт в активном ufw или firewalld на ноде. Идемпотентно; без активного фаервола ничего не меняет. */
-export async function openCascadeFirewall(creds: SshCredentials, port: number): Promise<void> {
+
+/** Применяет правила INPUT для всех портов, записанных каскадами (`<каталог>/<имя>/port`). Идемпотентно, нужен после перезагрузки. */
+const applyPortsScript = (dir: string) => [
+  '#!/bin/sh',
+  '# Сгенерировано Dementia Panel: открывает TCP-порты каскадов XHTTP в iptables',
+  `for f in ${dir}/*/port; do`,
+  '  [ -f "$f" ] || continue',
+  '  p=$(cat "$f")',
+  '  case "$p" in \'\'|*[!0-9]*) continue ;; esac',
+  `  iptables -C INPUT -p tcp --dport "$p" -m comment --comment ${RULE_COMMENT} -j ACCEPT 2>/dev/null ||`,
+  `    iptables -I INPUT 1 -p tcp --dport "$p" -m comment --comment ${RULE_COMMENT} -j ACCEPT`,
+  'done',
+].join('\n');
+
+/**
+ * Скрипт открытия TCP-порта каскада на ноде: ufw или firewalld, если они активны; иначе (голый iptables) — правило ACCEPT
+ * в начале INPUT, но только если цепочка что-то отбрасывает. Порт записывается в `<dir>/<name>/port`, правило восстанавливает
+ * systemd-служба при загрузке; снятие каскада убирает правило и файл. `dir` и `unitDir` параметризованы для тестов.
+ */
+export function cascadeFirewallScript(port: number, name: string, dir: string = CASCADE_DIR, unitDir = '/etc/systemd/system'): string {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Некорректный порт каскада');
-  const script = [
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(name)) throw new Error('Некорректное имя контейнера каскада');
+  const unit = [
+    '[Unit]',
+    'Description=Dementia Panel: open cascade XHTTP ports',
+    'After=network.target',
+    '',
+    '[Service]',
+    'Type=oneshot',
+    'RemainAfterExit=yes',
+    `ExecStart=/bin/sh ${dir}/open-ports.sh`,
+    '',
+    '[Install]',
+    'WantedBy=multi-user.target',
+  ].join('\n');
+  return [
     `port=${port}`,
     'if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then',
     '  ufw allow "$port/tcp" >/dev/null 2>&1 || true',
     'elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then',
     '  firewall-cmd --permanent --add-port="$port/tcp" >/dev/null 2>&1 || true',
     '  firewall-cmd --reload >/dev/null 2>&1 || true',
+    'elif command -v iptables >/dev/null 2>&1 &&',
+    '    iptables -S INPUT 2>/dev/null | grep -Eq -- "^-P INPUT (DROP|REJECT)|-j (DROP|REJECT)"; then',
+    '  umask 077',
+    `  install -d -m 700 "${dir}" "${dir}/${name}"`,
+    `  echo "$port" > "${dir}/${name}/port"`,
+    `  cat > "${dir}/open-ports.sh" <<'DEMENTIA_EOF'`,
+    applyPortsScript(dir),
+    'DEMENTIA_EOF',
+    `  sh "${dir}/open-ports.sh" || true`,
+    '  if command -v systemctl >/dev/null 2>&1 && [ -d "' + unitDir + '" ]; then',
+    `    cat > "${unitDir}/${FIREWALL_UNIT}" <<'DEMENTIA_EOF'`,
+    unit,
+    'DEMENTIA_EOF',
+    '    systemctl daemon-reload >/dev/null 2>&1 || true',
+    `    systemctl enable ${FIREWALL_UNIT} >/dev/null 2>&1 || true`,
+    '  fi',
     'fi',
   ].join('\n');
-  await SshService.executeCommand(creds, `${SshService.sudo(creds)}sh -c ${shellQuote(script)}`, { timeoutMs: 30000 });
+}
+
+/** Открывает TCP-порт каскада на ноде (ufw, firewalld или iptables). Идемпотентно; без ограничивающего фаервола ничего не меняет. */
+export async function openCascadeFirewall(creds: SshCredentials, port: number, name: string): Promise<void> {
+  await SshService.executeCommand(creds, `${SshService.sudo(creds)}sh -c ${shellQuote(cascadeFirewallScript(port, name))}`, { timeoutMs: 30000 });
 }

@@ -8,7 +8,7 @@ import tls from 'node:tls';
 import { generate } from 'selfsigned';
 import { db, initDatabase, setSetting } from '../src/db/index.js';
 import { BRIDGE_HOLD_MS, BridgeService, buildBridgeRules, expectedRuleCount, parseHealth } from '../src/services/bridge.service.js';
-import { cascadePortCandidates, cascadePortScript } from '../src/services/bridge-cascade.service.js';
+import { cascadeFirewallRemoval, cascadeFirewallScript, cascadePortCandidates, cascadePortScript } from '../src/services/bridge-cascade.service.js';
 import { decryptSecret, encryptSecret } from '../src/services/secrets.service.js';
 import { DEFAULT_REALITY_TARGETS } from '../src/utils/vless-params.js';
 import * as realityCheck from '../src/utils/reality-check.js';
@@ -310,6 +310,62 @@ describe('каскад XHTTP', () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('голый iptables: правило ACCEPT ставится только при ограничивающем INPUT, переживает перезагрузку и снимается с каскадом', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cascade-fw-'));
+    try {
+      const bin = path.join(root, 'bin');
+      const state = path.join(root, 'rules');
+      const dir = path.join(root, 'cascade');
+      const units = path.join(root, 'units');
+      fs.mkdirSync(bin);
+      fs.mkdirSync(units);
+      const fake = (name: string, body: string) => fs.writeFileSync(path.join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+      // Подмена iptables: -S INPUT печатает политику, -C/-I/-D работают с файлом-состоянием
+      fake('iptables', `S=${state}; touch $S
+case "$1" in
+  -S) echo "$POLICY" ;;
+  -C) shift 2; grep -qx -- "$*" $S ;;
+  -I) shift 3; echo "$*" >> $S ;;
+  -D) shift 2; grep -qxF -- "$*" $S || exit 1; grep -vxF -- "$*" $S > $S.new; mv $S.new $S ;;
+esac`);
+      fake('systemctl', `echo "$*" >> ${root}/systemctl.log`);
+      const name = 'dementia-cascade-node-1-2-abcd';
+      const env = (policy: string) => ({ PATH: `${bin}:/usr/bin:/bin`, POLICY: policy });
+      const run = (script: string, policy = '-P INPUT DROP') => execFileSync('sh', ['-c', script], { env: env(policy) });
+      const rules = () => (fs.existsSync(state) ? fs.readFileSync(state, 'utf8').split('\n').filter(Boolean) : []);
+
+      run(cascadeFirewallScript(8443, name, dir, units), '-P INPUT ACCEPT');
+      expect(rules()).toEqual([]); // INPUT ничего не режет — ничего не меняем
+      expect(fs.existsSync(path.join(dir, name))).toBe(false);
+
+      run(cascadeFirewallScript(8443, name, dir, units));
+      run(cascadeFirewallScript(8443, name, dir, units)); // повтор не дублирует правило
+      expect(rules()).toEqual(['-p tcp --dport 8443 -m comment --comment dementia-cascade -j ACCEPT']);
+      expect(fs.readFileSync(path.join(dir, name, 'port'), 'utf8').trim()).toBe('8443');
+      expect(fs.readFileSync(path.join(units, 'dementia-cascade-ports.service'), 'utf8')).toContain(`ExecStart=/bin/sh ${dir}/open-ports.sh`);
+      expect(fs.readFileSync(path.join(root, 'systemctl.log'), 'utf8')).toContain('enable dementia-cascade-ports.service');
+
+      fs.writeFileSync(state, ''); // «перезагрузка»: правила потеряны, служба применяет сохранённые порты
+      run(`sh ${dir}/open-ports.sh`);
+      expect(rules()).toHaveLength(1);
+
+      // Снятие каскада (фрагмент removeCascadeContainer) убирает правило и файл порта
+      run(cascadeFirewallRemoval(path.join(dir, name)));
+      expect(rules()).toEqual([]);
+      expect(fs.existsSync(path.join(dir, name, 'port'))).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('включение каскада вызывает открытие порта с именем контейнера ноды', async () => {
+    const ssh = nodeSsh([]);
+    const { endpoint } = await setup();
+    expect((await api(endpoint, 'PUT', { port: 8443 })).status).toBe(200);
+    const open = ssh.calls.find((call) => call.command.includes('port=8443') && call.command.includes('iptables -S INPUT'));
+    expect(open?.command).toContain('dementia-cascade-node-');
   });
 
   it('кандидаты не содержат занятых панелью портов и не повторяются', () => {
