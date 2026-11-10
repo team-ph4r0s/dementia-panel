@@ -50,6 +50,7 @@ describe('Покрытие документации разделами и эле
     const TAB_TO_SECTION_ID: Record<string, string> = {
       'Серверы': 'topology',
       'Мосты': 'bridges',
+      'Провайдеры': 'providers',
       'Пользователи и подписки': 'subscribers',
       'Оформление подписки': 'subscription',
       'Партнёры': 'partners',

@@ -35,6 +35,7 @@ SQLite (`node:sqlite`, Node ≥ 22.13), файл `data/dementia.db`, режим 
 | v18 | Запасные порты ноды AmneziaWG: `servers.extra_ports` (JSON-список), `extra_ports_hash` (SHA-256 применённых на ноде правил, `NULL` — не применены), `extra_ports_error` — см. [node-management.md](node-management.md#extra-ports) |
 | v19 | Globalping в проверке из стран: `probe_results.gp_ok`, `gp_total`, `gp_eyeball` — см. [probes.md](probes.md) |
 | v20 | `bridge_links.cascade_port`, `cascade_secret` и `cascade_pending` — [каскад XHTTP](bridges.md#cascade) |
+| v21 | `provider_accounts` и `provider_reminders` — вкладка «Провайдеры» ([providers.md](providers.md)) |
 
 ## Таблицы
 
@@ -103,6 +104,9 @@ SQLite (`node:sqlite`, Node ≥ 22.13), файл `data/dementia.db`, режим 
 `bridge_state`:
 по паре нода × страна — `active` (мост выдаётся), серии проверок `fail_streak`/`ok_streak`, `reason` (`probe`/`clients`), `changed_at`.
 Связи удаляются каскадно вместе с мостом и нодой.
+
+### `provider_accounts`, `provider_reminders` — провайдеры ([providers.md](providers.md))
+`provider_accounts` — по строке на панель (`target_type='panel'`, `target_id=0`), ноду (`node`) или мост (`bridge`): `url`, `login`, `password` (**зашифрован** `encryptSecret`), `amount`, `currency` (RUB/USD/EUR), `pay_day` (1–31), `pay_month` (NULL — ежемесячно, иначе раз в год). Внешних ключей нет (связь полиморфная), строки удалённых серверов чистит `ProviderService.tick`. `provider_reminders` — уже отправленные напоминания (`due_date`, `days_before`), чтобы каждое уходило один раз.
 
 ### Прочее
 

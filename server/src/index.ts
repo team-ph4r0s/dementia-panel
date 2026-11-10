@@ -30,7 +30,9 @@ import { eventsRouter } from './routes/events.js';
 import { telegramRouter } from './routes/telegram.js';
 import { backupsRouter } from './routes/backups.js';
 import { nodeUpdatesRouter } from './routes/node-updates.js';
+import { providersRouter } from './routes/providers.js';
 import { NodeUpdateService } from './services/node-update.service.js';
+import { ProviderService } from './services/provider.service.js';
 import { BackupService } from './services/backup.service.js';
 import { LiveService } from './services/live.service.js';
 import { REVALIDATE, staticHeaders } from './middleware/static-cache.js';
@@ -142,6 +144,7 @@ app.use('/api/events', eventsRouter);
 app.use('/api/telegram', telegramRouter);
 app.use('/api/backups', backupsRouter);
 app.use('/api/node-updates', nodeUpdatesRouter);
+app.use('/api/providers', providersRouter);
 app.use('/api/version', versionRouter);
 app.use('/api', requireAuth, clientsRouter);
 
@@ -382,6 +385,14 @@ async function nodeUpdateLoop() {
   finally { setTimeout(nodeUpdateLoop, 60000); }
 }
 setTimeout(nodeUpdateLoop, 45000);
+
+// Напоминания об оплате серверов в Telegram (docs/providers.md): раз в 15 минут, каждое уходит один раз
+async function providerReminderLoop() {
+  try { await ProviderService.tick(); }
+  catch (err) { console.error('[PROVIDERS] Ошибка напоминаний об оплате:', err); }
+  finally { setTimeout(providerReminderLoop, 15 * 60 * 1000); }
+}
+setTimeout(providerReminderLoop, 90000);
 
 setInterval(() => {
   cleanupFederationLimits();

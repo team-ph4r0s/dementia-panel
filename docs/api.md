@@ -121,6 +121,7 @@ UUID не входит в списки и обычные ответы API. Пр�
 
 ## События, уведомления и резервные копии
 - `GET /api/events`, `GET/PUT /api/telegram`, `POST /api/telegram/test`, `POST /api/telegram/detect-chat`.
+- `GET /api/providers` — `{items, settings, telegram_ready}`: панель, ноды и мосты с данными кабинета (без пароля, только `password_saved`) и ближайшим платежом (`next_due`, `days_left`). `PUT /api/providers/:type/:id` (`type` = `panel|node|bridge`, у панели id `0`) — `url`, `login`, `password` (не передан — не менять, пустой — стереть), `amount`, `currency`, `pay_day`, `pay_month`; пустая форма удаляет запись. `GET /api/providers/:type/:id/password` — пароль по запросу администратора. `PUT /api/providers/settings` — `{remind_enabled, remind_days, remind_hour}`. Гостю недоступно. См. [providers.md](providers.md).
 - `GET/PUT /api/backups/settings`, `POST /api/backups/test`, `/api/backups/run`, `GET /api/backups`, `GET /api/backups/:id/download`, `DELETE /api/backups/:id`, `POST /api/backups/recovery-key`.
 
 ## Учётная запись и 2FA

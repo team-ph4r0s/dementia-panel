@@ -24,6 +24,7 @@ const PartnersView = React.lazy(() => import('./components/PartnersView').then((
 const BridgesView = React.lazy(() => import('./components/BridgesView').then((m) => ({ default: m.BridgesView })));
 const SubscribersList = React.lazy(() => import('./components/SubscribersList').then((m) => ({ default: m.SubscribersList })));
 const SecurityView = React.lazy(() => import('./components/SecurityView').then((m) => ({ default: m.SecurityView })));
+const ProvidersView = React.lazy(() => import('./components/ProvidersView').then((m) => ({ default: m.ProvidersView })));
 const EventsView = React.lazy(() => import('./components/EventsView').then((m) => ({ default: m.EventsView })));
 const DocumentationView = React.lazy(() => import('./components/DocumentationView').then((m) => ({ default: m.DocumentationView })));
 
@@ -378,6 +379,8 @@ export const App: React.FC = () => {
           </div>
         ) : activeTab === 'bridges' ? (
           <BridgesView servers={servers} onSubscriptionUrlChange={setSubscriptionUrl} />
+        ) : activeTab === 'providers' ? (
+          <ProvidersView />
         ) : activeTab === 'partners' ? (
           <PartnersView servers={servers} publicUrl={publicUrl} onChanged={loadData} />
         ) : activeTab === 'subscription' ? (

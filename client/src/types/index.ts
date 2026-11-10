@@ -623,6 +623,45 @@ export interface TelegramSettings {
   bot_token_saved: boolean;
   notify_info: boolean;
 }
+export type ProviderTargetType = 'panel' | 'node' | 'bridge';
+export type ProviderCurrency = 'RUB' | 'USD' | 'EUR';
+export interface ProviderItem {
+  target_type: ProviderTargetType;
+  target_id: number;
+  name: string;
+  host: string | null;
+  country: string | null;
+  url: string | null;
+  login: string | null;
+  password_saved: boolean;
+  amount: number | null;
+  currency: ProviderCurrency;
+  pay_day: number | null;
+  pay_month: number | null;
+  /** Ближайший платёж, YYYY-MM-DD (UTC) */
+  next_due: string | null;
+  days_left: number | null;
+}
+export interface ProviderSettings {
+  remind_enabled: boolean;
+  remind_days: number[];
+  remind_hour: number;
+}
+export interface ProvidersData {
+  items: ProviderItem[];
+  settings: ProviderSettings;
+  telegram_ready: boolean;
+}
+export interface ProviderInput {
+  url: string;
+  login: string;
+  /** undefined — не менять, пустая строка — стереть */
+  password?: string;
+  amount: string;
+  currency: ProviderCurrency;
+  pay_day: string;
+  pay_month: string;
+}
 export interface BackupSettings {
   enabled: boolean;
   provider: 'yandex' | 'google';

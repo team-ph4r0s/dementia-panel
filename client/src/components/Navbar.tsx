@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Plus, Server as ServerIcon, Users, LogOut, KeyRound, Lock, Palette, Handshake, Waypoints, ScrollText, BookOpen, Eye, Menu, X } from 'lucide-react';
+import { Plus, Server as ServerIcon, Users, LogOut, KeyRound, Lock, Palette, Handshake, Waypoints, ScrollText, BookOpen, Eye, Menu, X, CreditCard } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { Server, Bridge, Subscriber, AdminUser } from '../types';
 import { PanelVersion } from './PanelVersion';
@@ -8,7 +8,7 @@ import { formatBytes } from '../utils';
 import { InstallAppButton } from './InstallAppButton';
 import { ModalShell } from './ui/Modal';
 
-export type AppTab = 'servers' | 'bridges' | 'subscribers' | 'subscription' | 'partners' | 'events' | 'security' | 'docs';
+export type AppTab = 'servers' | 'bridges' | 'providers' | 'subscribers' | 'subscription' | 'partners' | 'events' | 'security' | 'docs';
 
 /** ws — статусы приходят по WebSocket, poll — панель опрашивает сервер раз в 15 секунд */
 export type LiveMode = 'ws' | 'poll';
@@ -32,6 +32,7 @@ interface NavbarProps {
 const TABS: { id: AppTab; label: string; icon: LucideIcon }[] = [
   { id: 'servers', label: 'Серверы', icon: ServerIcon },
   { id: 'bridges', label: 'Мосты', icon: Waypoints },
+  { id: 'providers', label: 'Провайдеры', icon: CreditCard },
   { id: 'subscribers', label: 'Пользователи и подписки', icon: Users },
   { id: 'subscription', label: 'Оформление подписки', icon: Palette },
   { id: 'partners', label: 'Партнёры', icon: Handshake },

@@ -526,6 +526,34 @@ const migrations: Array<() => void> = [
     addColumn('bridge_links', 'cascade_secret TEXT');
     addColumn('bridge_links', 'cascade_pending INTEGER NOT NULL DEFAULT 0');
   },
+  // v21: вкладка «Провайдеры» (docs/providers.md): личный кабинет, платёж и дата для панели (target_id = 0), ноды и моста.
+  // password — encryptSecret, в списке не отдаётся. provider_reminders помнит, какие напоминания уже ушли в Telegram
+  () => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS provider_accounts (
+        target_type TEXT NOT NULL CHECK (target_type IN ('panel', 'node', 'bridge')),
+        target_id INTEGER NOT NULL DEFAULT 0,
+        url TEXT,
+        login TEXT,
+        password TEXT,
+        amount REAL,
+        currency TEXT NOT NULL DEFAULT 'RUB',
+        pay_day INTEGER,
+        pay_month INTEGER,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (target_type, target_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS provider_reminders (
+        target_type TEXT NOT NULL,
+        target_id INTEGER NOT NULL,
+        due_date TEXT NOT NULL,
+        days_before INTEGER NOT NULL,
+        sent_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (target_type, target_id, due_date, days_before)
+      );
+    `);
+  },
 ];
 
 /** Версия схемы, которую умеет эта сборка панели (число миграций) */
