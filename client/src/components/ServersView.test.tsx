@@ -117,6 +117,45 @@ describe('ServersView', () => {
     expect(window.localStorage.getItem('dementia.servers.view.v1')).toBe('list');
   });
 
+  it('кнопка «Город» открывает 3D-город и запоминает выбор', async () => {
+    window.localStorage.clear();
+    setup();
+    fireEvent.click(screen.getByRole('button', { name: 'Город' }));
+    expect(await screen.findByRole('region', { name: 'Город сети' })).toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Карта сети/)).toBeNull();
+    expect(window.localStorage.getItem('dementia.servers.view.v1')).toBe('city');
+    expect(screen.getByRole('button', { name: 'Город' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('сохранённый режим «Город» восстанавливается; выбор в городе открывает инспектор', async () => {
+    window.localStorage.setItem('dementia.servers.view.v1', 'city');
+    const { onSelectServer } = setup();
+    const city = await screen.findByRole('region', { name: 'Город сети' });
+    fireEvent.click(within(city).getByRole('button', { name: /node-2/ }));
+    expect(onSelectServer).toHaveBeenCalledWith(2);
+    expect(within(screen.getByTestId('inspector')).getByRole('heading', { name: 'node-2' })).toBeInTheDocument();
+    // Без WebGL город предлагает 2D-карту
+    fireEvent.click(within(city).getByRole('button', { name: 'Открыть карту' }));
+    expect(screen.getByLabelText(/^Карта сети/)).toBeInTheDocument();
+    window.localStorage.clear();
+  });
+
+  it('выбранная в городе нода удалена — инспектор показывает сводку', async () => {
+    window.localStorage.setItem('dementia.servers.view.v1', 'city');
+    const props = {
+      bridges: [bridge], subscribers, clients: [], selectedServerId: 2, onSelectServer: vi.fn(), onInstallServer: vi.fn(), onEditParams: vi.fn(),
+      onServerDeleted: vi.fn(), onEditServer: vi.fn(), onServerChanged: vi.fn(), onAddClient: vi.fn(), onShowQr: vi.fn(),
+      onClientUpdated: vi.fn(), onClientDeleted: vi.fn(), onOpenBridges: vi.fn(),
+    };
+    const { rerender } = render(<FeedbackProvider><ServersView servers={[server(1), server(2)]} {...props} /></FeedbackProvider>);
+    const city = await screen.findByRole('region', { name: 'Город сети' });
+    fireEvent.click(within(city).getByRole('button', { name: /node-2/ }));
+    expect(within(screen.getByTestId('inspector')).getByRole('heading', { name: 'node-2' })).toBeInTheDocument();
+    rerender(<FeedbackProvider><ServersView servers={[server(1)]} {...props} /></FeedbackProvider>);
+    expect(screen.getByTestId('inspector')).toHaveTextContent('Состояние сети');
+    window.localStorage.clear();
+  });
+
   it('слои «мосты» и «страны» скрывают соответствующие узлы', () => {
     window.localStorage.clear();
     setup();

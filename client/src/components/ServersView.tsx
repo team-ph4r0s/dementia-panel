@@ -1,5 +1,5 @@
 import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
-import { Globe2, Map as MapIcon, List } from 'lucide-react';
+import { Building2, Globe2, Map as MapIcon, List } from 'lucide-react';
 import type { Bridge, Client, Server, Subscriber } from '../types';
 import { nodeKey, type Selection } from '../topology/model';
 import { TopologyMap } from './TopologyMap';
@@ -15,7 +15,9 @@ import { NodeCountry } from './NodeCountry';
 import { NodeExtraPorts } from './NodeExtraPorts';
 
 const TopologyGlobe = lazy(() => import('./TopologyGlobe').then(({ TopologyGlobe }) => ({ default: TopologyGlobe })));
-type ViewMode = 'map' | 'globe' | 'list';
+// Город тянет Three.js — грузится отдельным чанком, только когда выбран этот вид
+const TopologyCity = lazy(() => import('./TopologyCity').then(({ TopologyCity }) => ({ default: TopologyCity })));
+type ViewMode = 'map' | 'globe' | 'city' | 'list';
 const VIEW_KEY = 'dementia.servers.view.v1';
 
 /** Узкий экран (телефон, планшет): карта там тесная, поэтому по умолчанию — список */
@@ -28,7 +30,7 @@ function readMode(): ViewMode {
   } catch {
     // без localStorage — значение по умолчанию
   }
-  if (stored === 'list' || stored === 'globe' || stored === 'map') return stored;
+  if (stored === 'list' || stored === 'globe' || stored === 'city' || stored === 'map') return stored;
   return isNarrow() ? 'list' : 'map';
 }
 
@@ -110,6 +112,7 @@ export const ServersView: React.FC<ServersViewProps> = (props) => {
         [
           ['map', 'Карта', MapIcon],
           ['globe', 'Глобус', Globe2],
+          ['city', 'Город', Building2],
           ['list', 'Список', List],
         ] as const
       ).map(([id, label, Icon]) => (
@@ -209,7 +212,18 @@ export const ServersView: React.FC<ServersViewProps> = (props) => {
       {!props.readOnly && <NodeUpdatesCard onChanged={props.onServerChanged} />}
       <div className="flex items-center justify-between gap-3 flex-wrap">{toggle}</div>
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_440px] gap-4 items-start">
-        {mode === 'globe' ? (
+        {mode === 'city' ? (
+          <Suspense fallback={<p className="rounded-2xl border border-line bg-card p-5 text-xs text-muted">Загружается город…</p>}>
+            <TopologyCity
+              servers={servers}
+              bridges={bridges}
+              subscribers={subscribers}
+              selected={valid}
+              onSelect={select}
+              onOpenMap={() => changeMode('map')}
+            />
+          </Suspense>
+        ) : mode === 'globe' ? (
           <Suspense fallback={<p className="rounded-2xl border border-line bg-card p-5 text-xs text-muted">Загружается глобус…</p>}>
             <TopologyGlobe servers={servers} bridges={bridges} subscribers={subscribers} selected={valid} onSelect={select} />
           </Suspense>
