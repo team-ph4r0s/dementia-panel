@@ -41,9 +41,13 @@ export function TopologyCity({ servers, bridges, subscribers, selected, onSelect
   const labelRefs = useRef(new Map<string, HTMLButtonElement>());
   const selectRef = useRef(onSelect);
   const lotsRef = useRef(plan.lots);
-  useEffect(() => { selectRef.current = onSelect; lotsRef.current = plan.lots; });
-
   const selectedKey = selected && nodeKey(selected.kind, selected.id);
+  const focusRef = useRef<{ selected: string | null; hover: string | null }>({ selected: null, hover: null });
+  useEffect(() => {
+    selectRef.current = onSelect;
+    lotsRef.current = plan.lots;
+    focusRef.current = { selected: selectedKey, hover };
+  });
   const labelLots = plan.lots.filter((l) => l.kind !== 'panel');
 
   const pickKey = (key: string | null) => {
@@ -62,11 +66,28 @@ export function TopologyCity({ servers, bridges, subscribers, selected, onSelect
         onPick: pickKey,
         onHover: setHover,
         onFrame: () => {
-          for (const [key, el] of labelRefs.current) {
-            const p = scene.project(key);
+          // Подписи не наезжают друг на друга: важные ставятся первыми, остальные при пересечении гаснут
+          // (но остаются в порядке Tab и видны в фокусе — .city-label:focus-visible в index.css)
+          const { selected: sel, hover: hov } = focusRef.current;
+          const rank = (key: string, kind: string) => (key === sel || key === hov ? 0 : kind === 'server' ? 1 : kind === 'bridge' ? 2 : 3);
+          const order = lotsRef.current
+            .filter((l) => labelRefs.current.has(l.key))
+            .sort((a, b) => rank(a.key, a.kind) - rank(b.key, b.kind));
+          const placed: { l: number; r: number; t: number; b: number }[] = [];
+          for (const lot of order) {
+            const el = labelRefs.current.get(lot.key)!;
+            const p = scene.project(lot.key);
             if (!p) continue;
             el.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -100%)`;
             el.style.visibility = p.visible ? 'visible' : 'hidden';
+            if (!p.visible) continue;
+            const w = el.offsetWidth;
+            const h = el.offsetHeight;
+            const box = { l: p.x - w / 2 - 2, r: p.x + w / 2 + 2, t: p.y - h - 2, b: p.y + 2 };
+            const clash = rank(lot.key, lot.kind) > 0 && placed.some((o) => box.l < o.r && box.r > o.l && box.t < o.b && box.b > o.t);
+            el.style.opacity = clash ? '0' : '1';
+            el.style.pointerEvents = clash ? 'none' : '';
+            if (!clash) placed.push(box);
           }
         },
       });
@@ -90,17 +111,19 @@ export function TopologyCity({ servers, bridges, subscribers, selected, onSelect
         ref={(el) => { if (el) labelRefs.current.set(lot.key, el); else labelRefs.current.delete(lot.key); }}
         type="button"
         aria-pressed={active}
-        title={`${kindNames[lot.kind]}: ${lotTitle(lot)}${lot.flags.outdated ? ' — устаревший образ AWG' : ''}`}
+        title={`${kindNames[lot.kind]}: ${lotTitle(lot)} · ${lot.sub}${lot.flags.outdated ? ' — устаревший образ AWG' : ''}`}
         onClick={() => pickKey(lot.key)}
         onMouseEnter={() => setHover(lot.key)}
         onMouseLeave={() => setHover(null)}
-        className={`flex items-center gap-1.5 whitespace-nowrap px-2 py-1 text-xs font-mono border-l-2 transition ${
+        onFocus={() => setHover(lot.key)}
+        onBlur={() => setHover(null)}
+        className={`city-label flex items-center gap-1.5 whitespace-nowrap px-2 py-1 text-xs font-mono border-l-2 transition-colors ${
           active ? 'bg-brand text-on-accent border-brand' : 'bg-page/85 text-ink border-line hover:border-brand'
         } ${supported ? 'absolute left-0 top-0 will-change-transform' : ''}`}
       >
         <span className={`w-1.5 h-1.5 rounded-full ${lot.kind === 'bridge' ? 'bg-violet' : lot.kind === 'country' ? 'bg-info' : healthDot[lot.health]}`} />
         <span>{lotTitle(lot)}</span>
-        <span className={active ? '' : 'text-muted'}>· {lot.sub}</span>
+        {lot.kind !== 'country' && <span className={active ? '' : 'text-muted'}>· {lot.sub}</span>}
         {lot.flags.outdated && <span aria-hidden="true">↑</span>}
         {lot.flags.partner && <span className={active ? '' : 'text-faint'}>партнёр</span>}
       </button>
@@ -125,11 +148,11 @@ export function TopologyCity({ servers, bridges, subscribers, selected, onSelect
   return (
     <section
       aria-label="Город сети"
-      className="relative overflow-hidden h-[58dvh] min-h-[380px] lg:h-[calc(100dvh-11.5rem)] lg:min-h-[520px] rounded-2xl border border-line bg-page"
+      className="hud-cut relative overflow-hidden h-[58dvh] min-h-[380px] lg:h-[calc(100dvh-11.5rem)] lg:min-h-[520px] rounded-2xl border border-line bg-page"
     >
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full block" aria-hidden="true" />
       <div className="absolute inset-0 pointer-events-none [&>button]:pointer-events-auto">{labels}</div>
-      <p className="absolute left-3 bottom-3 text-xs text-faint pointer-events-none">Тяните — вращать · колесо или щипок — приблизить</p>
+      <p className="absolute left-3 right-3 bottom-3 text-xs text-faint pointer-events-none">Тяните — вращать · колесо или щипок — приблизить</p>
     </section>
   );
 }

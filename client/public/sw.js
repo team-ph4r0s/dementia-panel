@@ -18,9 +18,9 @@ const STATIC_FILES = /^\/(manifest\.webmanifest|favicon\.svg|icon-\d+\.png|icon-
 const OFFLINE_HTML =
   '<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
   '<meta name="color-scheme" content="dark"><title>Нет связи</title></head>' +
-  '<body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#050b14;color:#dcecff;font-family:system-ui,sans-serif;text-align:center;padding:24px">' +
-  '<div><h1 style="font-size:20px">Нет связи с панелью</h1><p style="color:#8aa4c4">Проверьте подключение к сети и обновите страницу.</p>' +
-  '<button onclick="location.reload()" style="padding:10px 20px;border-radius:8px;border:0;background:#27e1ff;color:#04121c;font-weight:700;font-size:16px">Повторить</button></div></body></html>';
+  '<body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#07060d;color:#f1f0ff;font-family:system-ui,sans-serif;text-align:center;padding:24px">' +
+  '<div><h1 style="font-size:20px">Нет связи с панелью</h1><p style="color:#a29dbf">Проверьте подключение к сети и обновите страницу.</p>' +
+  '<button onclick="location.reload()" style="padding:10px 20px;border-radius:8px;border:0;background:#fcee0a;color:#0a0900;font-weight:700;font-size:16px">Повторить</button></div></body></html>';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(

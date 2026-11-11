@@ -8,12 +8,12 @@ const path = require('node:path');
 const { chromium } = require('playwright');
 
 const OUT = path.resolve(__dirname, '../public');
-const BG = '#050b14';
-const BRAND = '#27e1ff';
+const BG = '#07060d';
+const BRAND = '#fcee0a';
 
 /** Рисунок в системе координат 512×512 */
 const art = `
-  <g stroke="#17304f" stroke-width="3" fill="none">
+  <g stroke="#2a2446" stroke-width="3" fill="none">
     <circle cx="256" cy="256" r="150" stroke-dasharray="3 9"/>
   </g>
   <g stroke="${BRAND}" stroke-opacity=".55" stroke-width="5" stroke-linecap="round">
@@ -23,9 +23,9 @@ const art = `
   </g>
   <circle cx="256" cy="256" r="92" fill="${BRAND}"/>
   <circle cx="256" cy="256" r="42" fill="${BG}"/>
-  <circle cx="256" cy="94" r="22" fill="#37f0a5"/>
-  <circle cx="394" cy="336" r="22" fill="#9a8cff"/>
-  <circle cx="118" cy="336" r="22" fill="#ffb23e"/>`;
+  <circle cx="256" cy="94" r="22" fill="#00e5ff"/>
+  <circle cx="394" cy="336" r="22" fill="#a78bfa"/>
+  <circle cx="118" cy="336" r="22" fill="#ff9f1c"/>`;
 
 const svg = (rounded) =>
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="${rounded ? 112 : 0}" fill="${BG}"/>${art}</svg>`;

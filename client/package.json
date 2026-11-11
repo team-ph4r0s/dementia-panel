@@ -11,8 +11,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@fontsource/ibm-plex-mono": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
     "@fontsource/onest": "^5.3.1",
+    "@fontsource/unbounded": "^5.3.0",
     "d3-geo": "^3.1.2",
     "lucide-react": "^1.61.0",
     "qrcode": "^1.5.4",

@@ -215,7 +215,7 @@ export function createCityScene(canvas: HTMLCanvasElement, opts: CitySceneOption
   }
 
   function buildFiller(p: CityPlan) {
-    const half = Math.round(p.size / BLOCK / 2) + 3;
+    const half = Math.round(p.size / BLOCK / 2) + 2;
     const occupied = new Set(p.lots.map((l) => `${Math.round(l.x / BLOCK)},${Math.round(l.z / BLOCK)}`));
     const rnd = seeded('filler');
     const cells: [number, number, number][] = [];
@@ -397,7 +397,9 @@ export function createCityScene(canvas: HTMLCanvasElement, opts: CitySceneOption
       next.roads.forEach((r) => buildRoad(r, lots));
       if (firstPlan) {
         // Первый показ: весь город в кадре
-        orbit.radius = THREE.MathUtils.clamp(next.size * 1.25 + 30, orbit.min, orbit.max);
+        // На вертикальном экране (телефон) отъезжаем дальше, чтобы город влез по ширине
+        const narrow = camera.aspect < 1 ? 1 / Math.max(0.45, camera.aspect) : 1;
+        orbit.radius = THREE.MathUtils.clamp((next.size * 0.85 + 22) * Math.min(1.8, narrow * 0.9 + 0.1), orbit.min, orbit.max);
         orbit.max = Math.max(orbit.max, next.size * 2.5);
         firstPlan = false;
       }

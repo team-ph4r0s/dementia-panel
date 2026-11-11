@@ -81,7 +81,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   const liveTitle = live === 'ws' ? 'Статусы приходят по WebSocket мгновенно' : 'Статусы обновляются опросом раз в 15 секунд';
 
   return (
-    <header className="bg-page/85 backdrop-blur-md sticky top-0 z-30 border-b border-line pt-safe">
+    <header className="bg-page/85 backdrop-blur-md sticky top-0 z-30 border-b-2 border-brand pt-safe">
       <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-2.5 lg:pb-0 lg:pt-3 flex items-center gap-3 lg:gap-4">
         {/* Телефон и планшет: разделы — в боковом меню */}
         {user && (
@@ -100,8 +100,8 @@ export const Navbar: React.FC<NavbarProps> = ({
         <div className="flex items-center gap-3 min-w-0">
           <BrandMark className="w-8 h-8 hidden lg:block" />
           <div className="min-w-0">
-            <div className="font-bold text-lg text-ink tracking-tight leading-none">
-              dementia<span className="text-brand">/</span>
+            <div className="brand-plate font-display font-bold text-base leading-none">
+              dementia<span className="opacity-60">//</span>
             </div>
             {user && (
               <>
@@ -133,7 +133,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             <button
               onClick={addAction.onClick}
               aria-label={`Добавить: ${addAction.label}`}
-              className="flex items-center gap-1.5 bg-brand text-on-accent font-bold text-sm px-3 sm:px-4 py-2 rounded-lg btn-press"
+              className="hud-cut hud-cut-sm flex items-center gap-1.5 bg-brand text-on-accent font-bold text-sm px-3 sm:px-4 py-2 rounded-lg btn-press"
             >
               <Plus className="w-4 h-4" />
               <span className="hidden sm:inline">{addAction.label}</span>
@@ -183,7 +183,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               onClick={() => onSelectTab(id)}
               aria-current={active ? 'page' : undefined}
               className={`shrink-0 flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-sm font-medium transition whitespace-nowrap ${
-                active ? 'bg-soft-2 text-brand' : 'text-muted hover:text-ink hover:bg-soft'
+                active ? 'bg-soft text-brand shadow-[inset_0_-2px_0_var(--color-brand)]' : 'text-muted hover:text-ink hover:bg-soft'
               }`}
             >
               <Icon className="w-4 h-4" />
@@ -199,8 +199,8 @@ export const Navbar: React.FC<NavbarProps> = ({
             <div className="flex items-center gap-3 px-4 py-3 border-b border-line">
               <BrandMark className="w-8 h-8" />
               <div className="min-w-0 flex-1">
-                <div className="font-bold text-lg text-ink tracking-tight leading-none">
-                  dementia<span className="text-brand">/</span>
+                <div className="brand-plate font-display font-bold text-base leading-none">
+                  dementia<span className="opacity-60">//</span>
                 </div>
                 <PanelVersion canUpdate={!readOnly} />
               </div>
@@ -237,7 +237,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                       }}
                       aria-current={active ? 'page' : undefined}
                       className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-left transition ${
-                        active ? 'bg-soft-2 text-brand' : 'text-ink hover:bg-soft'
+                        active ? 'bg-soft text-brand shadow-[inset_3px_0_0_var(--color-brand)]' : 'text-ink hover:bg-soft'
                       }`}
                     >
                       <Icon className={`w-5 h-5 ${active ? 'text-brand' : 'text-muted'}`} />

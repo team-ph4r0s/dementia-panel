@@ -1,10 +1,11 @@
 @import "tailwindcss";
 
 /*
- * Оформление Topology: тёмно-синий «операторский» фон с точечной сеткой, циановый акцент (токен brand), статусы зелёным/красным/
- * янтарным, данные — моноширинным IBM Plex Mono, текст и заголовки — Onest (в Space Grotesk из макета нет кириллицы).
- * Цвета интерфейса — только семантические токены ниже (bg-card, text-muted, border-line, bg-brand text-on-accent…),
- * а не палитра Tailwind (zinc, emerald…): так тема меняется в одном месте. Текст на яркой заливке — text-on-accent.
+ * Оформление Data City (v0.2.42, пришло на смену Topology): почти чёрный фон с фиолетовым оттенком и сеткой линий «план города»,
+ * HUD-панели с жёлтыми уголками-срезами (hud-cut), жёлтый акцент (токен brand) — главное действие и выбранное, циан ok — «в сети»,
+ * оранжевый warn — внимание, маджента bad — сбой, фиолетовый violet — мосты. Заголовки и крупные числа — Unbounded,
+ * данные — JetBrains Mono, текст — Onest. Цвета интерфейса — только семантические токены ниже (bg-card, text-muted,
+ * border-line, bg-brand text-on-accent…), а не палитра Tailwind: так тема меняется в одном месте. Текст на яркой заливке — text-on-accent.
  * Шрифты и флаги лежат локально — CSP панели запрещает внешние ресурсы (server/src/middleware/security-headers.ts).
  */
 
@@ -19,47 +20,47 @@
 
 @theme {
   --font-sans: 'Twemoji Country Flags', Onest, system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --font-display: 'Twemoji Country Flags', Onest, system-ui, sans-serif;
-  --font-mono: 'Twemoji Country Flags', 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-display: 'Twemoji Country Flags', Unbounded, Onest, system-ui, sans-serif;
+  --font-mono: 'Twemoji Country Flags', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
   /* Поверхности и текст */
-  --color-page: #050b14;      /* фон страницы */
-  --color-paper: #070f1c;     /* поля ввода и вложенные блоки (темнее плитки) */
-  --color-card: #0a1424;      /* плитки, карточки, модальные окна */
-  --color-soft: #0f1c32;      /* вторичные кнопки, выделение, неактивные вкладки */
-  --color-soft-2: #16284a;    /* наведение на soft */
-  --color-line: #17304f;      /* рамки и разделители */
-  --color-ink: #dcecff;       /* основной текст */
-  --color-muted: #8aa4c4;     /* второстепенный текст */
-  --color-faint: #5d7798;     /* подписи, плейсхолдеры */
-  --color-on-accent: #04121c; /* текст на яркой заливке */
+  --color-page: #07060d;      /* фон страницы */
+  --color-paper: #0b0a14;     /* поля ввода и вложенные блоки (темнее плитки) */
+  --color-card: #0e0c1a;      /* плитки, карточки, модальные окна */
+  --color-soft: #161329;      /* вторичные кнопки, выделение, неактивные вкладки */
+  --color-soft-2: #211c3d;    /* наведение на soft */
+  --color-line: #2a2446;      /* рамки и разделители */
+  --color-ink: #f1f0ff;       /* основной текст */
+  --color-muted: #a29dbf;     /* второстепенный текст */
+  --color-faint: #6f6a8c;     /* подписи, плейсхолдеры */
+  --color-on-accent: #0a0900; /* текст на яркой заливке */
 
   /* Акценты — плоские заливки, текст на них text-on-accent */
-  --color-brand: #27e1ff;     /* основное действие, выбранный элемент (циан) */
-  --color-pink: #ff4d6d;
-  --color-blue: #5ab0ff;
-  --color-violet: #9a8cff;    /* мосты */
-  --color-orange: #ffb23e;    /* внимание (янтарь) */
-  --color-danger: #ff4d6d;
+  --color-brand: #fcee0a;     /* основное действие, выбранный элемент (жёлтый) */
+  --color-pink: #ff2e88;
+  --color-blue: #7aa2ff;
+  --color-violet: #a78bfa;    /* мосты */
+  --color-orange: #ff9f1c;    /* внимание (оранжевый) */
+  --color-danger: #ff2e88;
 
   /* Тексты статусов (читаемые на тёмном) и полупрозрачные подложки */
-  --color-ok: #37f0a5;
-  --color-ok-soft: rgb(55 240 165 / 0.1);
-  --color-bad: #ff7a90;
-  --color-bad-soft: rgb(255 77 109 / 0.12);
-  --color-warn: #ffb23e;
-  --color-warn-soft: rgb(255 178 62 / 0.12);
-  --color-info: #6fbfff;
-  --color-info-soft: rgb(90 176 255 / 0.12);
-  --color-accent: #b3a8ff;
-  --color-accent-soft: rgb(154 140 255 / 0.14);
-  --color-brand-soft: rgb(39 225 255 / 0.1);
+  --color-ok: #00e5ff;
+  --color-ok-soft: rgb(0 229 255 / 0.1);
+  --color-bad: #ff2e88;
+  --color-bad-soft: rgb(255 46 136 / 0.12);
+  --color-warn: #ff9f1c;
+  --color-warn-soft: rgb(255 159 28 / 0.12);
+  --color-info: #7aa2ff;
+  --color-info-soft: rgb(122 162 255 / 0.12);
+  --color-accent: #a78bfa;
+  --color-accent-soft: rgb(167 139 250 / 0.14);
+  --color-brand-soft: rgb(252 238 10 / 0.1);
 
   --shadow-pop: 0 24px 60px -24px rgb(0 0 0 / 0.8);
 
-  --radius-lg: 0.5rem;
-  --radius-xl: 0.75rem;
-  --radius-2xl: 1rem;
+  --radius-lg: 0.25rem;
+  --radius-xl: 0.375rem;
+  --radius-2xl: 0.5rem;
 }
 
 :root {
@@ -75,16 +76,17 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Точечная сетка под всем интерфейсом (карта и разделы «плавают» над ней) */
+/* Сетка линий «план города» под всем интерфейсом (разделы «плавают» над ней) */
 body::before {
   content: '';
   position: fixed;
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  background-image: radial-gradient(circle, #14304d 1px, transparent 1.4px);
-  background-size: 26px 26px;
-  opacity: 0.55;
+  background-image:
+    linear-gradient(to right, rgb(167 139 250 / 0.07) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(167 139 250 / 0.07) 1px, transparent 1px);
+  background-size: 48px 48px;
 }
 
 #root {
@@ -148,7 +150,7 @@ body {
   textarea:focus {
     outline: none;
     border-color: var(--color-brand);
-    box-shadow: 0 0 0 3px rgb(39 225 255 / 0.18);
+    box-shadow: 0 0 0 3px rgb(252 238 10 / 0.18);
   }
   input[type='checkbox'],
   input[type='radio'] {
@@ -175,6 +177,59 @@ body {
   }
   .btn-press:not(:disabled):active {
     transform: scale(0.97);
+  }
+
+  /* HUD Data City: жёлтый уголок-срез справа сверху и скобка слева снизу. Без clip-path — он обрезал бы выпадающие списки
+     и рамки фокуса внутри карточки. Автоматически получают карточки и модальные окна (rounded-2xl + border + bg-card);
+     остальным — класс hud-cut. Поля ввода, бейджи и мелкие кнопки — без уголков. */
+  .hud-cut,
+  .rounded-2xl.border.bg-card {
+    --hud-cut: 12px;
+    --hud-mark: var(--color-brand);
+    position: relative;
+  }
+  .hud-cut::after,
+  .rounded-2xl.border.bg-card::after {
+    content: '';
+    position: absolute;
+    top: -1px;
+    right: -1px;
+    width: var(--hud-cut);
+    height: var(--hud-cut);
+    background: linear-gradient(45deg, transparent 50%, var(--hud-mark) 50%);
+    border-top-right-radius: inherit;
+    pointer-events: none;
+  }
+  .hud-cut::before,
+  .rounded-2xl.border.bg-card::before {
+    content: '';
+    position: absolute;
+    left: -1px;
+    bottom: -1px;
+    width: var(--hud-cut);
+    height: var(--hud-cut);
+    border-left: 2px solid var(--hud-mark);
+    border-bottom: 2px solid var(--hud-mark);
+    border-bottom-left-radius: inherit;
+    opacity: 0.7;
+    pointer-events: none;
+  }
+  .hud-cut-sm {
+    --hud-cut: 7px;
+  }
+  /* На жёлтой кнопке уголок — тёмный «вырез» */
+  .hud-cut.bg-brand {
+    --hud-mark: var(--color-page);
+  }
+
+  /* Логотип в шапке: жёлтая плашка со скосом справа */
+  .brand-plate {
+    display: inline-block;
+    background: var(--color-brand);
+    color: var(--color-on-accent);
+    padding: 0.4rem 1.4rem 0.4rem 0.75rem;
+    letter-spacing: 0.04em;
+    clip-path: polygon(0 0, 100% 0, calc(100% - 0.75rem) 100%, 0 100%);
   }
 }
 
@@ -283,6 +338,13 @@ body {
   .topology-breathe {
     animation: none;
   }
+}
+
+/* Вид «Город»: погашенная из-за пересечения подпись видна, когда на ней фокус с клавиатуры */
+.city-label:focus-visible {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  z-index: 1;
 }
 
 /* Гостевой режим: заблокированные кнопки и поля (src/guestLock.ts) */
