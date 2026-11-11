@@ -139,3 +139,7 @@ docker run --rm -v "$PWD:/src:ro" node:24-alpine sh -c \
 `update-awg-script.test.ts`: настоящий bash-скрипт со stateful-подменой Docker CLI — скачивание до остановки,
 замена по ID, ошибки pull/rename/stop/run, несовпадение пира, откат и отказ при несохранённых ручных изменениях.
 `real-docker-node-updates.test.ts`: реальная нода 2, обновление с сохранением БД/конфига/пиров и откат при потере пира в новом контейнере.
+
+Тесты, которые запускают shell-скрипты с Unix-окружением (PATH вида `/usr/bin:/bin`, `/bin/bash`), помечаются
+`it.skipIf(!POSIX)` и суффиксом «[только Linux/macOS: нужен POSIX shell]» в названии (`bridges.test.ts`, #91): на Windows `sh`/`bash`
+не находятся с таким PATH или ведут в WSL, и проверяемый код не доходит до своих веток. CI на Linux выполняет их все.

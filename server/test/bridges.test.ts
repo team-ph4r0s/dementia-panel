@@ -1,6 +1,14 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import net from 'node:net';
 import { execFileSync } from 'node:child_process';
+
+/**
+ * Тесты, которые запускают shell-скрипты каскада с Unix-окружением (PATH вида /usr/bin:/bin, /bin/bash), выполняются
+ * только на Linux/macOS — как в CI. На Windows `sh`/`bash` либо не находятся с таким PATH, либо ведут в WSL без /bin/bash,
+ * и проверяемый код не доходит до своих веток (#91). Там эти тесты явно пропускаются.
+ */
+const POSIX = process.platform !== 'win32';
+const POSIX_ONLY = ' [только Linux/macOS: нужен POSIX shell]';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -316,7 +324,7 @@ describe('каскад XHTTP', () => {
     }
   });
 
-  it('голый iptables: правило ACCEPT ставится только при ограничивающем INPUT, переживает перезагрузку и снимается с каскадом', () => {
+  it.skipIf(!POSIX)('голый iptables: правило ACCEPT ставится только при ограничивающем INPUT, переживает перезагрузку и снимается с каскадом' + POSIX_ONLY, () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cascade-fw-'));
     try {
       const bin = path.join(root, 'bin');
@@ -489,7 +497,7 @@ esac`);
     expect(result.body.error).toContain('Подробности: [каскад] Docker установлен, но не запускается');
   });
 
-  describe('скрипт зависимостей каскада на мосту', () => {
+  describe.skipIf(!POSIX)('скрипт зависимостей каскада на мосту' + POSIX_ONLY, () => {
     const script = fs.readFileSync(path.join(import.meta.dirname, '../src/scripts/deploy-bridge.sh'), 'utf8');
     const start = script.indexOf('# Каждая команда с явным');
     const end = script.indexOf('if [[ "${1:-}" == --cascade-dependencies');
