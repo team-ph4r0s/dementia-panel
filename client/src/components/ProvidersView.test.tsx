@@ -54,4 +54,42 @@ describe('ProvidersView', () => {
     expect(body).not.toHaveProperty('password');
     expect(await screen.findByText(/Платёж: завтра, 15 ноября/)).toBeInTheDocument();
   });
+
+  it('просмотр сохранённого пароля не помечает карточку изменённой и не отправляет пароль (#89)', async () => {
+    vi.mocked(api.saveProvider).mockReset();
+    vi.mocked(api.getProviders).mockResolvedValue(data([item({ login: 'me', password_saved: true })]));
+    vi.mocked(api.getProviderPassword).mockResolvedValue('old-secret');
+    vi.mocked(api.saveProvider).mockResolvedValue([item({ login: 'me2', password_saved: true })]);
+    render(<ProvidersView />);
+    const card = await screen.findByRole('article', { name: 'Нода Хельсинки' });
+    const save = Array.from(card.querySelectorAll('button')).find((b) => b.textContent?.includes('Сохранить'))!;
+    const field = card.querySelector<HTMLInputElement>('[id$="-password"]')!;
+
+    fireEvent.click(screen.getByRole('button', { name: 'Показать пароль' }));
+    await waitFor(() => expect(field.value).toBe('old-secret'));
+    expect(field.type).toBe('text');
+    expect(save).toBeDisabled();
+
+    // Другая правка: пароль, который только просматривали, в запрос не попадает
+    fireEvent.change(card.querySelector<HTMLInputElement>('[id$="-login"]')!, { target: { value: 'me2' } });
+    fireEvent.click(save);
+    await waitFor(() => expect(api.saveProvider).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.saveProvider).mock.calls[0][2]).not.toHaveProperty('password');
+  });
+
+  it('изменённый после просмотра пароль отправляется', async () => {
+    vi.mocked(api.saveProvider).mockReset();
+    vi.mocked(api.getProviders).mockResolvedValue(data([item({ password_saved: true })]));
+    vi.mocked(api.getProviderPassword).mockResolvedValue('old-secret');
+    vi.mocked(api.saveProvider).mockResolvedValue([item({ password_saved: true })]);
+    render(<ProvidersView />);
+    const card = await screen.findByRole('article', { name: 'Нода Хельсинки' });
+    const field = card.querySelector<HTMLInputElement>('[id$="-password"]')!;
+    fireEvent.click(screen.getByRole('button', { name: 'Показать пароль' }));
+    await waitFor(() => expect(field.value).toBe('old-secret'));
+    fireEvent.change(field, { target: { value: 'new-secret' } });
+    fireEvent.click(Array.from(card.querySelectorAll('button')).find((b) => b.textContent?.includes('Сохранить'))!);
+    await waitFor(() => expect(api.saveProvider).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.saveProvider).mock.calls[0][2]).toMatchObject({ password: 'new-secret' });
+  });
 });

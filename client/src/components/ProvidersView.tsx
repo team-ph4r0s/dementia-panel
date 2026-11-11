@@ -41,7 +41,9 @@ function dueLabel(item: Pick<ProviderItem, 'next_due' | 'days_left'>): string | 
 const ProviderCard: React.FC<{ item: ProviderItem; onSaved: (items: ProviderItem[]) => void }> = ({ item, onSaved }) => {
   const { toast } = useFeedback();
   const [draft, setDraft] = useState<ProviderInput>(() => toDraft(item));
-  const [password, setPassword] = useState<string | null>(null); // null — не менялся
+  const [password, setPassword] = useState<string | null>(null); // null — не менялся; только явная правка
+  // Сохранённый пароль, полученный кнопкой «Показать»: просмотр не правка — карточка не «изменена», в PUT не уходит (#89)
+  const [revealed, setRevealed] = useState<string | null>(null);
   const [shown, setShown] = useState(false);
   const [busy, setBusy] = useState(false);
   const id = `${item.target_type}-${item.target_id}`;
@@ -53,8 +55,8 @@ const ProviderCard: React.FC<{ item: ProviderItem; onSaved: (items: ProviderItem
 
   const toggleShow = async () => {
     if (shown) { setShown(false); return; }
-    if (password === null && item.password_saved) {
-      try { setPassword(await api.getProviderPassword(item.target_type, item.target_id)); }
+    if (password === null && revealed === null && item.password_saved) {
+      try { setRevealed(await api.getProviderPassword(item.target_type, item.target_id)); }
       catch (err) { toast(err instanceof Error ? err.message : 'Не удалось получить пароль', 'error'); return; }
     }
     setShown(true);
@@ -66,6 +68,7 @@ const ProviderCard: React.FC<{ item: ProviderItem; onSaved: (items: ProviderItem
       const items = await api.saveProvider(item.target_type, item.target_id, { ...draft, ...(password !== null ? { password } : {}) });
       onSaved(items);
       setPassword(null);
+      setRevealed(null);
       setShown(false);
       toast('Данные провайдера сохранены', 'success');
     } catch (err) {
@@ -117,7 +120,7 @@ const ProviderCard: React.FC<{ item: ProviderItem; onSaved: (items: ProviderItem
                 id={`${id}-password`}
                 type={shown ? 'text' : 'password'}
                 autoComplete="new-password"
-                value={password ?? ''}
+                value={password ?? revealed ?? ''}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder={item.password_saved ? '••••••••' : ''}
                 className={`${inputClass} font-mono min-w-0`}
