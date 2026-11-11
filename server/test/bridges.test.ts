@@ -16,7 +16,10 @@ import tls from 'node:tls';
 import { generate } from 'selfsigned';
 import { db, initDatabase, setSetting } from '../src/db/index.js';
 import { BRIDGE_HOLD_MS, BridgeService, buildBridgeRules, expectedRuleCount, parseHealth } from '../src/services/bridge.service.js';
-import { cascadeFirewallRemoval, cascadeFirewallScript, cascadePortCandidates, cascadePortScript } from '../src/services/bridge-cascade.service.js';
+import {
+  applyCascadeContainer, cascadeContainer, cascadeFirewallRemoval, cascadeFirewallScript, cascadePortCandidates, cascadePortScript, cascadeRunning,
+  removeCascadeContainer,
+} from '../src/services/bridge-cascade.service.js';
 import { decryptSecret, encryptSecret } from '../src/services/secrets.service.js';
 import { DEFAULT_REALITY_TARGETS } from '../src/utils/vless-params.js';
 import * as realityCheck from '../src/utils/reality-check.js';
@@ -972,4 +975,27 @@ describe('страна пользователя', () => {
   });
 });
 
+describe('имя контейнера каскада в shell-командах', () => {
+  afterEach(() => vi.restoreAllMocks());
+  const bad = ['x"; rm -rf /; "', 'a b', '$(id)', '', '-rm', 'a/b', 'x'.repeat(200)];
 
+  it('собирается только из безопасных символов', () => {
+    const name = cascadeContainer({ bridgeId: 3, serverId: 7, secret: { shortId: '0123456789abcdef' } as never }, 'bridge');
+    expect(name).toMatch(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/);
+    expect(() => cascadeRunning(name)).not.toThrow();
+  });
+
+  it('недопустимое имя отклоняется до обращения к ноде', async () => {
+    const { calls } = stubSsh();
+    for (const name of bad) {
+      expect(() => cascadeRunning(name), name).toThrow();
+      await expect(applyCascadeContainer({ host: '192.0.2.10' }, name, '{}'), name).rejects.toThrow();
+      await expect(removeCascadeContainer({ host: '192.0.2.10' }, name), name).rejects.toThrow();
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it('shortId из хранилища другого формата не превращается в имя', () => {
+    expect(() => cascadeContainer({ bridgeId: 1, serverId: 2, secret: { shortId: 'ab"; id; "' } as never }, 'node')).toThrow();
+  });
+});

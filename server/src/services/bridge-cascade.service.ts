@@ -61,8 +61,16 @@ export function cascadeSni(secret: CascadeSecret): string {
   return secret.sni ?? 'dl.google.com';
 }
 
+const CONTAINER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
+
+/** Имя контейнера каскада попадает в shell-команды на ноде и мосту — только безопасные символы (глубокая защита) */
+export function assertCascadeName(name: string): string {
+  if (!CONTAINER_NAME_RE.test(name)) throw new Error('Некорректное имя контейнера каскада');
+  return name;
+}
+
 export function cascadeContainer(link: Pick<CascadeLink, 'bridgeId' | 'serverId' | 'secret'>, role: 'bridge' | 'node'): string {
-  return `dementia-cascade-${role}-${link.bridgeId}-${link.serverId}-${link.secret.shortId}`;
+  return assertCascadeName(`dementia-cascade-${role}-${link.bridgeId}-${link.serverId}-${link.secret.shortId}`);
 }
 
 /** Каждый вход на мосту имеет ровно один адрес назначения. На ноде разрешены только эти loopback-порты. */
@@ -128,6 +136,7 @@ export function cascadeConfigs(link: CascadeLink): { bridge: string; node: strin
 }
 
 function owned(name: string): string {
+  assertCascadeName(name);
   return `[ "$(docker inspect -f '{{ index .Config.Labels "${LABEL}" }}' "${name}" 2>/dev/null)" = "${name}" ]`;
 }
 
@@ -188,6 +197,7 @@ export async function requireAwgLoopback(creds: SshCredentials, port: number): P
 
 /** Файл с секретами передаётся через stdin. Старый контейнер и конфиг возвращаются при сбое запуска. */
 export async function applyCascadeContainer(creds: SshCredentials, name: string, config: string): Promise<void> {
+  assertCascadeName(name);
   const dir = `/etc/dementia-cascade/${name}`;
   const script = [
     'set -eu',
@@ -250,6 +260,7 @@ export function cascadeFirewallRemoval(dir: string): string {
 }
 
 export async function removeCascadeContainer(creds: SshCredentials, name: string): Promise<void> {
+  assertCascadeName(name);
   const dir = `/etc/dementia-cascade/${name}`;
   const script = `set -e
     if [ -d "${dir}" ]; then
@@ -352,7 +363,7 @@ const applyPortsScript = (dir: string) => [
  */
 export function cascadeFirewallScript(port: number, name: string, dir: string = CASCADE_DIR, unitDir = '/etc/systemd/system'): string {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Некорректный порт каскада');
-  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(name)) throw new Error('Некорректное имя контейнера каскада');
+  assertCascadeName(name);
   const unit = [
     '[Unit]',
     'Description=Dementia Panel: open cascade XHTTP ports',
