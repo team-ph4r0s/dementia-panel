@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Bridge, Server, Subscriber } from '../types';
 import { buildTopology } from './model';
-import { buildCity, type CityLot } from './city';
+import { buildCity, frameCity, type CityLot } from './city';
 
 const server = (id: number, patch: Partial<Server> = {}): Server =>
   ({
@@ -102,6 +102,24 @@ describe('buildCity', () => {
     expect(plan.roads.find((r) => r.kind === 'bridge-server')!.elevated).toBe(true);
     expect(plan.roads.find((r) => r.kind === 'panel-server')!.elevated).toBe(false);
     for (const r of plan.roads) expect(r.points.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('кадр камеры: город целиком в кадре и не тонет в тумане при любом размере и экране', () => {
+    for (const nodes of [0, 8, 40, 100]) {
+      const servers = Array.from({ length: nodes }, (_, i) => server(i + 1));
+      const subs = COUNTRIES.map((c, i) => sub(i + 1, c, nodes ? [1] : []));
+      const plan = city(servers, [], nodes ? subs : []);
+      for (const aspect of [0.46, 1, 2]) {
+        const f = frameCity(plan.size, aspect);
+        const label = `${nodes} нод, aspect ${aspect}`;
+        expect(f.radius, label).toBeLessThanOrEqual(f.max);
+        expect(f.radius, label).toBeGreaterThanOrEqual(f.min);
+        // Ближний край города дальше начала тумана, дальний — ближе его конца
+        expect(f.fogNear, label).toBeGreaterThanOrEqual(f.radius - plan.size);
+        expect(f.fogFar, label).toBeGreaterThan(f.radius + plan.size / 2);
+        expect(f.far, label).toBeGreaterThanOrEqual(f.max + plan.size);
+      }
+    }
   });
 
   it('детерминирован: одинаковые данные — одинаковый план', () => {

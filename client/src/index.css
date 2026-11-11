@@ -180,16 +180,16 @@ body {
   }
 
   /* HUD Data City: жёлтый уголок-срез справа сверху и скобка слева снизу. Без clip-path — он обрезал бы выпадающие списки
-     и рамки фокуса внутри карточки. Автоматически получают карточки и модальные окна (rounded-2xl + border + bg-card);
-     остальным — класс hud-cut. Поля ввода, бейджи и мелкие кнопки — без уголков. */
+     и рамки фокуса внутри карточки. Автоматически получают карточки и модальные окна (rounded-2xl + border + bg-card), кроме
+     прокручиваемых: в них абсолютные уголки уезжали бы вместе с содержимым. Остальным — класс hud-cut (не на скролл-контейнеры). Поля ввода, бейджи и мелкие кнопки — без уголков. */
   .hud-cut,
-  .rounded-2xl.border.bg-card {
+  .rounded-2xl.border.bg-card:not([class*='overflow-y-auto']):not([class*='overflow-auto']):not([class*='overflow-scroll']) {
     --hud-cut: 12px;
     --hud-mark: var(--color-brand);
     position: relative;
   }
   .hud-cut::after,
-  .rounded-2xl.border.bg-card::after {
+  .rounded-2xl.border.bg-card:not([class*='overflow-y-auto']):not([class*='overflow-auto']):not([class*='overflow-scroll'])::after {
     content: '';
     position: absolute;
     top: -1px;
@@ -201,7 +201,7 @@ body {
     pointer-events: none;
   }
   .hud-cut::before,
-  .rounded-2xl.border.bg-card::before {
+  .rounded-2xl.border.bg-card:not([class*='overflow-y-auto']):not([class*='overflow-auto']):not([class*='overflow-scroll'])::before {
     content: '';
     position: absolute;
     left: -1px;

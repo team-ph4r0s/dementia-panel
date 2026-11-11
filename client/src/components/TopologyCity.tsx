@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Bridge, Server, Subscriber } from '../types';
 import { countryName } from '../utils';
 import { buildTopology, nodeKey, UNKNOWN_COUNTRY, type Selection } from '../topology/model';
-import { buildCity, type CityLot } from '../topology/city';
+import { buildCity, type CityLot, type CityPlan } from '../topology/city';
 import { createCityScene, readCityColors, webglAvailable, type CityScene } from '../city/scene';
 
 interface CityProps {
@@ -33,10 +33,14 @@ const healthDot = { ok: 'bg-ok', warn: 'bg-warn', fail: 'bg-bad', idle: 'bg-fain
  * Подписи над зданиями — кнопки: город проходится с клавиатуры и работает как список, если WebGL недоступен.
  */
 export function TopologyCity({ servers, bridges, subscribers, selected, onSelect, onOpenMap }: CityProps) {
-  const plan = useMemo(() => buildCity(buildTopology(servers, bridges, subscribers), servers), [servers, bridges, subscribers]);
-  const [supported] = useState(webglAvailable);
+  const fresh = useMemo(() => buildCity(buildTopology(servers, bridges, subscribers), servers), [servers, bridges, subscribers]);
+  // Опрос и живые обновления приносят новые массивы с теми же данными: город перестраивается, только если план изменился
+  const signature = JSON.stringify(fresh);
+  const plan = useMemo(() => JSON.parse(signature) as CityPlan, [signature]);
+  const [supported, setSupported] = useState(webglAvailable);
   const [hover, setHover] = useState<string | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const hostRef = useRef<HTMLDivElement>(null);
+  const sizesRef = useRef(new Map<string, { w: number; h: number }>());
   const sceneRef = useRef<CityScene | null>(null);
   const labelRefs = useRef(new Map<string, HTMLButtonElement>());
   const selectRef = useRef(onSelect);
@@ -56,8 +60,15 @@ export function TopologyCity({ servers, bridges, subscribers, selected, onSelect
   };
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!supported || !canvas) return;
+    const host = hostRef.current;
+    if (!supported || !host) return;
+    // У каждой сцены свой холст: при уходе из вида его WebGL-контекст освобождается сразу (dispose → forceContextLoss)
+    const canvas = document.createElement('canvas');
+    canvas.className = 'absolute inset-0 w-full h-full block';
+    canvas.setAttribute('aria-hidden', 'true');
+    host.prepend(canvas);
+    const onLost = (e: Event) => { e.preventDefault(); setSupported(false); };
+    canvas.addEventListener('webglcontextlost', onLost);
     let scene: CityScene;
     try {
       scene = createCityScene(canvas, {
@@ -81,8 +92,10 @@ export function TopologyCity({ servers, bridges, subscribers, selected, onSelect
             el.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -100%)`;
             el.style.visibility = p.visible ? 'visible' : 'hidden';
             if (!p.visible) continue;
-            const w = el.offsetWidth;
-            const h = el.offsetHeight;
+            // Размер подписи меряется один раз (чтение offsetWidth в каждом кадре заставляло браузер пересчитывать стили)
+            let size = sizesRef.current.get(lot.key);
+            if (!size) { size = { w: el.offsetWidth, h: el.offsetHeight }; sizesRef.current.set(lot.key, size); }
+            const { w, h } = size;
             const box = { l: p.x - w / 2 - 2, r: p.x + w / 2 + 2, t: p.y - h - 2, b: p.y + 2 };
             const clash = rank(lot.key, lot.kind) > 0 && placed.some((o) => box.l < o.r && box.r > o.l && box.t < o.b && box.b > o.t);
             el.style.opacity = clash ? '0' : '1';
@@ -92,16 +105,29 @@ export function TopologyCity({ servers, bridges, subscribers, selected, onSelect
         },
       });
     } catch {
+      // WebGL есть, но контекст не создался (лимит контекстов, видеокарта в чёрном списке) — запасной экран
+      canvas.removeEventListener('webglcontextlost', onLost);
+      canvas.remove();
+      queueMicrotask(() => setSupported(false));
       return;
     }
     sceneRef.current = scene;
-    return () => { scene.dispose(); sceneRef.current = null; };
+    return () => {
+      canvas.removeEventListener('webglcontextlost', onLost);
+      scene.dispose();
+      canvas.remove();
+      sceneRef.current = null;
+    };
     // Сцена создаётся один раз; данные приходят через update()
   }, [supported]);
 
-  useEffect(() => { sceneRef.current?.update(plan); }, [plan]);
-  useEffect(() => { sceneRef.current?.setSelected(selectedKey); }, [selectedKey]);
-  useEffect(() => { sceneRef.current?.setHover(hover); }, [hover]);
+  // Выбор или наведение на объект, которого уже нет в городе, сцене не передаётся — иначе город целиком тускнеет
+  const liveKey = (key: string | null) => (key && plan.lots.some((l) => l.key === key) ? key : null);
+  const sceneSelected = liveKey(selectedKey);
+  const sceneHover = liveKey(hover);
+  useEffect(() => { sizesRef.current.clear(); sceneRef.current?.update(plan); }, [plan]);
+  useEffect(() => { sceneRef.current?.setSelected(sceneSelected); }, [sceneSelected]);
+  useEffect(() => { sceneRef.current?.setHover(sceneHover); }, [sceneHover]);
 
   const labels = labelLots.map((lot) => {
     const active = lot.key === selectedKey;
@@ -147,10 +173,10 @@ export function TopologyCity({ servers, bridges, subscribers, selected, onSelect
 
   return (
     <section
+      ref={hostRef}
       aria-label="Город сети"
       className="hud-cut relative overflow-hidden h-[58dvh] min-h-[380px] lg:h-[calc(100dvh-11.5rem)] lg:min-h-[520px] rounded-2xl border border-line bg-page"
     >
-      <canvas ref={canvasRef} className="absolute inset-0 w-full h-full block" aria-hidden="true" />
       <div className="absolute inset-0 pointer-events-none [&>button]:pointer-events-auto">{labels}</div>
       <p className="absolute left-3 right-3 bottom-3 text-xs text-faint pointer-events-none">Тяните — вращать · колесо или щипок — приблизить</p>
     </section>

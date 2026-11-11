@@ -62,6 +62,36 @@ export function serverHeight(clientCount: number): number {
 
 const HEIGHT: Record<Exclude<TopoKind, 'server'>, number> = { panel: 16, bridge: 5, country: 1 };
 
+export interface CityFrame {
+  /** Начальное расстояние камеры и пределы приближения */
+  radius: number;
+  min: number;
+  max: number;
+  /** Туман: начало и конец (от камеры) — город целиком перед концом тумана */
+  fogNear: number;
+  fogFar: number;
+  /** Дальняя плоскость камеры */
+  far: number;
+}
+
+/** Туман вокруг текущего расстояния камеры: ближний край города чёткий, дальний — ещё виден */
+export function cityFog(radius: number, size: number): { near: number; far: number } {
+  return { near: Math.max(10, radius - size * 0.5), far: radius + size * 1.3 + 40 };
+}
+
+/**
+ * Кадр камеры для города стороной size на холсте с пропорцией aspect (ширина/высота).
+ * На вертикальном экране (телефон) камера отъезжает дальше, чтобы город влез по ширине.
+ */
+export function frameCity(size: number, aspect: number): CityFrame {
+  const narrow = aspect < 1 ? 1 / Math.max(0.45, aspect) : 1;
+  const min = 25;
+  const radius = Math.max(min, (size * 0.85 + 22) * Math.min(1.8, narrow * 0.9 + 0.1));
+  const max = Math.max(260, size * 2.5, radius);
+  const fog = cityFog(radius, size);
+  return { radius, min, max, fogNear: fog.near, fogFar: fog.far, far: max + size + 60 };
+}
+
 type Cell = [number, number];
 
 export function buildCity(

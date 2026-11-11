@@ -240,7 +240,7 @@ export const ServersView: React.FC<ServersViewProps> = (props) => {
 
         <div
           ref={inspectorRef}
-          className="hud-cut lg:h-[calc(100dvh-11.5rem)] lg:min-h-[520px] lg:overflow-y-auto rounded-2xl border border-line bg-card/90 p-5 space-y-5 scroll-mt-32"
+          className="lg:h-[calc(100dvh-11.5rem)] lg:min-h-[520px] lg:overflow-y-auto rounded-2xl border border-line bg-card/90 p-5 space-y-5 scroll-mt-32"
           aria-live="polite"
           data-testid="inspector"
         >

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
-import { BLOCK, type CityLot, type CityPlan, type CityRoad } from '../topology/city';
+import { BLOCK, cityFog, frameCity, type CityLot, type CityPlan, type CityRoad } from '../topology/city';
 import type { Health } from '../topology/model';
+import { createTapDetector } from './gesture';
 
 /**
  * Отрисовка вида «Город» на Three.js. Модуль только рисует план из buildCity (topology/city.ts) и сообщает о кликах;
@@ -22,14 +23,22 @@ export function readCityColors(el: Element = document.documentElement): CityColo
   };
 }
 
-/** WebGL есть, если браузер умеет создавать контекст (в jsdom и очень старых WebView — нет) */
+let webglProbe: boolean | null = null;
+
+/**
+ * WebGL есть, если браузер умеет создавать контекст (в jsdom и очень старых WebView — нет).
+ * Проверка одна на страницу, пробный контекст сразу освобождается: у браузера ограничено число живых контекстов.
+ */
 export function webglAvailable(): boolean {
-  if (typeof window === 'undefined' || typeof WebGLRenderingContext === 'undefined') return false;
+  if (webglProbe !== null) return webglProbe;
+  if (typeof window === 'undefined' || typeof WebGLRenderingContext === 'undefined') return (webglProbe = false);
   try {
     const c = document.createElement('canvas');
-    return Boolean(c.getContext('webgl2') || c.getContext('webgl'));
+    const gl = (c.getContext('webgl2') || c.getContext('webgl')) as WebGLRenderingContext | null;
+    gl?.getExtension('WEBGL_lose_context')?.loseContext();
+    return (webglProbe = Boolean(gl));
   } catch {
-    return false;
+    return (webglProbe = false);
   }
 }
 
@@ -99,8 +108,13 @@ export function createCityScene(canvas: HTMLCanvasElement, opts: CitySceneOption
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
   renderer.setClearColor(C.page);
   const scene = new THREE.Scene();
-  scene.fog = new THREE.Fog(C.page, 60, 220);
+  // Туман следует за расстоянием камеры (cityFog), иначе большой город или телефон тонули бы в нём целиком
+  const fog = new THREE.Fog(C.page, 60, 220);
+  scene.fog = fog;
   const camera = new THREE.PerspectiveCamera(48, 1, 0.5, 600);
+  let citySize = BLOCK;
+  let viewW = 1;
+  let viewH = 1;
   scene.add(new THREE.AmbientLight(0x3a3060, 1.4));
   const moon = new THREE.DirectionalLight(0x9a8cff, 0.8);
   moon.position.set(-40, 80, 30);
@@ -132,6 +146,8 @@ export function createCityScene(canvas: HTMLCanvasElement, opts: CitySceneOption
 
   const disposeTree = (obj: THREE.Object3D) => {
     obj.traverse((o) => {
+      // У InstancedMesh свой GPU-буфер матриц, он освобождается только через dispose()
+      if ((o as THREE.InstancedMesh).isInstancedMesh) (o as THREE.InstancedMesh).dispose();
       const m = o as THREE.Mesh;
       m.geometry?.dispose();
       const mats = Array.isArray(m.material) ? m.material : m.material ? [m.material] : [];
@@ -254,7 +270,9 @@ export function createCityScene(canvas: HTMLCanvasElement, opts: CitySceneOption
   }
 
   function applyEmphasis() {
-    const focus = hover ?? selected;
+    // Ключ, которого уже нет в городе (объект удалён), не приглушает остальное
+    const live = (key: string | null) => (key && lotParts.has(key) ? key : null);
+    const focus = live(hover) ?? live(selected);
     const near = neighboursOf(focus);
     for (const [key, part] of lotParts) {
       const mat = part.edges.material as THREE.LineBasicMaterial;
@@ -266,21 +284,26 @@ export function createCityScene(canvas: HTMLCanvasElement, opts: CitySceneOption
     }
   }
 
-  // --- Ввод: перетаскивание вращает, колесо и щипок приближают; клик без сдвига выбирает
+  // --- Ввод: перетаскивание вращает, колесо и щипок приближают; клик без сдвига выбирает (createTapDetector)
   const pointers = new Map<number, { x: number; y: number }>();
-  let downAt: { x: number; y: number } | null = null;
+  const tap = createTapDetector();
   let pinch = 0;
   let lastInput = performance.now();
+  let dirty = true;
   const ray = new THREE.Raycaster();
   const ndc = new THREE.Vector2();
+  const touched = () => { lastInput = performance.now(); dirty = true; schedule(); };
 
   const onDown = (e: PointerEvent) => {
+    tap.down(e.pointerId, e.clientX, e.clientY, e.pointerType === 'mouse' ? e.button : 0);
+    // Правая и средняя кнопки мыши камерой не управляют
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
     canvas.setPointerCapture?.(e.pointerId);
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pointers.size === 1) downAt = { x: e.clientX, y: e.clientY };
-    lastInput = performance.now();
+    touched();
   };
   const onMove = (e: PointerEvent) => {
+    tap.move(e.pointerId, e.clientX, e.clientY);
     const prev = pointers.get(e.pointerId);
     if (!prev) {
       const key = api.pick(e.clientX, e.clientY);
@@ -299,26 +322,31 @@ export function createCityScene(canvas: HTMLCanvasElement, opts: CitySceneOption
       orbit.phi = THREE.MathUtils.clamp(orbit.phi - (e.clientY - prev.y) * 0.004, 0.35, 1.38);
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     }
-    lastInput = performance.now();
+    touched();
   };
-  const onUp = (e: PointerEvent) => {
+  const release = (e: PointerEvent) => {
     pointers.delete(e.pointerId);
     if (pointers.size < 2) pinch = 0;
-    if (downAt && pointers.size === 0 && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) < 6) {
-      opts.onPick?.(api.pick(e.clientX, e.clientY));
-    }
-    if (pointers.size === 0) downAt = null;
+  };
+  const onUp = (e: PointerEvent) => {
+    const isTap = tap.up(e.pointerId, e.clientX, e.clientY);
+    release(e);
+    if (isTap) opts.onPick?.(api.pick(e.clientX, e.clientY));
+  };
+  const onCancel = (e: PointerEvent) => {
+    tap.cancel(e.pointerId);
+    release(e);
   };
   const onWheel = (e: WheelEvent) => {
     e.preventDefault();
     orbit.radius = THREE.MathUtils.clamp(orbit.radius * Math.exp(e.deltaY * 0.001), orbit.min, orbit.max);
-    lastInput = performance.now();
+    touched();
   };
   const onLeave = () => { if (hover) opts.onHover?.(null); };
   canvas.addEventListener('pointerdown', onDown);
   canvas.addEventListener('pointermove', onMove);
   canvas.addEventListener('pointerup', onUp);
-  canvas.addEventListener('pointercancel', onUp);
+  canvas.addEventListener('pointercancel', onCancel);
   canvas.addEventListener('pointerleave', onLeave);
   canvas.addEventListener('wheel', onWheel, { passive: false });
   canvas.style.touchAction = 'none';
@@ -326,15 +354,16 @@ export function createCityScene(canvas: HTMLCanvasElement, opts: CitySceneOption
 
   // --- Размер, видимость и цикл анимации
   const resize = () => {
-    const w = canvas.clientWidth || 1;
-    const h = canvas.clientHeight || 1;
-    renderer.setSize(w, h, false);
-    camera.aspect = w / h;
+    viewW = canvas.clientWidth || 1;
+    viewH = canvas.clientHeight || 1;
+    renderer.setSize(viewW, viewH, false);
+    camera.aspect = viewW / viewH;
     camera.updateProjectionMatrix();
+    dirty = true;
+    schedule();
   };
   const resizeObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(resize) : null;
   resizeObserver?.observe(canvas);
-  resize();
   let onScreen = true;
   const io = typeof IntersectionObserver !== 'undefined'
     ? new IntersectionObserver((entries) => { onScreen = entries.some((en) => en.isIntersecting); schedule(); })
@@ -344,19 +373,28 @@ export function createCityScene(canvas: HTMLCanvasElement, opts: CitySceneOption
   document.addEventListener('visibilitychange', onVisibility);
 
   let raf = 0;
+  let disposed = false;
   let last = performance.now();
   const clock = { t: 0 };
+  /** Без анимации (prefers-reduced-motion) кадр рисуется только после изменений — цикл не крутится вхолостую */
   function schedule() {
-    if (!raf && onScreen && !document.hidden) { last = performance.now(); raf = requestAnimationFrame(frame); }
+    if (disposed || raf || !onScreen || document.hidden) return;
+    if (opts.reducedMotion && !dirty) return;
+    last = performance.now();
+    raf = requestAnimationFrame(frame);
   }
   function frame(now: number) {
     raf = 0;
+    dirty = false;
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
     const motion = opts.reducedMotion ? 0 : 1;
     clock.t += dt;
     if (motion && now - lastInput > 4000 && pointers.size === 0) orbit.theta += dt * 0.05;
     placeCamera();
+    const f = cityFog(orbit.radius, citySize);
+    fog.near = f.near;
+    fog.far = f.far;
     for (const car of cars) {
       car.t = (car.t + car.speed * dt * motion) % 1;
       let d = car.t * car.length;
@@ -364,8 +402,8 @@ export function createCityScene(canvas: HTMLCanvasElement, opts: CitySceneOption
       for (let i = 1; i < pts.length; i++) {
         const seg = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
         if (d <= seg || i === pts.length - 1) {
-          const f = seg ? Math.min(1, d / seg) : 0;
-          car.mesh.position.set(pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * f, car.y, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * f);
+          const k = seg ? Math.min(1, d / seg) : 0;
+          car.mesh.position.set(pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * k, car.y, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * k);
           break;
         }
         d -= seg;
@@ -386,6 +424,7 @@ export function createCityScene(canvas: HTMLCanvasElement, opts: CitySceneOption
   const api: CityScene = {
     update(next) {
       plan = next;
+      citySize = next.size;
       for (const child of [...world.children]) { world.remove(child); disposeTree(child); }
       meshes.length = 0;
       lotParts.clear();
@@ -395,19 +434,22 @@ export function createCityScene(canvas: HTMLCanvasElement, opts: CitySceneOption
       const lots = new Map(next.lots.map((l) => [l.key, l]));
       next.lots.forEach(buildLot);
       next.roads.forEach((r) => buildRoad(r, lots));
+      const frameFor = frameCity(next.size, camera.aspect);
+      orbit.min = frameFor.min;
+      orbit.max = frameFor.max;
+      camera.far = frameFor.far;
+      camera.updateProjectionMatrix();
       if (firstPlan) {
         // Первый показ: весь город в кадре
-        // На вертикальном экране (телефон) отъезжаем дальше, чтобы город влез по ширине
-        const narrow = camera.aspect < 1 ? 1 / Math.max(0.45, camera.aspect) : 1;
-        orbit.radius = THREE.MathUtils.clamp((next.size * 0.85 + 22) * Math.min(1.8, narrow * 0.9 + 0.1), orbit.min, orbit.max);
-        orbit.max = Math.max(orbit.max, next.size * 2.5);
+        orbit.radius = frameFor.radius;
         firstPlan = false;
       }
+      orbit.radius = THREE.MathUtils.clamp(orbit.radius, orbit.min, orbit.max);
       applyEmphasis();
-      schedule();
+      touched();
     },
-    setSelected(key) { selected = key; applyEmphasis(); schedule(); },
-    setHover(key) { hover = key; applyEmphasis(); schedule(); },
+    setSelected(key) { selected = key; applyEmphasis(); dirty = true; schedule(); },
+    setHover(key) { hover = key; applyEmphasis(); dirty = true; schedule(); },
     pick(clientX, clientY) {
       const rect = canvas.getBoundingClientRect();
       ndc.set(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
@@ -420,12 +462,13 @@ export function createCityScene(canvas: HTMLCanvasElement, opts: CitySceneOption
       if (!part) return null;
       vec.set(part.lot.x, part.lot.h + 2.6, part.lot.z).project(camera);
       return {
-        x: ((vec.x + 1) / 2) * canvas.clientWidth,
-        y: ((1 - vec.y) / 2) * canvas.clientHeight,
+        x: ((vec.x + 1) / 2) * viewW,
+        y: ((1 - vec.y) / 2) * viewH,
         visible: vec.z < 1 && Math.abs(vec.x) <= 1.05 && Math.abs(vec.y) <= 1.05,
       };
     },
     dispose() {
+      disposed = true;
       cancelAnimationFrame(raf);
       raf = 0;
       resizeObserver?.disconnect();
@@ -434,13 +477,17 @@ export function createCityScene(canvas: HTMLCanvasElement, opts: CitySceneOption
       canvas.removeEventListener('pointerdown', onDown);
       canvas.removeEventListener('pointermove', onMove);
       canvas.removeEventListener('pointerup', onUp);
-      canvas.removeEventListener('pointercancel', onUp);
+      canvas.removeEventListener('pointercancel', onCancel);
       canvas.removeEventListener('pointerleave', onLeave);
       canvas.removeEventListener('wheel', onWheel);
       disposeTree(world);
       renderer.dispose();
+      // Холст у каждой сцены свой (TopologyCity создаёт новый), поэтому контекст можно отпустить сразу —
+      // иначе при переключении видов копятся живые WebGL-контексты
+      renderer.forceContextLoss();
     },
   };
+  resize();
   placeCamera();
   return api;
 }
