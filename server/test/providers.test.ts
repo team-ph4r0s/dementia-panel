@@ -96,6 +96,16 @@ describe('API провайдеров', () => {
     expect(revealed.body.password).toBe('S3cret-пароль');
   });
 
+  it('пароль сохраняется в точности как введён, с пробелами по краям (#88)', async () => {
+    await admin.api(`/api/providers/panel/0`, 'PUT', { login: 'a', password: ' test-password ' });
+    expect((await admin.api('/api/providers/panel/0/password')).body.password).toBe(' test-password ');
+    await admin.api(`/api/providers/panel/0`, 'PUT', { login: 'a', password: '   ' });
+    expect((await admin.api('/api/providers/panel/0/password')).body.password).toBe('   ');
+    // null и пустая строка по-прежнему стирают пароль
+    await admin.api(`/api/providers/panel/0`, 'PUT', { login: 'a', password: null });
+    expect((await admin.api('/api/providers/panel/0/password')).status).toBe(404);
+  });
+
   it('пароль без поля password не меняется, пустая строка его стирает', async () => {
     await admin.api(`/api/providers/panel/0`, 'PUT', { login: 'a', password: 'p1' });
     await admin.api(`/api/providers/panel/0`, 'PUT', { login: 'b' });
@@ -183,6 +193,21 @@ describe('напоминания в Telegram', () => {
     expect(await ProviderService.tick(utc('2026-11-14T07:00:00'))).toBe(0);
     expect(await ProviderService.tick(utc('2026-11-12T07:00:00'))).toBe(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('напоминание за 30 дней приходит, даже если ближе есть другой платёж (#90)', async () => {
+    await enableTelegram();
+    const fetchMock = stubTelegram(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    ProviderService.saveSettings({ remind_enabled: true, remind_days: [30, 1], remind_hour: 6 });
+    await admin.api(`/api/providers/panel/0`, 'PUT', { pay_day: 15 });
+    // 13 февраля ближайший платёж — 15 февраля (через 2 дня), но ровно через 30 дней — 15 марта
+    expect(await ProviderService.tick(utc('2027-02-13T07:00:00'))).toBe(1);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).text).toContain('15.03');
+    // повторный запуск в тот же день не дублирует
+    expect(await ProviderService.tick(utc('2027-02-13T09:00:00'))).toBe(0);
+    // накануне февральского платежа — своё напоминание
+    expect(await ProviderService.tick(utc('2027-02-14T07:00:00'))).toBe(1);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).text).toContain('15.02');
   });
 
   it('смена даты платежа сбрасывает отметки об отправленных напоминаниях', async () => {

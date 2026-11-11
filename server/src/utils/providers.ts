@@ -61,6 +61,17 @@ export function cleanText(value: unknown, max: number, field: string): string | 
   return text || null;
 }
 
+/**
+ * Пароль кабинета хранится в точности как введён (пробелы по краям — часть пароля, #88): он шифруется и никуда не
+ * подставляется. null и пустая строка — стереть.
+ */
+export function cleanSecret(value: unknown, max: number, field: string): string | null {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string') throw new Error(`${field}: ожидается строка`);
+  if (value.length > max) throw new Error(`${field}: не длиннее ${max} символов`);
+  return value;
+}
+
 /** Ссылка на личный кабинет: только http(s), чтобы не получить javascript: в ссылке интерфейса */
 export function validateCabinetUrl(value: unknown): string | null {
   const text = cleanText(value, 500, 'Ссылка на кабинет');

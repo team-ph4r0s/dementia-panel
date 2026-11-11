@@ -4,7 +4,7 @@ import { TelegramService } from './telegram.service.js';
 import { MigrationService } from './migration.service.js';
 import { HttpError } from '../utils/http.js';
 import {
-  cleanText, daysBetween, DEFAULT_REMIND_DAYS, DEFAULT_REMIND_HOUR_UTC, isoDate, nextDueDate, PROVIDER_CURRENCIES, reminderText,
+  cleanSecret, cleanText, daysBetween, DEFAULT_REMIND_DAYS, DEFAULT_REMIND_HOUR_UTC, isoDate, nextDueDate, PROVIDER_CURRENCIES, reminderText,
   validateAmount, validateCabinetUrl, validatePayDay, validatePayMonth, validateRemindDays,
 } from '../utils/providers.js';
 
@@ -143,7 +143,7 @@ export class ProviderService {
         if (!PROVIDER_CURRENCIES.includes(input.currency as never)) throw new Error('Валюта: RUB, USD или EUR');
         currency = input.currency as string;
       }
-      if (input.password !== undefined) password = cleanText(input.password, 500, 'Пароль');
+      if (input.password !== undefined) password = cleanSecret(input.password, 500, 'Пароль');
     } catch (err) {
       throw new HttpError(400, err instanceof Error ? err.message : 'Некорректные данные');
     }
@@ -192,19 +192,27 @@ export class ProviderService {
     }
 
     let sent = 0;
+    const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
     for (const item of items) {
-      if (item.days_left === null || item.next_due === null || !settings.remind_days.includes(item.days_left)) continue;
-      const done = db.prepare('SELECT 1 FROM provider_reminders WHERE target_type = ? AND target_id = ? AND due_date = ? AND days_before = ?')
-        .get(item.target_type, item.target_id, item.next_due, item.days_left);
-      if (done) continue;
-      const text = reminderText({
-        name: item.name, host: item.host, daysLeft: item.days_left, due: new Date(`${item.next_due}T00:00:00Z`),
-        amount: item.amount, currency: item.currency, url: item.url,
-      });
-      if (!(await TelegramService.notify(text))) continue;
-      db.prepare('INSERT OR IGNORE INTO provider_reminders (target_type, target_id, due_date, days_before) VALUES (?, ?, ?, ?)')
-        .run(item.target_type, item.target_id, item.next_due, item.days_left);
-      sent++;
+      if (!item.pay_day) continue;
+      // Для каждого интервала N — есть ли платёж ровно через N дней. Смотреть только на ближайший платёж нельзя:
+      // при «за 30 дней» напоминание о следующем месяце выпадало бы, пока не прошёл текущий (#90)
+      for (const daysBefore of settings.remind_days) {
+        const target = new Date(today + daysBefore * 86400000);
+        const due = isoDate(nextDueDate(target, item.pay_day, item.pay_month));
+        if (due !== isoDate(target)) continue;
+        const done = db.prepare('SELECT 1 FROM provider_reminders WHERE target_type = ? AND target_id = ? AND due_date = ? AND days_before = ?')
+          .get(item.target_type, item.target_id, due, daysBefore);
+        if (done) continue;
+        const text = reminderText({
+          name: item.name, host: item.host, daysLeft: daysBefore, due: new Date(`${due}T00:00:00Z`),
+          amount: item.amount, currency: item.currency, url: item.url,
+        });
+        if (!(await TelegramService.notify(text))) continue;
+        db.prepare('INSERT OR IGNORE INTO provider_reminders (target_type, target_id, due_date, days_before) VALUES (?, ?, ?, ?)')
+          .run(item.target_type, item.target_id, due, daysBefore);
+        sent++;
+      }
     }
     return sent;
   }
