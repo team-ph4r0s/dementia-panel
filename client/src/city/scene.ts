@@ -1,7 +1,7 @@
 import * as THREE from 'three';
-import { BLOCK, cityFog, frameCity, type CityLot, type CityPlan, type CityRoad } from '../topology/city';
+import { BLOCK, cityFog, frameCity, shouldReframe, type CityLot, type CityPlan, type CityRoad } from '../topology/city';
 import type { Health } from '../topology/model';
-import { createTapDetector } from './gesture';
+import { createTapDetector, isZoomWheel } from './gesture';
 
 /**
  * Отрисовка вида «Город» на Three.js. Модуль только рисует план из buildCity (topology/city.ts) и сообщает о кликах;
@@ -18,7 +18,7 @@ export function readCityColors(el: Element = document.documentElement): CityColo
   const v = (name: string, fallback: string) => css.getPropertyValue(`--color-${name}`).trim() || fallback;
   return {
     page: v('page', '#07060d'), line: v('line', '#2a2446'), ink: v('ink', '#f1f0ff'), brand: v('brand', '#fcee0a'),
-    ok: v('ok', '#00e5ff'), warn: v('warn', '#ff9f1c'), bad: v('bad', '#ff2e88'), idle: v('faint', '#6f6a8c'),
+    ok: v('ok', '#00e5ff'), warn: v('warn', '#ff9f1c'), bad: v('bad', '#ff2e88'), idle: v('faint', '#8a85a8'),
     violet: v('violet', '#a78bfa'), info: v('info', '#7aa2ff'),
   };
 }
@@ -288,6 +288,9 @@ export function createCityScene(canvas: HTMLCanvasElement, opts: CitySceneOption
   const pointers = new Map<number, { x: number; y: number }>();
   const tap = createTapDetector();
   let pinch = 0;
+  /** Пользователь сам менял приближение — город больше не перекадрируется при росте сети */
+  let userZoomed = false;
+  let framedSize = 0;
   let lastInput = performance.now();
   let dirty = true;
   const ray = new THREE.Raycaster();
@@ -315,7 +318,7 @@ export function createCityScene(canvas: HTMLCanvasElement, opts: CitySceneOption
       pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       const [a, b] = [...pointers.values()];
       const dist = Math.hypot(a.x - b.x, a.y - b.y);
-      if (pinch) orbit.radius = THREE.MathUtils.clamp(orbit.radius * (pinch / dist), orbit.min, orbit.max);
+      if (pinch) { orbit.radius = THREE.MathUtils.clamp(orbit.radius * (pinch / dist), orbit.min, orbit.max); userZoomed = true; }
       pinch = dist;
     } else {
       orbit.theta += (e.clientX - prev.x) * 0.006;
@@ -338,8 +341,11 @@ export function createCityScene(canvas: HTMLCanvasElement, opts: CitySceneOption
     release(e);
   };
   const onWheel = (e: WheelEvent) => {
+    // Без Ctrl/⌘ колесо прокручивает страницу (isZoomWheel)
+    if (!isZoomWheel(e)) return;
     e.preventDefault();
-    orbit.radius = THREE.MathUtils.clamp(orbit.radius * Math.exp(e.deltaY * 0.001), orbit.min, orbit.max);
+    orbit.radius = THREE.MathUtils.clamp(orbit.radius * Math.exp(e.deltaY * 0.002), orbit.min, orbit.max);
+    userZoomed = true;
     touched();
   };
   const onLeave = () => { if (hover) opts.onHover?.(null); };
@@ -349,7 +355,8 @@ export function createCityScene(canvas: HTMLCanvasElement, opts: CitySceneOption
   canvas.addEventListener('pointercancel', onCancel);
   canvas.addEventListener('pointerleave', onLeave);
   canvas.addEventListener('wheel', onWheel, { passive: false });
-  canvas.style.touchAction = 'none';
+  // Вертикальный свайп одним пальцем прокручивает страницу, горизонтальный — вращает город, щипок — приближает
+  canvas.style.touchAction = 'pan-y';
   canvas.style.cursor = 'grab';
 
   // --- Размер, видимость и цикл анимации
@@ -434,14 +441,15 @@ export function createCityScene(canvas: HTMLCanvasElement, opts: CitySceneOption
       const lots = new Map(next.lots.map((l) => [l.key, l]));
       next.lots.forEach(buildLot);
       next.roads.forEach((r) => buildRoad(r, lots));
-      const frameFor = frameCity(next.size, camera.aspect);
+      const frameFor = frameCity(next.size, camera.aspect, Math.max(0, ...next.lots.map((l) => l.h)));
       orbit.min = frameFor.min;
       orbit.max = frameFor.max;
       camera.far = frameFor.far;
       camera.updateProjectionMatrix();
-      if (firstPlan) {
-        // Первый показ: весь город в кадре
+      if (firstPlan || shouldReframe(framedSize, next.size, userZoomed)) {
+        // Первый показ или сеть заметно выросла: весь город в кадре
         orbit.radius = frameFor.radius;
+        framedSize = next.size;
         firstPlan = false;
       }
       orbit.radius = THREE.MathUtils.clamp(orbit.radius, orbit.min, orbit.max);

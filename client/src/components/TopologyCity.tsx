@@ -156,6 +156,11 @@ export function TopologyCity({ servers, bridges, subscribers, selected, onSelect
     );
   });
 
+  const empty = !plan.lots.some((l) => l.kind === 'server');
+  const emptyHint = empty && (
+    <p className="text-sm text-muted">Нод пока нет — город начнётся со штаба. Добавьте первую ноду кнопкой «+ Нода» в шапке.</p>
+  );
+
   if (!supported) {
     return (
       <section aria-label="Город сети" className="rounded-2xl border border-line bg-card p-5 space-y-4">
@@ -166,6 +171,7 @@ export function TopologyCity({ servers, bridges, subscribers, selected, onSelect
             Открыть карту
           </button>
         </div>
+        {emptyHint}
         <div className="flex flex-wrap gap-2">{labels}</div>
       </section>
     );
@@ -178,7 +184,8 @@ export function TopologyCity({ servers, bridges, subscribers, selected, onSelect
       className="hud-cut relative overflow-hidden h-[58dvh] min-h-[380px] lg:h-[calc(100dvh-11.5rem)] lg:min-h-[520px] rounded-2xl border border-line bg-page"
     >
       <div className="absolute inset-0 pointer-events-none [&>button]:pointer-events-auto">{labels}</div>
-      <p className="absolute left-3 right-3 bottom-3 text-xs text-faint pointer-events-none">Тяните — вращать · колесо или щипок — приблизить</p>
+      {empty && <div className="absolute inset-x-4 top-4 bg-page/85 border border-line rounded-lg px-4 py-3 pointer-events-none">{emptyHint}</div>}
+      <p className="absolute left-3 right-3 bottom-3 text-xs text-faint pointer-events-none">Тяните — вращать · Ctrl + колесо или щипок — приблизить</p>
     </section>
   );
 }

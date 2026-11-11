@@ -10,6 +10,14 @@ export interface TapDetector {
   cancel(id: number): void;
 }
 
+/**
+ * Колесо приближает город только с Ctrl/⌘ (жест щипка на трекпаде браузер тоже присылает как Ctrl+колесо),
+ * иначе прокручивает страницу — город занимает почти весь экран и не должен ловить прокрутку.
+ */
+export function isZoomWheel(e: { ctrlKey: boolean; metaKey: boolean }): boolean {
+  return e.ctrlKey || e.metaKey;
+}
+
 export function createTapDetector(threshold = 6): TapDetector {
   const pointers = new Map<number, { x: number; y: number }>();
   let gesture = false;

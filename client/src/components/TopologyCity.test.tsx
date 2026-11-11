@@ -19,6 +19,11 @@ it('без WebGL показывает сообщение и предлагает
   expect(onOpenMap).toHaveBeenCalledTimes(1);
 });
 
+it('пустая сеть: город подсказывает, как добавить первую ноду', () => {
+  render(<TopologyCity servers={[]} bridges={bridges} subscribers={subscribers} selected={null} onSelect={vi.fn()} onOpenMap={vi.fn()} />);
+  expect(screen.getByText(/Нод пока нет/)).toBeInTheDocument();
+});
+
 it('подписи зданий — кнопки: нажатие выбирает ноду, выбранная отмечена', () => {
   const onSelect = vi.fn();
   const { rerender } = render(

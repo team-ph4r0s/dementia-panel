@@ -82,14 +82,20 @@ export function cityFog(radius: number, size: number): { near: number; far: numb
 /**
  * Кадр камеры для города стороной size на холсте с пропорцией aspect (ширина/высота).
  * На вертикальном экране (телефон) камера отъезжает дальше, чтобы город влез по ширине.
+ * tallest — высота самого высокого здания: ближе него камера не приближается, иначе влетает внутрь башни.
  */
-export function frameCity(size: number, aspect: number): CityFrame {
+export function frameCity(size: number, aspect: number, tallest = 0): CityFrame {
   const narrow = aspect < 1 ? 1 / Math.max(0.45, aspect) : 1;
-  const min = 25;
+  const min = Math.max(25, tallest * 1.35);
   const radius = Math.max(min, (size * 0.85 + 22) * Math.min(1.8, narrow * 0.9 + 0.1));
   const max = Math.max(260, size * 2.5, radius);
   const fog = cityFog(radius, size);
   return { radius, min, max, fogNear: fog.near, fogFar: fog.far, far: max + size + 60 };
+}
+
+/** Перекадрировать камеру, когда город заметно вырос (в 1.5 раза), если пользователь сам не менял приближение */
+export function shouldReframe(framedSize: number, nextSize: number, userZoomed: boolean): boolean {
+  return !userZoomed && nextSize > framedSize * 1.5;
 }
 
 type Cell = [number, number];
@@ -112,22 +118,37 @@ export function buildCity(
   const r1 = radiusFor(serversRing.length, 2.5);
   const r2 = radiusFor(bridgesRing.length, r1 + 2);
   const r3 = radiusFor(countriesRing.length, (bridgesRing.length ? r2 : r1) + 2);
-  const limit = Math.ceil(r3) + 4;
-
-  /** Ближайшая свободная клетка к желаемой точке, не ближе minR к центру. Перебор детерминирован. */
+  /**
+   * Ближайшая свободная клетка к желаемой точке, не ближе minR к центру. Поиск идёт квадратными кольцами от желаемой клетки
+   * и останавливается, как только следующее кольцо заведомо дальше найденного: так раскладка не замедляется на сотнях нод.
+   * Перебор детерминирован.
+   */
   const place = (node: TopoNode, radius: number, minR: number) => {
     const wantX = Math.cos(node.angle) * radius;
     const wantZ = Math.sin(node.angle) * radius;
+    const cx0 = Math.round(wantX);
+    const cz0 = Math.round(wantZ);
     let best: Cell | null = null;
     let bestDist = Infinity;
-    for (let cx = -limit; cx <= limit; cx++) {
-      for (let cz = -limit; cz <= limit; cz++) {
-        if (taken.has(`${cx},${cz}`) || Math.hypot(cx, cz) < minR) continue;
-        const dist = Math.hypot(cx - wantX, cz - wantZ);
-        if (dist < bestDist - 1e-9) { best = [cx, cz]; bestDist = dist; }
+    const consider = (cx: number, cz: number) => {
+      if (taken.has(`${cx},${cz}`) || Math.hypot(cx, cz) < minR) return;
+      const dist = Math.hypot(cx - wantX, cz - wantZ);
+      if (dist < bestDist - 1e-9) { best = [cx, cz]; bestDist = dist; }
+    };
+    // Любая клетка кольца k удалена от желаемой точки не меньше чем на k − 0.5 (точка внутри клетки cx0, cz0)
+    for (let k = 0; !(best && k - 0.5 > bestDist); k++) {
+      if (k === 0) { consider(cx0, cz0); continue; }
+      for (let d = -k; d <= k; d++) {
+        consider(cx0 + d, cz0 - k);
+        consider(cx0 + d, cz0 + k);
+      }
+      for (let d = -k + 1; d <= k - 1; d++) {
+        consider(cx0 - k, cz0 + d);
+        consider(cx0 + k, cz0 + d);
       }
     }
-    const cell = best ?? [limit, limit];
+    const cell = best as Cell | null;
+    if (!cell) return;
     taken.add(`${cell[0]},${cell[1]}`);
     cellOf.set(node.key, cell);
   };
@@ -161,15 +182,24 @@ export function buildCity(
   const lotByKey = new Map(lots.map((l) => [l.key, l]));
   const half = BLOCK / 2;
   const roads: CityRoad[] = [];
+  // Дороги из одного здания расходятся по разным полосам улицы, а не лежат одной линией
+  const lanesUsed = new Map<string, number>();
+  const LANES = 7;
+  const LANE_WIDTH = 0.38;
   for (const edge of topology.edges) {
     const a = lotByKey.get(edge.from);
     const b = lotByKey.get(edge.to);
     if (!a || !b) continue;
     const elevated = edge.kind === 'bridge-server';
+    const n = lanesUsed.get(edge.from) ?? 0;
+    lanesUsed.set(edge.from, n + 1);
+    const lane = ((n % LANES) - (LANES - 1) / 2) * LANE_WIDTH;
+    const sz = a.z + half + lane;
+    const sx = b.x + half + lane;
     // Улица идёт по линиям между кварталами: выезд на поперечную улицу, вдоль неё, затем к цели
     const points: [number, number][] = elevated
       ? [[a.x, a.z], [b.x, b.z]]
-      : [[a.x, a.z], [a.x, a.z + half], [b.x + half, a.z + half], [b.x + half, b.z], [b.x, b.z]];
+      : [[a.x, a.z], [a.x, sz], [sx, sz], [sx, b.z], [b.x, b.z]];
     roads.push({
       key: edge.key, kind: edge.kind, from: edge.from, to: edge.to, health: edge.health,
       flow: edge.flow, weight: edge.weight, elevated, points,

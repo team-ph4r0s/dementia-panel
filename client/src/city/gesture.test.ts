@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { createTapDetector } from './gesture';
+import { createTapDetector, isZoomWheel } from './gesture';
+
+describe('isZoomWheel', () => {
+  it('колесо приближает город только с Ctrl/⌘ или жестом трекпада, иначе прокручивает страницу', () => {
+    expect(isZoomWheel({ ctrlKey: false, metaKey: false })).toBe(false);
+    expect(isZoomWheel({ ctrlKey: true, metaKey: false })).toBe(true);
+    expect(isZoomWheel({ ctrlKey: false, metaKey: true })).toBe(true);
+  });
+});
 
 describe('createTapDetector', () => {
   it('нажатие и отпускание на месте — клик', () => {

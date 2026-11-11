@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Bridge, Server, Subscriber } from '../types';
 import { buildTopology } from './model';
-import { buildCity, frameCity, type CityLot } from './city';
+import { buildCity, frameCity, shouldReframe, type CityLot } from './city';
 
 const server = (id: number, patch: Partial<Server> = {}): Server =>
   ({
@@ -120,6 +120,33 @@ describe('buildCity', () => {
         expect(f.far, label).toBeGreaterThanOrEqual(f.max + plan.size);
       }
     }
+  });
+
+  it('камера не входит в самую высокую башню на минимальном расстоянии', () => {
+    const plan = city([server(1, { client_count: 80 })]);
+    const tallest = Math.max(...plan.lots.map((l) => l.h));
+    expect(frameCity(plan.size, 1, tallest).min).toBeGreaterThan(tallest * 1.3);
+  });
+
+  it('кадр пересчитывается, когда сеть заметно выросла и пользователь не приближал сам', () => {
+    expect(shouldReframe(18, 42, false)).toBe(true);
+    expect(shouldReframe(18, 24, false)).toBe(false);
+    expect(shouldReframe(18, 42, true)).toBe(false);
+  });
+
+  it('дороги от штаба идут разными полосами, а не по одной линии', () => {
+    const plan = city([1, 2, 3, 4, 5].map((id) => server(id)));
+    const fromPanel = plan.roads.filter((r) => r.from === 'panel');
+    const lanes = new Set(fromPanel.map((r) => r.points[1].join(',')));
+    expect(lanes.size).toBe(fromPanel.length);
+  });
+
+  it('большая сеть (1500 нод) раскладывается быстро', () => {
+    const servers = Array.from({ length: 1500 }, (_, i) => server(i + 1));
+    const t0 = performance.now();
+    const plan = city(servers);
+    expect(plan.lots).toHaveLength(1501);
+    expect(performance.now() - t0).toBeLessThan(1500);
   });
 
   it('детерминирован: одинаковые данные — одинаковый план', () => {
