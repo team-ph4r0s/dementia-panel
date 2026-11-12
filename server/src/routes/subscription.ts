@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { Router, type Request } from 'express';
 import { db, getSetting } from '../db/index.js';
 import { AwgService } from '../services/awg.service.js';
@@ -125,6 +126,13 @@ export function buildClashConfig(entries: { name: string; server: any; client: a
       { name: CLASH_AUTO_GROUP, type: 'fallback', proxies: names, url: CLASH_HEALTH_URL, interval: CLASH_HEALTH_INTERVAL, lazy: true },
     ]
     : [{ name: group, type: 'select', proxies: names.length ? names : ['DIRECT'] }];
+  // FlClash #2966: гонка protect при запуске TUN может зациклить пакеты AWG.
+  const endpointRules = new Set<string>();
+  for (const proxy of proxies) {
+    if (proxy.type !== 'wireguard' || typeof proxy.server !== 'string') continue;
+    const family = isIP(proxy.server);
+    if (family) endpointRules.add(`${family === 4 ? 'IP-CIDR' : 'IP-CIDR6'},${proxy.server}/${family === 4 ? 32 : 128},DIRECT,no-resolve`);
+  }
   return JSON.stringify(
     {
       'mixed-port': 7890,
@@ -134,7 +142,7 @@ export function buildClashConfig(entries: { name: string; server: any; client: a
       proxies,
       'proxy-groups': groups,
       // «Напрямую» (страны, домены, сети) идёт до итогового правила (docs/direct-routing.md)
-      rules: [...buildClashDirectRules(), `MATCH,${group}`],
+      rules: [...endpointRules, ...buildClashDirectRules(), `MATCH,${group}`],
     },
     null,
     2

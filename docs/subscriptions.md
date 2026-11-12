@@ -34,8 +34,13 @@
 |---|---|---|
 | Incy (по умолчанию) | `?format=awg`/`incy` или запрос, для которого не выбраны HTML, mihomo и v2ray | base64 смешанного списка `awg://<base64url(.conf)>#<имя>` и `vless://…#<имя>` ([спецификация](https://docs.incy.cc/en/subscription-format/)) |
 | JSON Incy | `?format=json` | `{"type":"amneziawg","version":1,"servers":[…]}`; AWG — `{name,config}`, VLESS — `{name,protocol:"vless",link}` |
-| mihomo | `?format=clash`/`mihomo` или UA `mihomo`, `clash-meta`, `clash-verge`, `flclash`, `clashmi`, `clash.party` | JSON (валидный YAML): AWG `type: wireguard` + `amnezia-wg-option`, VLESS `type: vless` + `reality-opts`, группа `Dementia` (и «Авто», см. ниже), `rules: …, MATCH,Dementia` (перед `MATCH` — правила [«Напрямую»](direct-routing.md), если включены) |
+| mihomo | `?format=clash`/`mihomo` или UA `mihomo`, `clash-meta`, `clash-verge`, `flclash`, `clashmi`, `clash.party` | JSON (валидный YAML): AWG `type: wireguard` + `amnezia-wg-option`, VLESS `type: vless` + `reality-opts`, группа `Dementia` (и «Авто», см. ниже), `rules`: сначала DIRECT для IP-адресов AWG, затем правила [«Напрямую»](direct-routing.md), если включены, и `MATCH,Dementia` |
 | v2ray | `?format=v2ray` или UA `v2rayN`, `v2rayNG`, `Hiddify`, `Streisand`, `Happ`, `NekoBox` | base64 списка только `vless://…`; записи AWG пропускаются |
+
+Правила DIRECT для IP-адресов AWG в начале mihomo-профиля обходят гонку `protect()` при запуске TUN в FlClash на Android
+([FlClash #2966](https://github.com/chen08209/FlClash/issues/2966)): иначе пакеты AWG могут зациклиться в туннеле.
+Доменные адреса нод эти правила не покрывают; адреса VLESS и CDN в них не добавляются. Если FlClash уже зациклился,
+принудительно остановите и заново запустите приложение.
 
 VLESS-ссылка имеет вид `vless://<uuid>@<host>:<port>?type=tcp&security=reality&pbk=…&fp=…&sni=…&sid=…&flow=…&encryption=none#<имя>`.
 Публичный ключ Reality кодируется в base64url, `sid` — первый shortId ноды, пустой `flow` не добавляется. Клиенты VLESS без

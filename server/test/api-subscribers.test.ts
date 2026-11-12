@@ -164,7 +164,7 @@ describe('API: Подписчики и подписки (интеграцион�
     expect(config.proxies[0].type).toBe('wireguard');
     expect(config.proxies[0]['amnezia-wg-option']).toBeDefined();
     expect(config['proxy-groups']).toHaveLength(1);
-    expect(config.rules).toEqual(['MATCH,Dementia']);
+    expect(config.rules).toEqual(['IP-CIDR,203.0.113.50/32,DIRECT,no-resolve', 'MATCH,Dementia']);
   });
 
   it('поддерживает формат JSON (?format=json)', async () => {

@@ -108,9 +108,9 @@ describe('настройки «напрямую»', () => {
 });
 
 describe('подписки с правилами «напрямую»', () => {
-  it('выключено: mihomo остаётся с одним MATCH, AWG — с полным AllowedIPs', async () => {
+  it('выключено: mihomo содержит правило адреса AWG и MATCH, AWG — с полным AllowedIPs', async () => {
     const clash = JSON.parse(await (await env.request(`/sub/${token}?format=clash`)).text());
-    expect(clash.rules).toEqual(['MATCH,Dementia']);
+    expect(clash.rules).toEqual(['IP-CIDR,203.0.113.10/32,DIRECT,no-resolve', 'MATCH,Dementia']);
     expect(await awgConf()).toContain('AllowedIPs = 0.0.0.0/0, ::/0\n');
   });
 

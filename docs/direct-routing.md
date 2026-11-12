@@ -7,7 +7,7 @@
 
 | Клиент | Что работает |
 |---|---|
-| mihomo / Clash (`?format=clash`, FlClash, Clash Verge, Mihomo Party) | всё: `DOMAIN-SUFFIX`, `IP-CIDR`/`IP-CIDR6`, `GEOIP` → `DIRECT` перед итоговым `MATCH`; и для AWG, и для VLESS |
+| mihomo / Clash (`?format=clash`, FlClash, Clash Verge, Mihomo Party) | всё: `DOMAIN-SUFFIX`, `IP-CIDR`/`IP-CIDR6`, `GEOIP` → `DIRECT` перед итоговым `MATCH`; и для AWG, и для VLESS. Перед ними всегда идут DIRECT-правила IP-адресов AWG ([subscriptions.md](subscriptions.md)) |
 | AmneziaWG (Incy `awg://`, `.conf`, JSON Incy) | только IP: `AllowedIPs` = весь IPv4 минус сети выбранных стран и свои IPv4-сети (опция «Применять к конфигам AmneziaWG»). Доменов в WireGuard нет |
 | VLESS-ссылки (v2rayN, Happ, Hiddify, Streisand) | в ссылке `vless://` правил нет — их задают в приложении |
 
