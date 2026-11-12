@@ -23,6 +23,7 @@ import { providersRouter } from '../src/routes/providers.js';
 import { migrationGuard, subscriptionFreeze } from '../src/middleware/migration-guard.js';
 import { requireAuth } from '../src/middleware/auth.middleware.js';
 import { errorHandler } from '../src/middleware/error-handler.js';
+import { jsonBody } from '../src/middleware/json-body.js';
 import { securityHeaders } from '../src/middleware/security-headers.js';
 import { cloudflareClientIp } from '../src/middleware/cloudflare.js';
 
@@ -30,7 +31,7 @@ export function createTestApp() {
   const app = express();
   app.use(securityHeaders);
   app.use(cloudflareClientIp);
-  app.use(express.json({ limit: '1mb' }));
+  app.use(jsonBody);
 
   // Public subscription
   app.use('/sub', subscriptionFreeze, subscriptionRouter);

@@ -1,5 +1,6 @@
 import path from 'node:path';
 import type { ServerResponse } from 'node:http';
+import express, { type Express } from 'express';
 
 /**
  * Заголовки кеширования статики интерфейса (в том числе для PWA на телефонах):
@@ -25,4 +26,12 @@ export function staticHeaders(distRoot: string) {
   return (res: ServerResponse, filePath: string): void => {
     res.setHeader('Cache-Control', staticCacheControl(distRoot, filePath));
   };
+}
+
+export function serveSpa(app: Express, distRoot: string): void {
+  app.use(express.static(distRoot, { setHeaders: staticHeaders(distRoot) }));
+  app.get('/{*splat}', (_req, res) => {
+    res.setHeader('Cache-Control', REVALIDATE);
+    res.sendFile(path.join(distRoot, 'index.html'));
+  });
 }

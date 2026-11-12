@@ -8,7 +8,7 @@
 
 ```
  Браузер админа ──HTTPS/HTTP──► Панель (server/src/index.ts)
-                                 │  Express API /api/*, SPA client/dist, подписки /sub/:token, WebSocket /ws
+                                 │  Express 5 API /api/*, SPA client/dist, подписки /sub/:token, WebSocket /ws
                                  │  SQLite data/dementia.db
                                  │
                                  ├──SSH──► Нода 1: Docker-контейнер AmneziaWG (панели или приложения Amnezia)
@@ -33,6 +33,7 @@
 | `middleware/rate-limit.ts` | `FailureLimiter` — счётчик неудачных попыток (логин, токены партнёров) |
 | `middleware/security-headers.ts` | CSP, X-Frame-Options, nosniff, Referrer-Policy, HSTS |
 | `middleware/error-handler.ts` | Единый JSON-обработчик ошибок (общий для `index.ts` и тестового приложения) |
+| `middleware/json-body.ts` | JSON до 1 МБ; без разобранного тела подставляет `{}` вместо `undefined` |
 | `middleware/migration-guard.ts` | Блокировка записей во время переноса панели (423) и заморозка после него (410); перенаправление `/sub` перенесённой панели, см. [migration.md](migration.md) |
 | `routes/*.ts` | HTTP API, см. [api.md](api.md) |
 | `services/ssh.service.ts` | SSH: TOFU-проверка ключа хоста, таймауты, stdin, `sudo -n` для не-root |
@@ -131,6 +132,6 @@ SPA без роутера: вкладки в `App.tsx` (`AppTab` из `Navbar.ts
 1. Заголовки безопасности.
 2. `/.well-known/acme-challenge/:token`, затем `/sub` (у перенесённой панели — `subscriptionFreeze`) — доступны по HTTP даже при включённом HTTPS.
 3. Перенаправление на HTTPS (для `/api/*` по HTTP — 403 JSON, кроме `/api/health`), когда HTTPS включён.
-4. `express.json` (1 МБ), `migrationGuard` для `/api`, `/api/health`, `/api/federation/v1`, `/api/auth`, защищённые роутеры, JSON-404 для `/api/*`.
-5. Статика SPA и fallback на `index.html`.
+4. `jsonBody` (JSON до 1 МБ и пустой объект без разобранного тела), `migrationGuard` для `/api`, `/api/health`, `/api/federation/v1`, `/api/auth`, защищённые роутеры, JSON-404 для `/api/*`. Express 5 использует простой разбор query: `a[b]=…` не создаёт вложенных объектов.
+5. Статика SPA и fallback `/{*splat}` на `index.html`.
 6. JSON error handler (`HttpError`, ошибки парсинга JSON, 500 без стектрейса).

@@ -6,6 +6,7 @@ import { initDatabase } from '../src/db/index.js';
 import { authRouter } from '../src/routes/auth.js';
 import { AuthService } from '../src/services/auth.service.js';
 import { loginIpLimiter, loginUserLimiter } from '../src/middleware/rate-limit.js';
+import { jsonBody } from '../src/middleware/json-body.js';
 
 /**
  * GHSA-2mp9: блокировка по логину не должна закрывать вход самому администратору.
@@ -33,7 +34,7 @@ beforeAll(async () => {
   AuthService.resetAdmin(ADMIN.username, ADMIN.password);
   const app = express();
   app.set('trust proxy', true);
-  app.use(express.json());
+  app.use(jsonBody);
   app.use('/api/auth', authRouter);
   server = http.createServer(app);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

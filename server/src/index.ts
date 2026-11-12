@@ -35,7 +35,7 @@ import { NodeUpdateService } from './services/node-update.service.js';
 import { ProviderService } from './services/provider.service.js';
 import { BackupService } from './services/backup.service.js';
 import { LiveService } from './services/live.service.js';
-import { REVALIDATE, staticHeaders } from './middleware/static-cache.js';
+import { serveSpa } from './middleware/static-cache.js';
 import { BridgeService } from './services/bridge.service.js';
 import { ExtraPortsService } from './services/extra-ports.service.js';
 import { migrationGuard, subscriptionFreeze } from './middleware/migration-guard.js';
@@ -49,6 +49,7 @@ import { CdnService } from './services/cdn.service.js';
 import { PanelAddressService } from './services/panel-address.service.js';
 import { SslService, http01Challenges } from './services/ssl.service.js';
 import { errorHandler } from './middleware/error-handler.js';
+import { jsonBody } from './middleware/json-body.js';
 import { securityHeaders } from './middleware/security-headers.js';
 import { cloudflareClientIp } from './middleware/cloudflare.js';
 import { CloudflarePanelService } from './services/cloudflare-panel.service.js';
@@ -103,7 +104,7 @@ app.use((req, res, next) => {
   res.redirect(302, location);
 });
 
-app.use(express.json({ limit: '1mb' }));
+app.use(jsonBody);
 
 // Во время переноса на другой сервер изменения блокируются, после переноса панель заморожена
 app.use('/api', migrationGuard);
@@ -160,12 +161,7 @@ const clientDistCandidates = [
 ];
 const clientDistPath = clientDistCandidates.find((p) => fs.existsSync(p));
 if (clientDistPath) {
-  app.use(express.static(clientDistPath, { setHeaders: staticHeaders(clientDistPath) }));
-  // Запасной маршрут SPA: оболочка всегда с проверкой (см. middleware/static-cache.ts)
-  app.get('*', (req, res) => {
-    res.setHeader('Cache-Control', REVALIDATE);
-    res.sendFile(path.join(clientDistPath, 'index.html'));
-  });
+  serveSpa(app, clientDistPath);
 }
 
 // JSON error handler (в т.ч. некорректный JSON в теле запроса)

@@ -1,7 +1,8 @@
 import zlib from 'node:zlib';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { initDatabase } from '../src/db/index.js';
 import { AuthService } from '../src/services/auth.service.js';
+import { CloudflarePanelService } from '../src/services/cloudflare-panel.service.js';
 import { sanitizeRemoteNode, sanitizeRemotePeer } from '../src/services/federation-client.service.js';
 import { AmneziaKeyError, decodeAmneziaKey, encodeAmneziaKey } from '../src/utils/amnezia-key.js';
 import { isValidSignature, sanitizeRemoteParams } from '../src/utils/awg-params.js';
@@ -45,6 +46,32 @@ describe('обработчик ошибок и заголовки безопас
 
     const huge = await call('/api/subscribers', { method: 'POST', body: JSON.stringify({ name: 'x'.repeat(2_000_000) }) });
     expect(huge.status).toBe(413);
+  });
+
+  it('вход без тела и с текстовым телом возвращает JSON-ошибку', async () => {
+    for (const options of [{}, { headers: { 'Content-Type': 'text/plain' }, body: 'text' }]) {
+      const res = await env.request('/api/auth/login', { method: 'POST', ...options });
+      expect(res.status).toBe(400);
+      expect(res.headers.get('content-type')).toContain('application/json');
+      expect(await res.json()).toEqual({ error: 'Логин и пароль обязательны' });
+    }
+  });
+
+  it('роут Cloudflare получает пустой объект без разобранного тела', async () => {
+    const configure = vi.spyOn(CloudflarePanelService, 'configure');
+    try {
+      for (const options of [{}, { headers: { 'Content-Type': 'text/plain' }, body: 'text' }]) {
+        const res = await env.request('/api/security/cloudflare', {
+          method: 'POST', ...options, headers: { Authorization: `Bearer ${token}`, ...options.headers },
+        });
+        expect(res.status).toBe(400);
+        expect(res.headers.get('content-type')).toContain('application/json');
+        expect((await res.json()).error).toEqual(expect.any(String));
+        expect(configure).toHaveBeenLastCalledWith({});
+      }
+    } finally {
+      configure.mockRestore();
+    }
   });
 
   it('ответы содержат CSP без внешних источников, запрет iframe и nosniff', async () => {

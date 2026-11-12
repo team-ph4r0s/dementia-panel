@@ -7,8 +7,7 @@ export class HttpError extends Error {
 }
 
 /**
- * Обёртка для async-обработчиков Express 4: отклонённый промис передаётся в error middleware,
- * а не превращается в unhandledRejection (который в Node.js завершает процесс).
+ * Обёртка для async-обработчиков: отклонённый промис передаётся в error middleware.
  */
 export function asyncHandler<T extends Request = Request>(
   fn: (req: T, res: Response, next: NextFunction) => unknown

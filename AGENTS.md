@@ -31,7 +31,7 @@ Dementia Panel — агентлесс-панель управления нода
 ## Структура репозитория
 
 ```
-server/            Node.js 22.13+ / Express 4 / TypeScript, SQLite через node:sqlite
+server/            Node.js 22.13+ / Express 5 / TypeScript, SQLite через node:sqlite
   src/index.ts       точка входа: HTTP+HTTPS на одном порту, WebSocket, фоновые задачи
   src/db/index.ts    схема и миграции (PRAGMA user_version)
   src/routes/        HTTP API
@@ -129,8 +129,7 @@ CI на `main`. Подробно — [docs/releases.md](docs/releases.md).
    конфигов идёт через `fetch` + Blob. WebSocket авторизуется первым сообщением `{type:'auth', token}`.
 5. **Никакой подстановки пользовательских данных в shell.** Значения для удалённых команд проходят валидацию и
    `shellQuote`; локальные команды — через `execFile` с массивом аргументов (см. fail2ban.service.ts).
-6. **Async-обработчики Express 4 оборачивайте в `asyncHandler`.** Иначе отклонённый промис завершит процесс. Ошибки
-   для пользователя бросайте как `HttpError(status, message)`.
+6. **Async-обработчики оборачивайте в `asyncHandler`.** Ошибки для пользователя бросайте как `HttpError(status, message)`.
 7. **Каждый WebSocket должен иметь `ws.on('error')`** — иначе один битый фрейм роняет панель.
 8. Партнёрский API работает **только по HTTPS** (`req.secure`); исключение — `ALLOW_INSECURE_FEDERATION=1` для разработки.
 
@@ -312,6 +311,9 @@ CI на `main`. Подробно — [docs/releases.md](docs/releases.md).
 52. **Mihomo-профиль всегда начинается с DIRECT-правил для IP-адресов AWG endpoint.** Это обход FlClash #2966; не удаляйте эти правила
     и не переносите их после других. Адреса VLESS и CDN не добавляются: иначе другие сайты на этих IP пойдут мимо туннеля.
     Подробно — docs/subscriptions.md.
+
+53. **Тело JSON разбирается только через `jsonBody`.** Express 5 оставляет `req.body` неопределённым без разобранного тела;
+    middleware подставляет пустой объект. Маршруты используют синтаксис path-to-regexp v8: `/{*splat}`, а не голую `*`.
 
 ## Чек-лист перед коммитом
 

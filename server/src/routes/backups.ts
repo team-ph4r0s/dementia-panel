@@ -57,7 +57,7 @@ backupsRouter.get('/:id/download', asyncHandler(async (req, res) => {
   res.send(data);
 }));
 backupsRouter.delete('/:id', asyncHandler(async (req, res) => {
-  await BackupService.delete(req.params.id);
+  await BackupService.delete(String(req.params.id));
   res.json({ success: true });
 }));
 backupsRouter.post('/recovery-key', (req: AuthenticatedRequest, res) => {

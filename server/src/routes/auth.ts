@@ -305,7 +305,7 @@ authRouter.get('/sessions', requireAuth, (req: AuthenticatedRequest, res) => {
 
 // DELETE /api/auth/sessions/:id — отзыв сессии
 authRouter.delete('/sessions/:id', requireAuth, (req: AuthenticatedRequest, res) => {
-  const sessionId = parseInt(req.params.id, 10);
+  const sessionId = parseInt(String(req.params.id), 10);
   if (isNaN(sessionId)) return res.status(400).json({ error: 'Неверный ID сессии' });
 
   // Проверяем, что сессия принадлежит текущему администратору

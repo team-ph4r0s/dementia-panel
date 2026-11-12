@@ -5,7 +5,7 @@ import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import express from 'express';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { IMMUTABLE, REVALIDATE, SHORT, staticCacheControl, staticHeaders } from '../src/middleware/static-cache.js';
+import { IMMUTABLE, REVALIDATE, SHORT, serveSpa, staticCacheControl } from '../src/middleware/static-cache.js';
 
 /**
  * Кеширование статики интерфейса. Если сервис-воркер или оболочка закешируются надолго, телефоны с установленным приложением
@@ -46,7 +46,7 @@ describe('раздача через express.static', () => {
     fs.writeFileSync(path.join(dir, 'manifest.webmanifest'), '{"name":"x"}');
     fs.writeFileSync(path.join(dir, 'assets', 'app-1a2b3c.js'), 'console.log(1)');
     const app = express();
-    app.use(express.static(dir, { setHeaders: staticHeaders(dir) }));
+    serveSpa(app, dir);
     server = http.createServer(app);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -69,5 +69,12 @@ describe('раздача через express.static', () => {
   it('файлы сборки отдаются с immutable', async () => {
     const asset = await fetch(`${base}/assets/app-1a2b3c.js`);
     expect(asset.headers.get('cache-control')).toBe(IMMUTABLE);
+  });
+
+  it('глубокая ссылка возвращает оболочку SPA с проверкой кеша', async () => {
+    const response = await fetch(`${base}/servers/5`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe(REVALIDATE);
+    expect(await response.text()).toBe('<!doctype html>');
   });
 });
