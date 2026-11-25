@@ -99,4 +99,33 @@ describe('вывод команды SSH', () => {
     fakeStream().stderr.emit('data', Buffer.alloc(MAX_COMMAND_OUTPUT + 1));
     await assertion;
   });
+
+  it('withConnection выполняет несколько команд на одном соединении и закрывает его один раз (#110)', async () => {
+    const results: string[] = [];
+    const runWithConn = SshService.withConnection({ host: 'node.example.com' }, async (exec) => {
+      const p1 = exec('cmd1');
+      await channelReady();
+      const s1 = fakeStream();
+      s1.emit('data', Buffer.from('one'));
+      s1.emit('close', 0);
+      results.push((await p1).stdout);
+
+      const p2 = exec('cmd2');
+      await channelReady();
+      const s2 = fakeStream();
+      s2.emit('data', Buffer.from('two'));
+      s2.emit('close', 0);
+      results.push((await p2).stdout);
+      return 'done';
+    });
+
+    await expect(runWithConn).resolves.toBe('done');
+    expect(results).toEqual(['one', 'two']);
+
+    await expect(
+      SshService.withConnection({ host: 'node.example.com' }, async () => {
+        throw new Error('boom');
+      })
+    ).rejects.toThrow('boom');
+  });
 });

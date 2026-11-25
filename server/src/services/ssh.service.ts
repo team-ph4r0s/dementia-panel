@@ -39,6 +39,11 @@ export function fingerprintHostKey(key: Buffer): string {
   return 'SHA256:' + crypto.createHash('sha256').update(key).digest('base64').replace(/=+$/, '');
 }
 
+export type SshExecFn = (
+  command: string,
+  options?: CommandOptions | ((chunk: string) => void)
+) => Promise<{ code: number; stdout: string; stderr: string }>;
+
 export class SshService {
   /**
    * Префикс для команд, требующих root: для не-root пользователя используется sudo без запроса пароля.
@@ -100,42 +105,44 @@ export class SshService {
     }
   }
 
-  /**
-   * Execute command on remote host with streaming stdout/stderr
-   */
-  static async executeCommand(
-    credentials: SshCredentials,
+  private static execOnClient(
+    conn: Client,
     command: string,
-    options: CommandOptions | ((chunk: string) => void) = {}
+    opts: CommandOptions,
+    closeOnFinish: boolean
   ): Promise<{ code: number; stdout: string; stderr: string }> {
-    const opts: CommandOptions = typeof options === 'function' ? { onData: options } : options;
-    const conn = await this.connect(credentials, 15000);
-
     return new Promise((resolve, reject) => {
       let stdout = '';
       let stderr = '';
       let settled = false;
+      const cleanup = () => {
+        conn.removeListener('error', onConnError);
+        if (timer) clearTimeout(timer);
+        if (closeOnFinish) conn.end();
+      };
+      const onConnError = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(err);
+      };
       const timer = opts.timeoutMs
         ? setTimeout(() => {
             if (settled) return;
             settled = true;
-            conn.end();
+            cleanup();
+            if (!closeOnFinish) conn.end();
             reject(new Error(`Превышено время выполнения команды (${Math.round(opts.timeoutMs! / 1000)} с)`));
           }, opts.timeoutMs)
         : null;
 
-      conn.on('error', (err) => {
-        if (settled) return;
-        settled = true;
-        if (timer) clearTimeout(timer);
-        reject(err);
-      });
+      conn.on('error', onConnError);
 
       conn.exec(command, (err, stream) => {
         if (err) {
+          if (settled) return;
           settled = true;
-          if (timer) clearTimeout(timer);
-          conn.end();
+          cleanup();
           return reject(err);
         }
 
@@ -143,8 +150,8 @@ export class SshService {
         const failChannel = (channelErr: Error) => {
           if (settled) return;
           settled = true;
-          if (timer) clearTimeout(timer);
-          conn.end();
+          cleanup();
+          if (!closeOnFinish) conn.end();
           reject(channelErr);
         };
         stream.on('error', failChannel);
@@ -165,10 +172,9 @@ export class SshService {
 
         stream
           .on('close', (code: number | null) => {
-            if (timer) clearTimeout(timer);
-            conn.end();
             if (settled) return;
             settled = true;
+            cleanup();
             const outTail = outDecoder.end();
             const errTail = errDecoder.end();
             stdout += outTail;
@@ -196,5 +202,38 @@ export class SshService {
         }
       });
     });
+  }
+
+  /**
+   * Выполняет серию команд поверх одного SSH-соединения и гарантированно закрывает его по завершении.
+   */
+  static async withConnection<T>(
+    credentials: SshCredentials,
+    fn: (exec: SshExecFn) => Promise<T>,
+    readyTimeout = 15000
+  ): Promise<T> {
+    const conn = await this.connect(credentials, readyTimeout);
+    try {
+      const exec: SshExecFn = (command, options = {}) => {
+        const opts: CommandOptions = typeof options === 'function' ? { onData: options } : options;
+        return this.execOnClient(conn, command, opts, false);
+      };
+      return await fn(exec);
+    } finally {
+      conn.end();
+    }
+  }
+
+  /**
+   * Execute command on remote host with streaming stdout/stderr
+   */
+  static async executeCommand(
+    credentials: SshCredentials,
+    command: string,
+    options: CommandOptions | ((chunk: string) => void) = {}
+  ): Promise<{ code: number; stdout: string; stderr: string }> {
+    const opts: CommandOptions = typeof options === 'function' ? { onData: options } : options;
+    const conn = await this.connect(credentials, 15000);
+    return this.execOnClient(conn, command, opts, true);
   }
 }

@@ -2,7 +2,32 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db, transaction } from '../db/index.js';
+import type { ClientRow, ServerRow } from '../db/types.js';
 import { SshService, SshCredentials, HostKeyMismatchError } from './ssh.service.js';
+import { runExclusive, waitForActiveOperations } from './provision-queue.js';
+import {
+  type OperationResult,
+  type DetectedContainer,
+  type ScanResult,
+  type NodeInfo,
+  type XrayStatItem,
+  parseScanOutput,
+  parseNodeInfo,
+  parseXrayStats,
+} from './provision-parsers.js';
+
+export {
+  runExclusive,
+  waitForActiveOperations,
+  parseScanOutput,
+  parseNodeInfo,
+  parseXrayStats,
+  type OperationResult,
+  type DetectedContainer,
+  type ScanResult,
+  type NodeInfo,
+  type XrayStatItem,
+};
 import { AwgService } from './awg.service.js';
 import { decryptSecret } from './secrets.service.js';
 import { shellQuote, parseSubnet } from '../utils/net.js';
@@ -51,40 +76,6 @@ const OFFLINE_THRESHOLD = 3;
 /** Как часто перечитываются версии ПО AmneziaWG на ноде (после установки и подключения — сразу) */
 const NODE_INFO_TTL_MS = 12 * 60 * 60 * 1000;
 
-export interface OperationResult {
-  success: boolean;
-  error?: string;
-}
-
-export interface DetectedContainer {
-  name: string;
-  image: string;
-  running: boolean;
-  confPath: string | null;
-  tool: 'awg' | 'wg';
-  managedBy: 'demension' | 'amnezia';
-  config: string | null;
-  clientNames: Record<string, string>;
-}
-
-export interface ScanResult {
-  /** Найден работающий контейнер с конфигурацией, который можно подключить без установки */
-  found: boolean;
-  containers: { name: string; image: string; running: boolean; managedBy: string }[];
-  message: string;
-  adopted?: {
-    container: string;
-    managedBy: string;
-    awgVersion: number;
-    port: number;
-    subnet: string;
-    importedPeers: number;
-    skippedPeers: number;
-  };
-}
-
-// Все операции с одной нодой выполняются последовательно (с мостом — по ключу `bridge:<id>`)
-const chains = new Map<number | string, Promise<unknown>>();
 // Запрошенная, но ещё не начатая синхронизация (повторные запросы объединяются)
 const pendingSync = new Map<number, Promise<OperationResult>>();
 // То же для применения параметров: каждое применение перезапускает контейнер и рвёт туннели всех клиентов
@@ -97,39 +88,8 @@ const installing = new Set<number>();
  */
 const appliedBaseline = new Map<number, Record<string, unknown>>();
 
-export function runExclusive<T>(serverId: number | string, fn: () => Promise<T>): Promise<T> {
-  const previous = chains.get(serverId) || Promise.resolve();
-  const next = previous.catch(() => {}).then(fn);
-  const tail = next.catch(() => {});
-  chains.set(serverId, tail);
-  tail.then(() => {
-    if (chains.get(serverId) === tail) chains.delete(serverId);
-  });
-  return next;
-}
-
-/**
- * Ожидает завершения активных операций в очереди нод и мостов (с ограничением по времени для graceful shutdown).
- */
-export async function waitForActiveOperations(timeoutMs = 15000): Promise<void> {
-  if (chains.size === 0) return;
-  const active = Promise.allSettled([...chains.values()]);
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    await Promise.race([
-      active,
-      new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, timeoutMs);
-        timer.unref();
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
-function loadServer(serverId: number): any {
-  const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as any;
+function loadServer(serverId: number): ServerRow {
+  const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as ServerRow | undefined;
   if (!server) throw new HttpError(404, `Сервер #${serverId} не найден`);
   return server;
 }
@@ -137,7 +97,7 @@ function loadServer(serverId: number): any {
 /**
  * Сервер — нода партнёрской панели (без SSH-доступа)
  */
-function loadLocalServer(serverId: number): any {
+function loadLocalServer(serverId: number): ServerRow {
   const server = loadServer(serverId);
   if (server.remote_panel_id) throw new HttpError(400, REMOTE_NODE_ERROR);
   return server;
@@ -172,172 +132,8 @@ function readDeployXrayScript(): string {
   throw new Error('Установочный скрипт deploy-xray.sh не найден');
 }
 
-/**
- * Разбор вывода скрипта сканирования (маркеры ---CONTAINER / ---CONF / ---TOOL / ---CLIENTS / ---DEMENTIA)
- */
-export function parseScanOutput(output: string): DetectedContainer[] {
-  const containers: DetectedContainer[] = [];
-  let current: DetectedContainer | null = null;
-  let mode: 'conf' | 'clients' | null = null;
-  let buffer: string[] = [];
-
-  for (const line of output.split(/\r?\n/)) {
-    if (mode) {
-      if ((mode === 'conf' && line === '---ENDCONF') || (mode === 'clients' && line === '---ENDCLIENTS')) {
-        if (current && mode === 'conf') current.config = buffer.join('\n');
-        if (current && mode === 'clients') {
-          try {
-            const table = JSON.parse(buffer.join('\n'));
-            for (const entry of Array.isArray(table) ? table : []) {
-              const name = entry?.userData?.clientName;
-              if (entry?.clientId && typeof name === 'string' && name.trim()) current.clientNames[entry.clientId] = name.trim();
-            }
-          } catch {
-            // clientsTable не JSON — имена не импортируются
-          }
-        }
-        mode = null;
-        buffer = [];
-      } else {
-        buffer.push(line);
-      }
-      continue;
-    }
-
-    if (line.startsWith('---CONTAINER ')) {
-      const [name, image, running] = line.slice('---CONTAINER '.length).split('|');
-      current = {
-        name,
-        image: image || '',
-        running: running === 'true',
-        confPath: null,
-        tool: 'awg',
-        managedBy: 'amnezia',
-        config: null,
-        clientNames: {},
-      };
-      containers.push(current);
-    } else if (current && line.startsWith('---CONF ')) {
-      current.confPath = line.slice('---CONF '.length).trim();
-      mode = 'conf';
-    } else if (current && line.startsWith('---TOOL ')) {
-      current.tool = line.includes('awg') ? 'awg' : 'wg';
-    } else if (current && line === '---CLIENTS') {
-      mode = 'clients';
-    } else if (current && line === '---DEMENTIA') {
-      current.managedBy = 'demension';
-    }
-  }
-  return containers;
-}
-
-export interface NodeInfo {
-  awg_go: string | null;
-  awg_tools: string | null;
-  image: string | null;
-  image_created: string | null;
-}
-
-/**
- * Разбор вывода команды версий (строки IMAGE / CREATED / GO / TOOLS). Вывод приходит с ноды и показывается в интерфейсе,
- * поэтому берутся только значения строго известного формата.
- */
-export function parseNodeInfo(output: string): NodeInfo {
-  const line = (key: string) => new RegExp(`^${key} (.*)$`, 'm').exec(output)?.[1]?.trim() ?? '';
-  const go = /amneziawg-go\s+v?(\d[\w.+-]{0,40})/.exec(line('GO'))?.[1] ?? null;
-  const tools = /(amneziawg-tools|wireguard-tools)\s+v?(\d[\w.+-]{0,40})/.exec(line('TOOLS'));
-  const xray = /Xray\s+v?(\d[\w.+-]{0,40})/i.exec(line('XRAY'));
-  const image = /^[\w./:@-]{1,200}$/.test(line('IMAGE')) ? line('IMAGE') : null;
-  const created = line('CREATED');
-  return {
-    awg_go: go,
-    awg_tools: tools ? `${tools[1]} ${tools[2]}` : (xray ? `Xray ${xray[1]}` : null),
-    image,
-    image_created: /^\d{4}-\d{2}-\d{2}T/.test(created) && !Number.isNaN(Date.parse(created)) ? new Date(created).toISOString() : null,
-  };
-}
-
-export interface XrayStatItem {
-  email: string;
-  uplink: number;
-  downlink: number;
-}
-
-/**
- * Разбор вывода `xray api statsquery -s 127.0.0.1:10085 -reset`.
- * Вывод ноды — недоверенные данные: строгая фильтрация формата имён user>>><email_or_uuid>>>>traffic>>>uplink|downlink
- * и числовых значений байтов.
- */
-export function parseXrayStats(output: string): XrayStatItem[] {
-  const map = new Map<string, { uplink: number; downlink: number }>();
-  if (!output || typeof output !== 'string') return [];
-
-  const getOrCreate = (email: string) => {
-    let entry = map.get(email);
-    if (!entry) {
-      entry = { uplink: 0, downlink: 0 };
-      map.set(email, entry);
-    }
-    return entry;
-  };
-
-  const parseItem = (name: unknown, val: unknown) => {
-    if (typeof name !== 'string') return;
-    const match = /^user>>>([a-zA-Z0-9_-]{1,64})>>>traffic>>>(uplink|downlink)$/.exec(name.trim());
-    if (!match) return;
-    const email = match[1];
-    const bytes = typeof val === 'number' ? val : parseInt(String(val), 10);
-    if (!Number.isSafeInteger(bytes) || bytes <= 0) return;
-
-    const entry = getOrCreate(email);
-    if (match[2] === 'uplink') {
-      entry.uplink += bytes;
-    } else {
-      entry.downlink += bytes;
-    }
-  };
-
-  let parsedJson = false;
-  try {
-    const trimmed = output.trim();
-    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-      const data = JSON.parse(trimmed);
-      const items = Array.isArray(data?.stat) ? data.stat : Array.isArray(data) ? data : null;
-      if (items) {
-        for (const item of items) {
-          parseItem(item?.name, item?.value);
-        }
-        parsedJson = true;
-      }
-    }
-  } catch {
-    // Не JSON — продолжаем разбор регулярным выражением
-  }
-
-  if (!parsedJson) {
-    const re = /user>>>([a-zA-Z0-9_-]{1,64})>>>traffic>>>(uplink|downlink)[\s":=]+(\d+)/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(output)) !== null) {
-      const email = m[1];
-      const dir = m[2];
-      const bytes = parseInt(m[3], 10);
-      if (Number.isSafeInteger(bytes) && bytes > 0) {
-        const entry = getOrCreate(email);
-        if (dir === 'uplink') entry.uplink += bytes;
-        else entry.downlink += bytes;
-      }
-    }
-  }
-
-  return Array.from(map.entries()).map(([email, traffic]) => ({
-    email,
-    uplink: traffic.uplink,
-    downlink: traffic.downlink,
-  }));
-}
-
 export class ProvisionService {
-  static getCredentials(server: any): SshCredentials {
+  static getCredentials(server: Pick<ServerRow, 'id' | 'host' | 'ssh_port' | 'ssh_user' | 'ssh_password' | 'ssh_key' | 'host_key'>): SshCredentials {
     return {
       host: server.host,
       port: server.ssh_port,

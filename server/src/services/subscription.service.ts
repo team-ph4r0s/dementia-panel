@@ -1,4 +1,5 @@
 import { db } from '../db/index.js';
+import type { SubscriberRow } from '../db/types.js';
 import { ProvisionService } from './provision.service.js';
 
 export interface SubscriberUsage {
@@ -33,7 +34,7 @@ export class SubscriptionService {
   static refreshSuspension(subscriberId?: number): void {
     const subs = (subscriberId
       ? db.prepare('SELECT * FROM subscribers WHERE id = ?').all(subscriberId)
-      : db.prepare('SELECT * FROM subscribers').all()) as any[];
+      : db.prepare('SELECT * FROM subscribers').all()) as unknown as SubscriberRow[];
 
     for (const sub of subs) {
       const usage = this.getUsage(sub.id);

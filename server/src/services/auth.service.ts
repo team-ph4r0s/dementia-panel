@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { db, transaction, getSetting, setSetting } from '../db/index.js';
+import type { AdminRow, SessionRow } from '../db/types.js';
 import { encryptSecret, decryptSecret } from './secrets.service.js';
 import { EventService } from './event.service.js';
 
@@ -189,7 +190,7 @@ export class AuthService {
    * Authenticate admin and generate a session token
    */
   static login(username: string, password: string): { token: string; user: SessionUser } | null {
-    const admin = db.prepare('SELECT * FROM admins WHERE username = ?').get(username) as any;
+    const admin = db.prepare('SELECT * FROM admins WHERE username = ?').get(username) as AdminRow | undefined;
     if (!admin) {
       // Выравнивание времени ответа, чтобы нельзя было перебирать логины
       this.hashPassword(password);
@@ -216,7 +217,7 @@ export class AuthService {
       FROM sessions s
       JOIN admins a ON s.admin_id = a.id
       WHERE s.token = ? AND s.expires_at > ?
-    `).get(hashToken(token), new Date().toISOString()) as any;
+    `).get(hashToken(token), new Date().toISOString()) as (Pick<SessionRow, 'admin_id' | 'role'> & { username: string }) | undefined;
 
     if (!session) return null;
     if (session.role === 'guest') {
@@ -247,7 +248,7 @@ export class AuthService {
    * Change admin password. All sessions are revoked; a fresh token for the caller is returned.
    */
   static changePassword(adminId: number, oldPass: string, newPass: string, ip?: string, userAgent?: string): string | null {
-    const admin = db.prepare('SELECT * FROM admins WHERE id = ?').get(adminId) as any;
+    const admin = db.prepare('SELECT * FROM admins WHERE id = ?').get(adminId) as AdminRow | undefined;
     if (!admin) return null;
 
     if (!this.verifyPassword(oldPass, admin.password_hash, admin.salt)) {
@@ -263,7 +264,7 @@ export class AuthService {
   }
 
   static async changePasswordAsync(adminId: number, oldPass: string, newPass: string, ip?: string, userAgent?: string): Promise<string | null> {
-    const admin = db.prepare('SELECT * FROM admins WHERE id = ?').get(adminId) as any;
+    const admin = db.prepare('SELECT * FROM admins WHERE id = ?').get(adminId) as AdminRow | undefined;
     if (!admin) return null;
 
     if (!(await this.verifyPasswordAsync(oldPass, admin.password_hash, admin.salt))) {
@@ -280,13 +281,13 @@ export class AuthService {
 
   /** Проверка пароля администратора для действий, которые требуют подтверждения (смена логина, перенос панели) */
   static confirmPassword(adminId: number, password: string): boolean {
-    const admin = db.prepare('SELECT password_hash, salt FROM admins WHERE id = ?').get(adminId) as any;
-    return Boolean(admin) && this.verifyPassword(password, admin.password_hash, admin.salt);
+    const admin = db.prepare('SELECT password_hash, salt FROM admins WHERE id = ?').get(adminId) as Pick<AdminRow, 'password_hash' | 'salt'> | undefined;
+    return Boolean(admin) && this.verifyPassword(password, admin!.password_hash, admin!.salt);
   }
 
   static async confirmPasswordAsync(adminId: number, password: string): Promise<boolean> {
-    const admin = db.prepare('SELECT password_hash, salt FROM admins WHERE id = ?').get(adminId) as any;
-    return Boolean(admin) && (await this.verifyPasswordAsync(password, admin.password_hash, admin.salt));
+    const admin = db.prepare('SELECT password_hash, salt FROM admins WHERE id = ?').get(adminId) as Pick<AdminRow, 'password_hash' | 'salt'> | undefined;
+    return Boolean(admin) && (await this.verifyPasswordAsync(password, admin!.password_hash, admin!.salt));
   }
 
   /**
@@ -445,7 +446,7 @@ export class AuthService {
    */
   static checkTotp(adminId: number, code: string): boolean {
     // Перехваченный код нельзя использовать повторно, пока он ещё в окне допуска (±30 с)
-    const admin = db.prepare('SELECT totp_secret, totp_enabled FROM admins WHERE id = ?').get(adminId) as any;
+    const admin = db.prepare('SELECT totp_secret, totp_enabled FROM admins WHERE id = ?').get(adminId) as Pick<AdminRow, 'totp_secret' | 'totp_enabled'> | undefined;
     if (!admin || !admin.totp_enabled || !admin.totp_secret) return false;
 
     const secret = decryptSecret(admin.totp_secret);
@@ -463,7 +464,7 @@ export class AuthService {
    * Использует recovery code (одноразовый): проверяет SHA-256 и удаляет из списка
    */
   static useRecoveryCode(adminId: number, code: string): boolean {
-    const admin = db.prepare('SELECT recovery_codes FROM admins WHERE id = ?').get(adminId) as any;
+    const admin = db.prepare('SELECT recovery_codes FROM admins WHERE id = ?').get(adminId) as Pick<AdminRow, 'recovery_codes'> | undefined;
     if (!admin || !admin.recovery_codes) return false;
 
     const hashes: string[] = JSON.parse(admin.recovery_codes);
@@ -499,7 +500,7 @@ export class AuthService {
     ip?: string,
     userAgent?: string,
   ): { token: string; user: SessionUser } | 'totp_required' | 'invalid_code' | null {
-    const admin = db.prepare('SELECT * FROM admins WHERE username = ?').get(username) as any;
+    const admin = db.prepare('SELECT * FROM admins WHERE username = ?').get(username) as AdminRow | undefined;
     if (!admin) return this.loginGuest(username, password, ip, userAgent);
 
     if (!this.verifyPassword(password, admin.password_hash, admin.salt)) return null;
@@ -533,7 +534,7 @@ export class AuthService {
     ip?: string,
     userAgent?: string,
   ): Promise<{ token: string; user: SessionUser } | 'totp_required' | 'invalid_code' | null> {
-    const admin = db.prepare('SELECT * FROM admins WHERE username = ?').get(username) as any;
+    const admin = db.prepare('SELECT * FROM admins WHERE username = ?').get(username) as AdminRow | undefined;
     if (!admin) return this.loginGuestAsync(username, password, ip, userAgent);
 
     if (!(await this.verifyPasswordAsync(password, admin.password_hash, admin.salt))) return null;

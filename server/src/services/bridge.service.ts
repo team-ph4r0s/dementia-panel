@@ -4,6 +4,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db, getSetting, transaction } from '../db/index.js';
+import type { BridgeLinkRow, BridgeRow, BridgeStateRow, ServerRow } from '../db/types.js';
 import { HttpError } from '../utils/http.js';
 import { formatEndpointHost, isValidHost, isValidPort, shellQuote } from '../utils/net.js';
 import { checkRealityCertificate } from '../utils/reality-check.js';
@@ -202,13 +203,13 @@ export function parseHealth(output: string): { rules: number; forwardFirst: bool
   };
 }
 
-function loadBridge(id: number): any {
-  const bridge = db.prepare('SELECT * FROM bridges WHERE id = ?').get(id) as any;
+function loadBridge(id: number): BridgeRow {
+  const bridge = db.prepare('SELECT * FROM bridges WHERE id = ?').get(id) as BridgeRow | undefined;
   if (!bridge) throw new HttpError(404, 'Мост не найден');
   return bridge;
 }
 
-function credentials(bridge: any): SshCredentials {
+function credentials(bridge: BridgeRow): SshCredentials {
   return {
     host: bridge.host,
     port: bridge.ssh_port,
@@ -227,7 +228,7 @@ function ruleLinks(bridgeId: number): BridgeRuleLink[] {
     SELECT l.listen_port, s.host, s.awg_port, s.stub_port, s.protocol
     FROM bridge_links l JOIN servers s ON s.id = l.server_id
     WHERE l.bridge_id = ? AND l.cascade_port IS NULL ORDER BY l.listen_port
-  `).all(bridgeId) as any[];
+  `).all(bridgeId) as unknown as BridgeRuleLink[];
 }
 
 function cascadeLinks(bridgeId: number): CascadeLink[] {
@@ -236,7 +237,17 @@ function cascadeLinks(bridgeId: number): CascadeLink[] {
       COALESCE(s.deployed_port, s.awg_port) AS vpn_port, s.stub_port
     FROM bridge_links l JOIN servers s ON s.id = l.server_id
     WHERE l.bridge_id = ? AND l.cascade_port IS NOT NULL ORDER BY l.server_id
-  `).all(bridgeId) as any[];
+  `).all(bridgeId) as Array<{
+    server_id: number;
+    listen_port: number;
+    cascade_port: number;
+    cascade_secret: string;
+    cascade_pending: number;
+    host: string;
+    protocol: string;
+    vpn_port: number;
+    stub_port: number | null;
+  }>;
   return rows.map((row) => ({
     bridgeId, serverId: row.server_id, host: row.host, port: row.cascade_port, listenPort: row.listen_port,
     vpnPort: row.vpn_port, stubPort: row.stub_port, protocol: nodeProtocol(row), secret: JSON.parse(decryptSecret(row.cascade_secret)!),
@@ -245,13 +256,13 @@ function cascadeLinks(bridgeId: number): CascadeLink[] {
 }
 
 /** Пересылка панели для моста: включена флагом `panel_forward` и известен IPv4 панели (`panel_origin_ip`) */
-function panelForwardOf(bridge: any): PanelForward | null {
+function panelForwardOf(bridge: BridgeRow): PanelForward | null {
   if (!bridge?.panel_forward) return null;
   const ip = getSetting('panel_origin_ip');
   return ip && net.isIPv4(ip) ? { ip, port: panelPort() } : null;
 }
 
-function rulesFor(bridge: any): string {
+function rulesFor(bridge: BridgeRow): string {
   const rules = buildBridgeRules(ruleLinks(bridge.id), panelForwardOf(bridge));
   const links = cascadeLinks(bridge.id);
   if (!links.length) return rules;
@@ -295,8 +306,8 @@ export class BridgeService {
   // ---- Представление ----
 
   /** Мост для интерфейса — без SSH-пароля и ключа */
-  static serialize(bridge: any) {
-    const { ssh_password, ssh_key, rules_hash, ...rest } = bridge;
+  static serialize(bridge: BridgeRow) {
+    const { ssh_password, ssh_key, rules_hash: _rulesHash, ...rest } = bridge;
     const links = db.prepare(`
       SELECT l.server_id, s.name AS server_name, s.host AS server_host, s.awg_port, l.listen_port, l.mode, l.check_ok, l.checked_at,
         l.cascade_port, l.cascade_pending,
@@ -305,7 +316,11 @@ export class BridgeService {
       JOIN servers s ON s.id = l.server_id
       LEFT JOIN bridge_state st ON st.server_id = l.server_id AND st.country = ?
       WHERE l.bridge_id = ? ORDER BY s.sub_order, s.id
-    `).all(bridge.country, bridge.id) as any[];
+    `).all(bridge.country, bridge.id) as unknown as Array<
+      Pick<BridgeLinkRow, 'server_id' | 'listen_port' | 'mode' | 'check_ok' | 'checked_at' | 'cascade_port' | 'cascade_pending'> &
+      Pick<BridgeStateRow, 'active' | 'reason' | 'changed_at'> &
+      { server_name: string; server_host: string; awg_port: number }
+    >;
     return {
       ...rest,
       needs_apply: Boolean(bridge.needs_apply),
@@ -322,7 +337,7 @@ export class BridgeService {
   }
 
   static list() {
-    return (db.prepare('SELECT * FROM bridges ORDER BY id').all() as any[]).map((b) => this.serialize(b));
+    return (db.prepare('SELECT * FROM bridges ORDER BY id').all() as unknown as BridgeRow[]).map((b) => this.serialize(b));
   }
 
   static get(id: number) {
@@ -526,7 +541,7 @@ export class BridgeService {
         const bridge = loadBridge(id);
         db.prepare("UPDATE bridges SET status = 'installing', last_error = NULL WHERE id = ?").run(id);
         try {
-          const rules = rulesFor(db.prepare('SELECT * FROM bridges WHERE id = ?').get(id));
+          const rules = rulesFor(loadBridge(id));
           const script = [`export RULES_B64=${shellQuote(Buffer.from(rules).toString('base64'))}`, readDeployScript()].join('\n');
           const creds = credentials(bridge);
           const failed = await this.applyCascades(bridge, creds);
@@ -568,13 +583,13 @@ export class BridgeService {
   }
 
   private static async doApply(id: number, removedCascade?: CascadeLink, strictServerId?: number): Promise<OperationResult> {
-    const bridge = db.prepare('SELECT * FROM bridges WHERE id = ?').get(id) as any;
+    const bridge = db.prepare('SELECT * FROM bridges WHERE id = ?').get(id) as BridgeRow | undefined;
     if (!bridge) return { success: false, error: 'Мост удалён' };
     if (bridge.status === 'uninstalled' || bridge.status === 'installing' || installing.has(id)) {
       return { success: false, error: 'Мост не установлен' };
     }
     try {
-      const rules = rulesFor(db.prepare('SELECT * FROM bridges WHERE id = ?').get(id));
+      const rules = rulesFor(bridge);
       const creds = credentials(bridge);
       const failed = await this.applyCascades(bridge, creds, strictServerId);
       const write = [

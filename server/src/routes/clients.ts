@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import QRCode from 'qrcode';
 import { db, transaction } from '../db/index.js';
+import type { ClientRow, ServerRow } from '../db/types.js';
 import { AwgService } from '../services/awg.service.js';
 import { XrayService } from '../services/xray.service.js';
 import { nodeProtocol } from '../utils/vless-params.js';
@@ -26,8 +27,8 @@ export function serializeClient(c: any) {
   };
 }
 
-function getClientOr404(id: number): any {
-  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(id) as any;
+function getClientOr404(id: number): ClientRow {
+  const client = db.prepare('SELECT * FROM clients WHERE id = ?').get(id) as ClientRow | undefined;
   if (!client) throw new HttpError(404, 'Клиент не найден');
   return client;
 }
@@ -60,7 +61,7 @@ clientsRouter.get('/servers/:serverId/clients', (req, res) => {
 // POST create client for server
 clientsRouter.post('/servers/:serverId/clients', asyncHandler(async (req, res) => {
   const serverId = parseId(req.params.serverId);
-  const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as any;
+  const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as ServerRow | undefined;
   if (!server) throw new HttpError(404, 'Сервер не найден');
 
   const rawName = req.body?.name;
@@ -72,14 +73,14 @@ clientsRouter.post('/servers/:serverId/clients', asyncHandler(async (req, res) =
   const uuid = vless ? XrayService.generateUuid() : null;
 
   if (server.remote_panel_id && server.status === 'uninstalled') throw new HttpError(409, 'Нода партнёра сейчас недоступна');
-  const newClient: any = transaction(() => {
+  const newClient = transaction(() => {
     const clientIp = vless ? '' : server.remote_panel_id ? pendingIp() : AwgService.getNextClientIp(serverId, server.subnet);
     const result = db.prepare(`
       INSERT INTO clients (
         server_id, name, client_ip, client_public_key, client_private_key, preshared_key, client_uuid, enabled
       ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
     `).run(serverId, name, clientIp, keyPair.publicKey, keyPair.privateKey, psk, uuid);
-    return db.prepare('SELECT * FROM clients WHERE id = ?').get(result.lastInsertRowid);
+    return db.prepare('SELECT * FROM clients WHERE id = ?').get(result.lastInsertRowid) as unknown as ClientRow;
   });
 
   if (server.remote_panel_id) {
@@ -112,7 +113,7 @@ clientsRouter.put('/clients/:id', (req, res) => {
   const newEnabled = enabled === undefined ? client.enabled : enabled ? 1 : 0;
   db.prepare('UPDATE clients SET name = ?, enabled = ? WHERE id = ?').run(newName, newEnabled, id);
   // На ноде партнёра имя видит и владелец, поэтому переименование тоже передаётся ему
-  const remote = Boolean((db.prepare('SELECT remote_panel_id FROM servers WHERE id = ?').get(client.server_id) as any)?.remote_panel_id);
+  const remote = Boolean((db.prepare('SELECT remote_panel_id FROM servers WHERE id = ?').get(client.server_id) as Pick<ServerRow, 'remote_panel_id'> | undefined)?.remote_panel_id);
   if (newEnabled !== client.enabled || (remote && newName !== client.name)) syncIfInstalled(client.server_id);
 
   res.json(serializeClient(db.prepare('SELECT * FROM clients WHERE id = ?').get(id)));
@@ -143,12 +144,12 @@ function loadClientWithServer(id: number) {
   if (client.external) {
     throw new HttpError(409, 'Клиент импортирован из существующей установки — его приватный ключ панели неизвестен. Создайте нового клиента, чтобы получить конфигурацию.');
   }
-  const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(client.server_id) as any;
+  const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(client.server_id) as ServerRow | undefined;
   if (!server) throw new HttpError(404, 'Сервер не найден');
   return { client, server };
 }
 
-function clientConfigText(server: any, client: any): string {
+function clientConfigText(server: ServerRow, client: ClientRow): string {
   return nodeProtocol(server) === 'vless'
     ? XrayService.buildVlessLink(server, client, client.name)
     : AwgService.generateClientConfig(server, client);

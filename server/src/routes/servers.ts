@@ -1,6 +1,7 @@
 import { CdnService } from '../services/cdn.service.js';
 import { Router } from 'express';
 import { db, transaction, getSetting } from '../db/index.js';
+import type { RemotePanelRow, ServerRow } from '../db/types.js';
 import { AwgService, AwgParams } from '../services/awg.service.js';
 import { SshService } from '../services/ssh.service.js';
 import { ProvisionService } from '../services/provision.service.js';
@@ -32,13 +33,13 @@ const CLIENT_ONLY_PARAM_KEYS: ReadonlySet<string> = new Set(['i1', 'i2', 'i3', '
 /**
  * Представление сервера для фронтенда — без паролей и приватных ключей
  */
-export function serializeServer(s: any) {
+export function serializeServer(s: ServerRow & { client_count?: number; active_client_count?: number }) {
   if (!s) return s;
   // cdn_key — приватный ключ сертификата входа через CDN, cdn_cert не нужен интерфейсу (инвариант 1)
   const { ssh_password, ssh_key, server_private_key, preshared_key, extra_params, cdn_key, cdn_cert, ...rest } = s;
   const params = paramsFromRow(s);
   const remotePanel = s.remote_panel_id
-    ? (db.prepare('SELECT name, status FROM remote_panels WHERE id = ?').get(s.remote_panel_id) as any)
+    ? (db.prepare('SELECT name, status FROM remote_panels WHERE id = ?').get(s.remote_panel_id) as Pick<RemotePanelRow, 'name' | 'status'> | undefined)
     : null;
   return {
     ...rest,
@@ -64,8 +65,8 @@ export function serializeServer(s: any) {
   };
 }
 
-function getServerOr404(id: number): any {
-  const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(id) as any;
+function getServerOr404(id: number): ServerRow {
+  const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(id) as ServerRow | undefined;
   if (!server) throw new HttpError(404, 'Сервер не найден');
   return server;
 }
@@ -73,7 +74,7 @@ function getServerOr404(id: number): any {
 /**
  * Нодами партнёра управляет панель владельца: SSH, установка и параметры здесь недоступны
  */
-function getLocalServerOr404(id: number): any {
+function getLocalServerOr404(id: number): ServerRow {
   const server = getServerOr404(id);
   if (server.remote_panel_id) {
     throw new HttpError(400, 'Это нода партнёра: её настройками управляет владелец. Отключить её можно в разделе «Партнёры».');
@@ -81,13 +82,13 @@ function getLocalServerOr404(id: number): any {
   return server;
 }
 
-function selectServerWithCounts(id: number) {
+function selectServerWithCounts(id: number): ServerRow & { client_count: number; active_client_count: number } {
   return db.prepare(`
     SELECT s.*,
       (SELECT COUNT(*) FROM clients WHERE server_id = s.id) as client_count,
       (SELECT COUNT(*) FROM clients WHERE server_id = s.id AND enabled = 1) as active_client_count
     FROM servers s WHERE s.id = ?
-  `).get(id);
+  `).get(id) as unknown as ServerRow & { client_count: number; active_client_count: number };
 }
 
 function validateName(name: unknown): string {
@@ -188,7 +189,7 @@ serversRouter.get('/', (req, res) => {
       (SELECT COUNT(*) FROM clients WHERE server_id = s.id AND enabled = 1) as active_client_count
     FROM servers s
     ORDER BY s.id DESC
-  `).all();
+  `).all() as unknown as Array<ServerRow & { client_count: number; active_client_count: number }>;
   res.json(servers.map(serializeServer));
 });
 
@@ -491,7 +492,7 @@ serversRouter.put('/:id', asyncHandler(async (req, res) => {
   if (interfaceChanged && server.status !== 'uninstalled') {
     const interfaceKeys = Object.keys(updates).filter((k) => k === 'awg_port' || k === 'subnet' || k in paramColumns);
     const written = Object.fromEntries(interfaceKeys.map((k) => [k, updates[k]]));
-    const previous = Object.fromEntries(interfaceKeys.map((k) => [k, server[k]]));
+    const previous = Object.fromEntries(interfaceKeys.map((k) => [k, (server as unknown as Record<string, unknown>)[k]]));
     const error = await applyOrRollback(id, previous, written);
     if (error) {
       return res.status(502).json({ success: false, error, server: serializeServer(selectServerWithCounts(id)) });
@@ -622,7 +623,7 @@ serversRouter.post('/:id/randomize-params', asyncHandler(async (req, res) => {
   );
 
   if (server.status !== 'uninstalled') {
-    const previous = Object.fromEntries(Object.keys(columns).map((k) => [k, server[k]]));
+    const previous = Object.fromEntries(Object.keys(columns).map((k) => [k, (server as unknown as Record<string, unknown>)[k]]));
     const error = await applyOrRollback(id, previous, columns);
     if (error) {
       return res.status(502).json({ success: false, error, server: serializeServer(selectServerWithCounts(id)) });

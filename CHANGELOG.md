@@ -3,6 +3,12 @@
 Формат версий `vX.Y.Z` и правила выбора номера — в [docs/releases.md](docs/releases.md). Каждая версия публикуется на GitHub
 как релиз; текст релиза берётся из соответствующего раздела этого файла.
 
+## v0.2.50 — 2026-11-25
+
+### Разработка и рефакторинг
+- **Типизация строк БД на сервере.** Добавлен `server/src/db/types.ts` с интерфейсами таблиц SQLite (`ServerRow`, `ClientRow`, `SubscriberRow`, `BridgeRow`, `AdminRow` и др.), на которые переведены основные сервисы и роуты (#109).
+- **Переиспользование SSH-соединений и декомпозиция.** Добавлен `SshService.withConnection` для выполнения серии команд поверх одного SSH-соединения; из `provision.service.ts` выделены модули `provision-queue.ts` и `provision-parsers.ts`; клиентский `client/src/api/index.ts` разбит на доменные модули (`client.ts`, `servers.ts`, `subscribers.ts`, `bridges.ts`, `admin.ts`) (#110).
+
 ## v0.2.49 — 2026-11-25
 
 ### Улучшено и исправлено

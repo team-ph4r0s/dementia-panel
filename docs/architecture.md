@@ -28,7 +28,7 @@
 | `middleware/static-cache.ts` | Заголовки кеширования статики: `/assets/*` — `immutable`, `sw.js`/`index.html`/манифест — `no-cache` |
 | `services/live.service.ts` | Рассылка сигнала `{type:'changed', scopes?}` WebSocket-подписчикам (слияние за 250 мс и объединение затронутых доменов `scopes`, проверка сессии, пинг мёртвых сокетов, `shutdown`); middleware записи через API |
 | `config.ts` | Каталог данных (`DEMENTIA_DATA_DIR`, по умолчанию `./data`) |
-| `db/index.ts` | Схема, миграции, `transaction`, `getSetting`/`setSetting` |
+| `db/index.ts`, `db/types.ts` | Схема, миграции, `transaction`, `getSetting`/`setSetting`, интерфейсы строк SQLite (`ServerRow`, `ClientRow`, `SubscriberRow`, `BridgeRow` и др.) |
 | `middleware/auth.middleware.ts` | `requireAuth` (Bearer-токен сессии) |
 | `middleware/rate-limit.ts` | `FailureLimiter` — счётчик неудачных попыток (логин, токены партнёров) |
 | `middleware/security-headers.ts` | CSP, X-Frame-Options, nosniff, Referrer-Policy, HSTS |
@@ -36,8 +36,8 @@
 | `middleware/json-body.ts` | JSON до 1 МБ; без разобранного тела подставляет `{}` вместо `undefined` |
 | `middleware/migration-guard.ts` | Блокировка записей во время переноса панели (423) и заморозка после него (410); перенаправление `/sub` перенесённой панели, см. [migration.md](migration.md) |
 | `routes/*.ts` | HTTP API, см. [api.md](api.md) |
-| `services/ssh.service.ts` | SSH: TOFU-проверка ключа хоста, таймауты, stdin, `sudo -n` для не-root |
-| `services/provision.service.ts` | Всё про ноды: установка, синхронизация, применение, сканирование и импорт, мониторинг |
+| `services/ssh.service.ts` | SSH: TOFU-проверка ключа хоста, таймауты, stdin, `sudo -n` для не-root, переиспользование соединения `withConnection` |
+| `services/provision.service.ts`, `provision-queue.ts`, `provision-parsers.ts` | Всё про ноды: установка, синхронизация, применение, сканирование и импорт, мониторинг; очередь `runExclusive` / `waitForActiveOperations` и чистые парсеры вывода нод |
 | `services/awg.service.ts` | Ключи, генерация серверных/клиентских конфигов, выделение IP |
 | `services/xray.service.ts`, `utils/vless-params.ts` | VLESS + Reality: config.json Xray из БД, ссылки `vless://`, прокси mihomo, параметры Reality, см. [vless.md](vless.md) |
 | `services/subscription*.ts` | Лимиты подписчиков и оформление подписки |
@@ -63,7 +63,7 @@
 ## Клиент (`client/src`)
 
 SPA без роутера: вкладки в `App.tsx` (`AppTab` из `Navbar.tsx`): Серверы (карта сети с инспектором — `ServersView`, режим «Список» и карточка «Доступность нод из стран»), Мосты, Провайдеры (платежи и кабинеты, `ProvidersView`), Пользователи,
-Оформление подписки, Партнёры, События, Безопасность (+ резервные копии, Telegram и перенос панели). Крупные вкладки загружаются через `React.lazy`. Учётная запись (логин, пароль, 2FA и сессии) — `AccountModal`. Все запросы — через `api/index.ts` (`request()` с Bearer-токеном из localStorage;
+Оформление подписки, Партнёры, События, Безопасность (+ резервные копии, Telegram и перенос панели). Крупные вкладки загружаются через `React.lazy`. Учётная запись (логин, пароль, 2FA и сессии) — `AccountModal`. Все запросы — через `api/index.ts` (агрегирует модули `api/client.ts`, `api/servers.ts`, `api/subscribers.ts`, `api/bridges.ts`, `api/admin.ts`; `request()` с Bearer-токеном из localStorage;
 на 401 генерируется событие `auth_unauthorized`). Типы ответов сервера — `types/index.ts`; держите их в
 соответствии с сериализаторами сервера. Данные обновляются по сигналу WebSocket (`live.ts`, [инвариант 42](../AGENTS.md)), а страховочный опрос идёт раз в минуту; без сокета
 (у гостя или при обрыве) — каждые 15 с (`App.tsx`). Формы инициализируются только при открытии модалок (иначе обновление затирает ввод).

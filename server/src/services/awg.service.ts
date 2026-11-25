@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { db, getSetting } from '../db/index.js';
+import type { ClientRow, ServerRow } from '../db/types.js';
 import { awgAllowedIps } from './direct-routing.service.js';
 import { allocateIp, formatEndpointHost, parseSubnet } from '../utils/net.js';
 import {
@@ -97,7 +98,11 @@ export class AwgService {
   /**
    * Generate client .conf file string
    */
-  static generateClientConfig(server: any, client: any, settings = AwgService.getClientNetworkSettings()): string {
+  static generateClientConfig(
+    server: Pick<ServerRow, 'host' | 'awg_port' | 'server_public_key'> & Partial<ServerRow>,
+    client: Pick<ClientRow, 'client_ip' | 'client_private_key'> & { preshared_key?: string | null },
+    settings = AwgService.getClientNetworkSettings()
+  ): string {
     // Без ключа строка PresharedKey не пишется: «PresharedKey = null» клиенты WireGuard/AmneziaWG не принимают
     const psk = client.preshared_key || server.preshared_key;
     return `[Interface]
@@ -119,7 +124,10 @@ PersistentKeepalive = 25
    * Generate full server config containing interface and all active peers.
    * Peer is active when the client is enabled and (if it belongs to a subscriber) the subscriber is active.
    */
-  static generateServerConfig(server: any, clients: any[]): string {
+  static generateServerConfig(
+    server: Pick<ServerRow, 'server_private_key' | 'subnet' | 'awg_port'> & Partial<ServerRow>,
+    clients: Array<Pick<ClientRow, 'enabled' | 'client_public_key' | 'client_ip'> & { preshared_key?: string | null; subscriber_active?: number }>
+  ): string {
     let conf = `[Interface]
 PrivateKey = ${server.server_private_key}
 Address = ${server.subnet}
