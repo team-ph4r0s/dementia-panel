@@ -1,5 +1,6 @@
 import { Request, Router } from 'express';
 import { db, getSetting, transaction } from '../db/index.js';
+import type { ClientRow, PartnerRow, ServerRow } from '../db/types.js';
 import { requireAuth } from '../middleware/auth.middleware.js';
 import { generatePartnerToken, PartnerService } from '../services/partner.service.js';
 import { HttpError, parseId } from '../utils/http.js';
@@ -12,6 +13,17 @@ export const partnersRouter = Router();
 
 partnersRouter.use(requireAuth);
 
+interface ServerIdProjection {
+  server_id: number;
+}
+
+type PartnerClientProjection = Pick<
+  ClientRow,
+  'id' | 'server_id' | 'name' | 'client_ip' | 'enabled' | 'owner_blocked' | 'total_rx' | 'total_tx' | 'last_handshake' | 'created_at'
+> & {
+  server_name: ServerRow['name'];
+};
+
 function validateName(value: unknown): string {
   const name = typeof value === 'string' ? value.trim() : '';
   if (!name || name.length > 64) throw new HttpError(400, 'Название партнёра: от 1 до 64 символов');
@@ -23,7 +35,7 @@ function validateNodeIds(value: unknown): number[] {
   const ids = [...new Set(value.map((v) => Number(v)))];
   for (const id of ids) {
     if (!Number.isInteger(id) || id <= 0) throw new HttpError(400, 'Некорректный идентификатор ноды');
-    const server = db.prepare('SELECT remote_panel_id, protocol FROM servers WHERE id = ?').get(id) as any;
+    const server = db.prepare('SELECT remote_panel_id, protocol FROM servers WHERE id = ?').get(id) as unknown as Pick<ServerRow, 'remote_panel_id' | 'protocol'> | undefined;
     if (!server) throw new HttpError(400, `Нода #${id} не найдена`);
     if (nodeProtocol(server) === 'vless') throw new HttpError(400, 'Нельзя передавать партнёру ноды VLESS');
     if (server.remote_panel_id) throw new HttpError(400, 'Нельзя передавать партнёру чужие (партнёрские) ноды');
@@ -52,8 +64,8 @@ function connectString(req: Request, token: string): string {
   return `${base}#${token}`;
 }
 
-function serializePartner(p: any) {
-  const { token_hash, ...rest } = p;
+function serializePartner(p: PartnerRow) {
+  const { token_hash: _tokenHash, ...rest } = p;
   return {
     ...rest,
     enabled: Boolean(p.enabled),
@@ -64,8 +76,8 @@ function serializePartner(p: any) {
   };
 }
 
-function getPartnerOr404(id: number): any {
-  const partner = db.prepare('SELECT * FROM partners WHERE id = ?').get(id) as any;
+function getPartnerOr404(id: number): PartnerRow {
+  const partner = db.prepare('SELECT * FROM partners WHERE id = ?').get(id) as unknown as PartnerRow | undefined;
   if (!partner) throw new HttpError(404, 'Партнёр не найден');
   return partner;
 }
@@ -77,7 +89,7 @@ function setNodes(partnerId: number, nodeIds: number[]) {
 }
 
 partnersRouter.get('/', (req, res) => {
-  const partners = db.prepare('SELECT * FROM partners ORDER BY id DESC').all() as any[];
+  const partners = db.prepare('SELECT * FROM partners ORDER BY id DESC').all() as unknown as PartnerRow[];
   res.json(partners.map(serializePartner));
 });
 
@@ -151,7 +163,7 @@ partnersRouter.post('/:id/regenerate-token', (req, res) => {
 partnersRouter.delete('/:id', (req, res) => {
   const id = parseId(req.params.id);
   getPartnerOr404(id);
-  const servers = (db.prepare('SELECT DISTINCT server_id FROM clients WHERE partner_id = ?').all(id) as any[]).map((r) => r.server_id);
+  const servers = (db.prepare('SELECT DISTINCT server_id FROM clients WHERE partner_id = ?').all(id) as unknown as ServerIdProjection[]).map((r) => r.server_id);
   // Клиенты партнёра удаляются каскадом и снимаются с нод
   db.prepare('DELETE FROM partners WHERE id = ?').run(id);
   PartnerService.syncPartnerServers(id, servers);
@@ -166,7 +178,7 @@ partnersRouter.get('/:id/clients', (req, res) => {
       c.total_rx, c.total_tx, c.last_handshake, c.created_at
     FROM clients c JOIN servers s ON s.id = c.server_id
     WHERE c.partner_id = ? ORDER BY c.id DESC
-  `).all(id) as any[];
+  `).all(id) as unknown as PartnerClientProjection[];
   res.json(clients.map((c) => ({ ...c, enabled: Boolean(c.enabled), owner_blocked: Boolean(c.owner_blocked) })));
 });
 

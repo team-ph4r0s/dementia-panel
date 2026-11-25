@@ -1,16 +1,34 @@
 import crypto from 'node:crypto';
+import type { ClientRow, ServerRow } from '../db/types.js';
 import { formatEndpointHost } from '../utils/net.js';
 import {
   effectiveFlow, toXrayKey, VlessParams, vlessParamsFromRow, XRAY_API_PORT, XRAY_CDN_INBOUND_TAG, XRAY_INBOUND_TAG,
 } from '../utils/vless-params.js';
 import { decryptSecret } from './secrets.service.js';
 
+/**
+ * Колонки ноды VLESS: строка servers или её часть. `reality_short_ids` — JSON-строка в БД или уже разобранный
+ * массив (VlessParams из generateVlessParams/vlessParamsFromRow — оба вида принимает parseShortIds).
+ */
+export type VlessColumns = Omit<Partial<ServerRow>, 'reality_short_ids'> & { reality_short_ids?: string | string[] | null };
+
+/**
+ * Нода VLESS: строка servers или её часть — сервис читает отдельные колонки, а тесты и подписка передают частичные
+ * проекции. `via_cdn` — пометка записи подписки «вход через CDN» (другая ссылка и прокси той же ноды).
+ */
+export type XrayServerProjection = Pick<ServerRow, 'host' | 'awg_port'> & VlessColumns & { via_cdn?: boolean };
+
+/** Клиент VLESS: строка clients или её часть; `subscriber_active` добавляет ProvisionService.getServerClients */
+export type XrayClientProjection = Partial<ClientRow> & { subscriber_active?: number | null };
+
+/** Нода с готовым входом через CDN (см. cdnReady): домен, порт и сертификат с ключом на месте */
+export type CdnReadyProjection = Partial<ServerRow> & { cdn_domain: string; cdn_port: number; cdn_cert: string; cdn_key: string };
 
 /** ALPN входа через CDN: Cloudflare говорит с клиентом по h2, с нодой — по HTTP/1.1 (h2 к источнику по умолчанию выключен) */
 const CDN_ALPN = ['h2', 'http/1.1'];
 
 /** Готов ли вход через CDN: включён, есть домен, порт и сертификат с ключом */
-export function cdnReady(server: any): boolean {
+export function cdnReady(server: VlessColumns | null | undefined): server is CdnReadyProjection {
   return Boolean(server?.cdn_enabled && server.cdn_domain && server.cdn_port && server.cdn_cert && server.cdn_key);
 }
 
@@ -36,7 +54,7 @@ export class XrayService {
     return crypto.randomUUID();
   }
 
-  static params(server: any): VlessParams {
+  static params(server: VlessColumns | null | undefined): VlessParams {
     return vlessParamsFromRow(server);
   }
 
@@ -52,7 +70,7 @@ export class XrayService {
    *   прямо в config.json; flow пустой (через CDN Vision не нужен), email тот же — трафик суммируется;
    * - клиенты без client_uuid или неактивные (enabled/subscriber_active, как в AwgService.generateServerConfig) не попадают.
    */
-  static generateServerConfig(server: any, clients: any[]): string {
+  static generateServerConfig(server: Pick<ServerRow, 'server_private_key' | 'awg_port'> & VlessColumns, clients: XrayClientProjection[]): string {
     const params = this.params(server);
     const active = clients
       .filter((client) => client.client_uuid && client.enabled && !client.owner_blocked && client.subscriber_active !== 0);
@@ -109,7 +127,7 @@ export class XrayService {
               dest: params.reality_dest,
               xver: 0,
               serverNames: [params.reality_sni],
-              privateKey: toXrayKey(server.server_private_key),
+              privateKey: toXrayKey(server.server_private_key!),
               shortIds: params.reality_short_ids,
             },
           },
@@ -136,9 +154,10 @@ export class XrayService {
    * Хост — `formatEndpointHost(host)` (IPv6 в скобках); `endpointHost` подменяет адрес (мосты, BridgeService.routesFor).
    * Имя кодируется encodeURIComponent.
    */
-  static buildVlessLink(server: any, client: any, name: string, endpointHost?: string, endpointPort?: number): string {
-    // Запись подписки «через CDN» (server.via_cdn) — та же нода, другой вход
-    if (server.via_cdn) return this.buildVlessCdnLink(server, client, name);
+  static buildVlessLink(server: XrayServerProjection, client: XrayClientProjection, name: string, endpointHost?: string, endpointPort?: number): string {
+    // Запись подписки «через CDN» (server.via_cdn) — та же нода, другой вход.
+    // via_cdn ставится только при готовом входе через CDN (cdnReady), поэтому колонки cdn_* на месте
+    if (server.via_cdn) return this.buildVlessCdnLink(server as unknown as CdnReadyProjection, client, name);
     const params = vlessParamsFromRow(server);
     const query = [
       ['type', params.xray_transport],
@@ -146,7 +165,8 @@ export class XrayService {
         ? [['path', params.xhttp_path], ['host', params.reality_sni], ['mode', params.xhttp_mode]]
         : []),
       ['security', 'reality'],
-      ['pbk', toXrayKey(server.server_public_key)],
+      // Установленная нода VLESS всегда с ключами Reality (инвариант: ключи генерируются при создании ноды)
+      ['pbk', toXrayKey(server.server_public_key!)],
       ['fp', params.xray_fingerprint],
       ['sni', params.reality_sni],
       ['sid', params.reality_short_ids[0] ?? ''],
@@ -162,8 +182,9 @@ export class XrayService {
    * Прокси mihomo: `{name, type: 'vless', server, port, uuid, network: 'tcp', tls: true, udp: true, flow,
    * servername, client-fingerprint, reality-opts: {public-key, short-id}}`.
    */
-  static buildMihomoProxy(server: any, client: any, name: string, endpointHost?: string, endpointPort?: number): Record<string, unknown> {
-    if (server.via_cdn) return this.buildMihomoCdnProxy(server, client, name);
+  static buildMihomoProxy(server: XrayServerProjection, client: XrayClientProjection, name: string, endpointHost?: string, endpointPort?: number): Record<string, unknown> {
+    // via_cdn — только при готовом входе через CDN (cdnReady), колонки cdn_* на месте
+    if (server.via_cdn) return this.buildMihomoCdnProxy(server as unknown as CdnReadyProjection, client, name);
     const params = vlessParamsFromRow(server);
     return {
       name,
@@ -181,14 +202,14 @@ export class XrayService {
       servername: params.reality_sni,
       'client-fingerprint': params.xray_fingerprint,
       'reality-opts': {
-        'public-key': toXrayKey(server.server_public_key),
+        'public-key': toXrayKey(server.server_public_key!),
         'short-id': params.reality_short_ids[0] ?? '',
       },
     };
   }
 
   /** Адрес, к которому клиент подключается через CDN: «чистый» IP/домен Cloudflare (`cdn_address`) или сам домен */
-  static cdnEndpoint(server: any): { host: string; port: number; domain: string } {
+  static cdnEndpoint(server: CdnReadyProjection): { host: string; port: number; domain: string } {
     return { host: server.cdn_address || server.cdn_domain, port: Number(server.cdn_port), domain: server.cdn_domain };
   }
 
@@ -196,7 +217,7 @@ export class XrayService {
    * Ссылка входа через CDN: `vless://<uuid>@<cdn_address|cdn_domain>:<cdn_port>?type=xhttp&path=…&host=<домен>&mode=…
    * &security=tls&sni=<домен>&alpn=h2,http/1.1&fp=…&encryption=none#<имя>`. Без flow: Vision через CDN не используется.
    */
-  static buildVlessCdnLink(server: any, client: any, name: string): string {
+  static buildVlessCdnLink(server: CdnReadyProjection, client: XrayClientProjection, name: string): string {
     const params = vlessParamsFromRow(server);
     const cdn = this.cdnEndpoint(server);
     const query = [
@@ -214,7 +235,7 @@ export class XrayService {
   }
 
   /** Прокси mihomo для входа через CDN (XHTTP + TLS) */
-  static buildMihomoCdnProxy(server: any, client: any, name: string): Record<string, unknown> {
+  static buildMihomoCdnProxy(server: CdnReadyProjection, client: XrayClientProjection, name: string): Record<string, unknown> {
     const params = vlessParamsFromRow(server);
     const cdn = this.cdnEndpoint(server);
     return {

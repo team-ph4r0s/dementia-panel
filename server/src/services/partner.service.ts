@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { db } from '../db/index.js';
+import type { ClientRow, PartnerRow, ServerRow } from '../db/types.js';
 import { paramsFromRow } from '../utils/awg-params.js';
 import { ProvisionService } from './provision.service.js';
 
@@ -26,17 +27,27 @@ export interface PartnerUsage {
   used: number;
 }
 
+interface ServerIdProjection {
+  server_id: number;
+}
+
+interface PartnerUsageProjection {
+  clients: number;
+  rx: number;
+  tx: number;
+}
+
 export class PartnerService {
-  static findByToken(token: string): any | null {
+  static findByToken(token: string): PartnerRow | null {
     if (!token.startsWith(TOKEN_PREFIX)) return null;
-    return (db.prepare('SELECT * FROM partners WHERE token_hash = ?').get(hashPartnerToken(token)) as any) || null;
+    return (db.prepare('SELECT * FROM partners WHERE token_hash = ?').get(hashPartnerToken(token)) as unknown as PartnerRow | undefined) || null;
   }
 
   static usage(partnerId: number): PartnerUsage {
     const row = db.prepare(`
       SELECT COUNT(*) AS clients, COALESCE(SUM(total_rx), 0) AS rx, COALESCE(SUM(total_tx), 0) AS tx
       FROM clients WHERE partner_id = ?
-    `).get(partnerId) as { clients: number; rx: number; tx: number };
+    `).get(partnerId) as unknown as PartnerUsageProjection;
     return { clients: row.clients, upload: row.rx, download: row.tx, used: row.rx + row.tx };
   }
 
@@ -45,7 +56,7 @@ export class PartnerService {
   }
 
   static nodeIds(partnerId: number): number[] {
-    return (db.prepare('SELECT server_id FROM partner_nodes WHERE partner_id = ? ORDER BY server_id').all(partnerId) as any[]).map(
+    return (db.prepare('SELECT server_id FROM partner_nodes WHERE partner_id = ? ORDER BY server_id').all(partnerId) as unknown as ServerIdProjection[]).map(
       (r) => r.server_id
     );
   }
@@ -65,11 +76,11 @@ export class PartnerService {
    */
   static syncPartnerServers(partnerId: number, extraServerIds: number[] = []): void {
     const ids = new Set<number>(extraServerIds);
-    for (const row of db.prepare('SELECT DISTINCT server_id FROM clients WHERE partner_id = ?').all(partnerId) as any[]) {
+    for (const row of db.prepare('SELECT DISTINCT server_id FROM clients WHERE partner_id = ?').all(partnerId) as unknown as ServerIdProjection[]) {
       ids.add(row.server_id);
     }
     for (const id of ids) {
-      const server = db.prepare('SELECT status FROM servers WHERE id = ?').get(id) as any;
+      const server = db.prepare('SELECT status FROM servers WHERE id = ?').get(id) as unknown as Pick<ServerRow, 'status'> | undefined;
       if (server && server.status !== 'uninstalled') ProvisionService.requestSync(id).catch(() => {});
     }
   }
@@ -79,7 +90,7 @@ export class PartnerService {
    * снимаются с нод (см. ProvisionService.getServerClients)
    */
   static refreshSuspension(): void {
-    for (const partner of db.prepare('SELECT * FROM partners').all() as any[]) {
+    for (const partner of db.prepare('SELECT * FROM partners').all() as unknown as PartnerRow[]) {
       const usage = this.usage(partner.id);
       const suspended = this.isExpired(partner) || (partner.traffic_limit > 0 && usage.used >= partner.traffic_limit) ? 1 : 0;
       if (suspended === partner.suspended) continue;
@@ -92,7 +103,7 @@ export class PartnerService {
   /**
    * Описание ноды для панели партнёра: адрес, ключ и параметры обфускации (без приватных данных)
    */
-  static nodePayload(server: any) {
+  static nodePayload(server: ServerRow) {
     const params = paramsFromRow(server);
     return {
       id: server.id,
@@ -105,7 +116,7 @@ export class PartnerService {
     };
   }
 
-  static peerPayload(client: any) {
+  static peerPayload(client: ClientRow) {
     return {
       id: client.id,
       node_id: client.server_id,

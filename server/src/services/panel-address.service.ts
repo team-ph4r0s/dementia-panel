@@ -2,7 +2,7 @@ import net from 'node:net';
 import { db, getSetting, setSetting, transaction } from '../db/index.js';
 import { HttpError } from '../utils/http.js';
 import { detectPublicIpv4 } from '../utils/net.js';
-import { SslService, cfFetch } from './ssl.service.js';
+import { SslService, cfFetch, type CloudflareDnsRecord } from './ssl.service.js';
 import { EventService } from './event.service.js';
 import { LiveService } from './live.service.js';
 
@@ -11,6 +11,10 @@ const CF_ID_RE = /^[a-f0-9]{32}$/i;
 const CONFIRMATIONS_FOR_AUTO = 2;
 
 export interface AddressStep { ok: boolean; title: string; detail: string }
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 /**
  * Публичный IPv4 панели и всё, что от него зависит (docs/security.md#panel-ip):
@@ -86,8 +90,8 @@ export class PanelAddressService {
     if (detected === known) {
       // Прошлое применение не смогло обновить DNS из-за временной ошибки — автообновление повторяет попытку
       if (this.dnsPending() && getSetting('panel_ip_dns_retry') === '1' && getSetting('panel_ip_auto') === '1') {
-        await this.apply(this.dnsPending()).catch((err: any) => {
-          EventService.log('error', 'panel.ip_update_failed', `Не удалось автоматически обновить IP панели: ${err.message}`);
+        await this.apply(this.dnsPending()).catch((err: unknown) => {
+          EventService.log('error', 'panel.ip_update_failed', `Не удалось автоматически обновить IP панели: ${errorMessage(err)}`);
         });
         return;
       }
@@ -105,8 +109,8 @@ export class PanelAddressService {
       LiveService.notify();
     }
     if (getSetting('panel_ip_auto') === '1' && streak >= CONFIRMATIONS_FOR_AUTO) {
-      await this.apply(detected).catch((err: any) => {
-        EventService.log('error', 'panel.ip_update_failed', `Не удалось автоматически обновить IP панели: ${err.message}`);
+      await this.apply(detected).catch((err: unknown) => {
+        EventService.log('error', 'panel.ip_update_failed', `Не удалось автоматически обновить IP панели: ${errorMessage(err)}`);
       });
     }
   }
@@ -133,7 +137,7 @@ export class PanelAddressService {
         try {
           const token = SslService.resolveCloudflareToken();
           const path = `/zones/${zone}/dns_records/${record}`;
-          const current = await cfFetch(token, path);
+          const current = await cfFetch<CloudflareDnsRecord>(token, path);
           const r = current?.result;
           if (current?.success !== true || r?.type !== 'A' || r?.name !== domain) {
             dnsFailed = 'manual';
@@ -145,14 +149,14 @@ export class PanelAddressService {
             dnsFailed = 'manual';
             steps.push({ ok: false, title: `DNS ${domain}`, detail: `запись указывает на ${r.content}, а не на прежний IP панели — не трогаю, проверьте в Cloudflare` });
           } else {
-            const updated = await cfFetch(token, path, { method: 'PATCH', body: JSON.stringify({ content: ip }) });
-            if (updated?.success !== true || updated?.result?.content !== ip) throw new Error('Cloudflare не подтвердил изменение');
+            const updated = await cfFetch<CloudflareDnsRecord>(token, path, { method: 'PATCH', body: JSON.stringify({ content: ip }) });
+            if (updated.success !== true || updated.result?.content !== ip) throw new Error('Cloudflare не подтвердил изменение');
             setSetting('cf_panel_ip', ip);
             steps.push({ ok: true, title: `DNS ${domain}`, detail: `${recordIp} → ${ip} (оранжевое облако сохранено)` });
           }
-        } catch (err: any) {
+        } catch (err: unknown) {
           dnsFailed = 'retry';
-          steps.push({ ok: false, title: `DNS ${domain}`, detail: `ошибка Cloudflare: ${err.message}` });
+          steps.push({ ok: false, title: `DNS ${domain}`, detail: `ошибка Cloudflare: ${errorMessage(err)}` });
         }
       }
 

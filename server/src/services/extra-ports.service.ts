@@ -1,4 +1,5 @@
 import { db } from '../db/index.js';
+import type { ServerRow } from '../db/types.js';
 import { HttpError } from '../utils/http.js';
 import { shellQuote } from '../utils/net.js';
 import {
@@ -27,6 +28,16 @@ const lastHealth = new Map<number, number>();
 /** Время последней неудачной попытки применения: повтор не чаще раза в HEALTH_INTERVAL_MS */
 const lastFailure = new Map<number, number>();
 
+type ExtraPortsServer = Pick<ServerRow, 'id' | 'host' | 'awg_port'> & Partial<ServerRow>;
+type ActivePortsServer = Partial<Pick<ServerRow,
+  'extra_ports' | 'extra_ports_hash' | 'container_name' | 'deployed_port' | 'awg_port' | 'remote_panel_id' | 'protocol'
+>>;
+type ExtraPortsColumns = Pick<ServerRow, 'extra_ports' | 'extra_ports_hash'>;
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /**
  * Нода AmneziaWG на том же хосте, чей запасной порт совпадает с `port`. Цепочка запасных портов стоит первой в PREROUTING,
  * поэтому такой порт перехватил бы трафик чужой ноды (основной порт другой ноды хоста) или стал бы мёртвым правилом.
@@ -40,11 +51,11 @@ export function extraPortOwner(host: string, port: number, exceptId = 0): { id: 
 }
 
 /** Проверка списка от администратора; бросает HttpError(400) */
-export function validateExtraPorts(input: unknown, server: any): number[] {
+export function validateExtraPorts(input: unknown, server: ExtraPortsServer): number[] {
   if (!Array.isArray(input)) throw new HttpError(400, 'Запасные порты: ожидается список чисел');
   const ports: number[] = [];
   for (const raw of input) {
-    const port = typeof raw === 'string' && /^\d{1,5}$/.test(raw.trim()) ? Number(raw.trim()) : raw;
+    const port = typeof raw === 'string' && /^\d{1,5}$/.test(raw.trim()) ? Number(raw.trim()) : typeof raw === 'number' ? raw : Number.NaN;
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new HttpError(400, 'Запасной порт — целое число от 1 до 65535');
     if (!ports.includes(port)) ports.push(port);
   }
@@ -65,12 +76,13 @@ export function validateExtraPorts(input: unknown, server: any): number[] {
 }
 
 /** Нода, на которой панель может держать запасные порты: своя, AmneziaWG, установленная */
-function eligible(server: any): boolean {
-  return Boolean(server) && !server.remote_panel_id && nodeProtocol(server) === 'awg'
+function eligible(server: ServerRow | null | undefined): server is ServerRow {
+  if (!server) return false;
+  return !server.remote_panel_id && nodeProtocol(server) === 'awg'
     && server.status !== 'uninstalled' && server.status !== 'installing' && Boolean(server.container_name);
 }
 
-function rulesOf(server: any): string {
+function rulesOf(server: ServerRow): string {
   return buildPortRules(String(server.container_name), Number(server.deployed_port ?? server.awg_port), parseExtraPorts(server.extra_ports));
 }
 
@@ -79,8 +91,9 @@ export class ExtraPortsService {
    * Порты, которые сейчас действительно пересылаются на ноде: правила применены для текущих порта и списка.
    * Только их можно выдавать в подписке — подписка не должна раздавать то, чего нет на ноде (инвариант 28).
    */
-  static activePorts(server: any): number[] {
-    const ports = parseExtraPorts(server?.extra_ports);
+  static activePorts(server: ActivePortsServer | null | undefined): number[] {
+    if (!server) return [];
+    const ports = parseExtraPorts(server.extra_ports);
     if (!ports.length || !server.extra_ports_hash || !server.container_name) return [];
     if (nodeProtocol(server) !== 'awg' || server.remote_panel_id) return [];
     if (server.deployed_port !== undefined && server.deployed_port !== null && Number(server.deployed_port) !== Number(server.awg_port)) return [];
@@ -101,13 +114,13 @@ export class ExtraPortsService {
    * обновления образа — контейнер пересоздан или перезапущен и мог сменить адрес. Нодам без запасных портов — ничего.
    */
   static async reapplyLocked(serverId: number): Promise<void> {
-    const row = db.prepare('SELECT extra_ports, extra_ports_hash FROM servers WHERE id = ?').get(serverId) as any;
+    const row = db.prepare('SELECT extra_ports, extra_ports_hash FROM servers WHERE id = ?').get(serverId) as unknown as ExtraPortsColumns | undefined;
     if (!row || (!parseExtraPorts(row.extra_ports).length && !row.extra_ports_hash)) return;
     await this.applyLocked(serverId);
   }
 
   static async applyLocked(serverId: number): Promise<{ success: boolean; error?: string }> {
-    const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as any;
+    const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as unknown as ServerRow | undefined;
     if (!eligible(server)) return { success: false, error: 'Нода не установлена или не поддерживает запасные порты' };
     try {
       const ports = parseExtraPorts(server.extra_ports);
@@ -123,10 +136,11 @@ export class ExtraPortsService {
       lastHealth.set(serverId, Date.now());
       lastFailure.delete(serverId);
       return { success: true };
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const message = errorMessage(err);
       lastFailure.set(serverId, Date.now());
-      db.prepare('UPDATE servers SET extra_ports_error = ? WHERE id = ?').run(String(err.message).slice(0, 500), serverId);
-      return { success: false, error: err.message };
+      db.prepare('UPDATE servers SET extra_ports_error = ? WHERE id = ?').run(message.slice(0, 500), serverId);
+      return { success: false, error: message };
     }
   }
 
@@ -139,7 +153,7 @@ export class ExtraPortsService {
     const servers = db.prepare(`
       SELECT * FROM servers
       WHERE remote_panel_id IS NULL AND status = 'online' AND (extra_ports IS NOT NULL OR extra_ports_hash IS NOT NULL)
-    `).all() as any[];
+    `).all() as unknown as ServerRow[];
     for (const server of servers) {
       if (!eligible(server) || ProvisionService.isInstalling(server.id) || server.needs_apply) continue;
       const ports = parseExtraPorts(server.extra_ports);

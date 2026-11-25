@@ -30,13 +30,28 @@ const TEXT_PARAM_KEYS = ['h1', 'h2', 'h3', 'h4', 'i1', 'i2', 'i3', 'i4', 'i5', '
 /** I1–I5 есть только в конфигурации клиента (renderAwgLines): их смена не требует перезапуска AmneziaWG на ноде */
 const CLIENT_ONLY_PARAM_KEYS: ReadonlySet<string> = new Set(['i1', 'i2', 'i3', 'i4', 'i5']);
 
+type SqlValue = string | number | null;
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /**
  * Представление сервера для фронтенда — без паролей и приватных ключей
  */
 export function serializeServer(s: ServerRow & { client_count?: number; active_client_count?: number }) {
   if (!s) return s;
   // cdn_key — приватный ключ сертификата входа через CDN, cdn_cert не нужен интерфейсу (инвариант 1)
-  const { ssh_password, ssh_key, server_private_key, preshared_key, extra_params, cdn_key, cdn_cert, ...rest } = s;
+  const {
+    ssh_password,
+    ssh_key,
+    server_private_key: _serverPrivateKey,
+    preshared_key: _presharedKey,
+    extra_params: _extraParams,
+    cdn_key,
+    cdn_cert,
+    ...rest
+  } = s;
   const params = paramsFromRow(s);
   const remotePanel = s.remote_panel_id
     ? (db.prepare('SELECT name, status FROM remote_panels WHERE id = ?').get(s.remote_panel_id) as Pick<RemotePanelRow, 'name' | 'status'> | undefined)
@@ -120,8 +135,8 @@ function validateSubnet(value: unknown): string {
   try {
     parseSubnet(String(value));
     return String(value).trim();
-  } catch (err: any) {
-    throw new HttpError(400, err.message);
+  } catch (err) {
+    throw new HttpError(400, errorMessage(err));
   }
 }
 
@@ -150,7 +165,7 @@ const sameValue = (a: unknown, b: unknown) => (a ?? null) === (b ?? null) || (a 
  * могла успеть получить часть изменений, поэтому needs_apply остаётся: фоновый опрос приведёт её к прежним параметрам.
  * Возвращает текст ошибки или null.
  */
-async function applyOrRollback(id: number, previous: Record<string, unknown>, written: Record<string, unknown>): Promise<string | null> {
+async function applyOrRollback(id: number, previous: Record<string, SqlValue>, written: Record<string, SqlValue>): Promise<string | null> {
   const result = await ProvisionService.requestApply(id);
   if (result.success) return null;
 
@@ -158,13 +173,15 @@ async function applyOrRollback(id: number, previous: Record<string, unknown>, wr
   // Откат — к параметрам, которые работают на ноде; previous запроса — только если они неизвестны. Иначе при двух правках
   // A→B и B→C, применённых одним разом, вторая вернула бы B, которого на ноде нет (#58)
   const baseline = ProvisionService.appliedBaselineOf(id);
-  const restore = (k: string) => (baseline && k in baseline ? baseline[k] : previous[k]) ?? null;
+  const restore = (k: string): SqlValue => (baseline && k in baseline ? baseline[k] : previous[k]) ?? null;
   const rolledBack = transaction(() => {
-    const row = db.prepare('SELECT * FROM servers WHERE id = ?').get(id) as any;
+    const row = db.prepare('SELECT * FROM servers WHERE id = ?').get(id) as ServerRow | undefined;
+    if (!row) return false;
+    const rowValues = row as unknown as Record<string, SqlValue>;
     // Значения успели изменить ещё раз — откатывать чужую правку нельзя
-    if (!row || keys.some((k) => !sameValue(row[k], written[k]))) return false;
+    if (keys.some((k) => !sameValue(rowValues[k], written[k]))) return false;
     db.prepare(`UPDATE servers SET ${keys.map((k) => `${k} = ?`).join(', ')}, needs_apply = 1 WHERE id = ?`).run(
-      ...(keys.map(restore) as any[]),
+      ...keys.map(restore),
       id
     );
     return true;
@@ -491,8 +508,8 @@ serversRouter.put('/:id', asyncHandler(async (req, res) => {
 
   if (interfaceChanged && server.status !== 'uninstalled') {
     const interfaceKeys = Object.keys(updates).filter((k) => k === 'awg_port' || k === 'subnet' || k in paramColumns);
-    const written = Object.fromEntries(interfaceKeys.map((k) => [k, updates[k]]));
-    const previous = Object.fromEntries(interfaceKeys.map((k) => [k, (server as unknown as Record<string, unknown>)[k]]));
+    const written = Object.fromEntries(interfaceKeys.map((k) => [k, updates[k] as SqlValue]));
+    const previous = Object.fromEntries(interfaceKeys.map((k) => [k, (server as unknown as Record<string, SqlValue>)[k]]));
     const error = await applyOrRollback(id, previous, written);
     if (error) {
       return res.status(502).json({ success: false, error, server: serializeServer(selectServerWithCounts(id)) });
@@ -623,7 +640,7 @@ serversRouter.post('/:id/randomize-params', asyncHandler(async (req, res) => {
   );
 
   if (server.status !== 'uninstalled') {
-    const previous = Object.fromEntries(Object.keys(columns).map((k) => [k, (server as unknown as Record<string, unknown>)[k]]));
+    const previous = Object.fromEntries(Object.keys(columns).map((k) => [k, (server as unknown as Record<string, SqlValue>)[k]]));
     const error = await applyOrRollback(id, previous, columns);
     if (error) {
       return res.status(502).json({ success: false, error, server: serializeServer(selectServerWithCounts(id)) });

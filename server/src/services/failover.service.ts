@@ -2,9 +2,10 @@ import dns from 'node:dns';
 import net from 'node:net';
 import tls from 'node:tls';
 import { db, getSetting, setSetting, transaction } from '../db/index.js';
+import type { BridgeRow } from '../db/types.js';
 import { HttpError } from '../utils/http.js';
 import { detectPublicIpv4 } from '../utils/net.js';
-import { SslService, cfFetch, validateDomain } from './ssl.service.js';
+import { SslService, cfFetch, validateDomain, type CloudflareDnsRecord, type CloudflareResponse } from './ssl.service.js';
 import { encryptSecret } from './secrets.service.js';
 import { panelPort } from './bridge.service.js';
 import { EventService } from './event.service.js';
@@ -14,6 +15,26 @@ const CF_ID_RE = /^[a-f0-9]{32}$/i;
 /** TTL A-записей резервного домена: мост, ушедший в offline, быстро пропадает из ответа DNS */
 const RECORD_TTL = 60;
 const KEYS = ['failover_domain', 'failover_zone', 'failover_records', 'failover_include_panel', 'failover_error'] as const;
+
+type BridgeStatusProjection = Pick<BridgeRow, 'id' | 'name' | 'host' | 'status' | 'panel_forward'>;
+type BridgeApplyProjection = Pick<BridgeRow, 'id' | 'name' | 'host' | 'status' | 'panel_forward' | 'needs_apply' | 'last_error'>;
+type BridgeCheckOutcome = {
+  stage: 'tcp' | 'tls' | 'http' | 'done';
+  error?: string;
+  status?: number;
+  body?: string;
+  authorized?: boolean;
+};
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function errorCode(err: unknown): string | undefined {
+  if (!err || typeof err !== 'object' || !('code' in err)) return undefined;
+  const code = (err as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
 
 export interface FailoverInput {
   domain?: unknown;
@@ -90,7 +111,7 @@ export class FailoverService {
 
   static status() {
     const records = readRecords();
-    const bridges = db.prepare('SELECT id, name, host, status, panel_forward FROM bridges ORDER BY id').all() as any[];
+    const bridges = db.prepare('SELECT id, name, host, status, panel_forward FROM bridges ORDER BY id').all() as unknown as BridgeStatusProjection[];
     return {
       enabled: this.enabled(),
       domain: getSetting('failover_domain') ?? '',
@@ -109,12 +130,12 @@ export class FailoverService {
     };
   }
 
-  private static async api(token: string, path: string, init?: RequestInit): Promise<any> {
-    let data: any;
-    try { data = await cfFetch(token, path, init); }
+  private static async api<T = unknown>(token: string, path: string, init?: RequestInit): Promise<T> {
+    let data: CloudflareResponse<T>;
+    try { data = await cfFetch<T>(token, path, init); }
     catch { throw new HttpError(502, 'Не удалось связаться с Cloudflare. Повторите позже.'); }
-    if (data?.success !== true) throw new HttpError(400, 'Cloudflare отклонил запрос. Проверьте токен и права Zone:Read, DNS:Edit для зоны.');
-    return data.result;
+    if (data.success !== true) throw new HttpError(400, 'Cloudflare отклонил запрос. Проверьте токен и права Zone:Read, DNS:Edit для зоны.');
+    return data.result as T;
   }
 
   private static assertDedicated(domain: string): void {
@@ -138,12 +159,12 @@ export class FailoverService {
   static async configure(input: FailoverInput): Promise<ReturnType<typeof FailoverService.status>> {
     let domain: string;
     try { domain = validateDomain(input.domain); }
-    catch (err: any) { throw new HttpError(400, err.message); }
+    catch (err: unknown) { throw new HttpError(400, errorMessage(err)); }
     this.assertDedicated(domain);
     if (input.include_panel !== undefined && typeof input.include_panel !== 'boolean') throw new HttpError(400, 'include_panel — true или false');
     let token: string;
     try { token = SslService.resolveCloudflareToken(input.token); }
-    catch (err: any) { throw new HttpError(400, err.message); }
+    catch (err: unknown) { throw new HttpError(400, errorMessage(err)); }
     if (input.email !== undefined && typeof input.email !== 'string') throw new HttpError(400, 'Email должен быть строкой');
     const email = (typeof input.email === 'string' && input.email.trim()) || getSetting('ssl_email');
     await ensurePanelOriginIp(input.origin_ip);
@@ -163,13 +184,13 @@ export class FailoverService {
 
       // Чужие адресные записи имени не перезаписываем: свободно или только наши A-записи
       const owned = new Set(Object.values(readRecords()));
-      const records = await this.api(token, `/zones/${zone.id}/dns_records?name=${encodeURIComponent(domain)}&per_page=100`);
+      const records = await this.api<CloudflareDnsRecord[]>(token, `/zones/${zone.id}/dns_records?name=${encodeURIComponent(domain)}&per_page=100`);
       if (!Array.isArray(records) || records.length >= 100) throw new HttpError(502, 'Cloudflare вернул некорректный список DNS-записей');
-      const addresses = records.filter((r: any) => ['A', 'AAAA', 'CNAME'].includes(r.type));
-      if (addresses.some((r: any) => !(r.type === 'A' && owned.has(r.id) && getSetting('failover_domain') === domain))) {
+      const addresses = records.filter((r) => ['A', 'AAAA', 'CNAME'].includes(r.type));
+      if (addresses.some((r) => !(r.type === 'A' && owned.has(r.id) && getSetting('failover_domain') === domain))) {
         throw new HttpError(409, 'Для этого имени уже есть адресные записи. Выберите свободный поддомен; записи не изменены.');
       }
-      if (records.some((r: any) => r.proxied === true)) throw new HttpError(409, 'Имя проксируется Cloudflare — нужен поддомен без оранжевого облака.');
+      if (records.some((r) => r.proxied === true)) throw new HttpError(409, 'Имя проксируется Cloudflare — нужен поддомен без оранжевого облака.');
 
       // Сертификат панели должен покрывать резервное имя: TLS через мост завершается на панели
       const tls = SslService.snapshot();
@@ -220,9 +241,9 @@ export class FailoverService {
     if (desired.length === 0 || (desired.length === published.length && desired.every((ip) => published.includes(ip)))) return;
     let token: string;
     try { token = SslService.resolveCloudflareToken(); }
-    catch (err: any) { setSetting('failover_error', err.message); return; }
-    await SslService.exclusive(() => this.reconcileLocked(token, false)).catch((err: any) => {
-      setSetting('failover_error', `Не удалось обновить DNS резервного домена: ${err.message}`);
+    catch (err: unknown) { setSetting('failover_error', errorMessage(err)); return; }
+    await SslService.exclusive(() => this.reconcileLocked(token, false)).catch((err: unknown) => {
+      setSetting('failover_error', `Не удалось обновить DNS резервного домена: ${errorMessage(err)}`);
     });
     LiveService.notify();
   }
@@ -237,7 +258,7 @@ export class FailoverService {
     const base = `/zones/${zone}/dns_records`;
     for (const ip of desired) {
       if (records[ip]) continue;
-      const record = await this.api(token, base, {
+      const record = await this.api<CloudflareDnsRecord>(token, base, {
         method: 'POST', body: JSON.stringify({ type: 'A', name: domain, content: ip, proxied: false, ttl: RECORD_TTL }),
       });
       if (!record?.id || !CF_ID_RE.test(record.id) || record.proxied === true) throw new HttpError(502, 'Cloudflare не подтвердил DNS-запись');
@@ -256,11 +277,11 @@ export class FailoverService {
   /** Удаляет запись, только если она всё ещё наша: то же имя, тип A и адрес */
   private static async deleteOwned(token: string, zone: string, domain: string, ip: string, id: string): Promise<void> {
     const path = `/zones/${zone}/dns_records/${id}`;
-    let current: any = null;
-    try { current = await this.api(token, path); }
-    catch (err: any) {
+    let current: CloudflareDnsRecord | null = null;
+    try { current = await this.api<CloudflareDnsRecord>(token, path); }
+    catch (err: unknown) {
       // Запись, которой уже нет (Cloudflare ответил отказом), забываем; временный сбой связи — нет: иначе адрес останется в DNS без учёта
-      if (err?.status === 502) throw err;
+      if (err instanceof HttpError && err.status === 502) throw err;
       return;
     }
     if (current?.type === 'A' && current?.name === domain && current?.content === ip) await this.api(token, path, { method: 'DELETE' });
@@ -308,7 +329,7 @@ export class FailoverService {
    * `ca` — только для тестов (самоподписанный сертификат).
    */
   static async checkBridge(bridgeId: number, options: { ca?: string; timeoutMs?: number } = {}): Promise<PathCheck> {
-    const bridge = db.prepare('SELECT * FROM bridges WHERE id = ?').get(bridgeId) as any;
+    const bridge = db.prepare('SELECT * FROM bridges WHERE id = ?').get(bridgeId) as unknown as BridgeApplyProjection | undefined;
     if (!bridge) throw new HttpError(404, 'Мост не найден');
     const port = panelPort();
     const name = getSetting('failover_domain') || SslService.getStatus().domain || null;
@@ -326,10 +347,10 @@ export class FailoverService {
     const timeout = options.timeoutMs ?? 8000;
     const https = SslService.isActive();
     // TCP + (TLS) + GET /api/health одним соединением через мост
-    const outcome = await new Promise<{ stage: 'tcp' | 'tls' | 'http' | 'done'; error?: string; status?: number; body?: string; authorized?: boolean }>((resolve) => {
+    const outcome = await new Promise<BridgeCheckOutcome>((resolve) => {
       let stage: 'tcp' | 'tls' | 'http' = 'tcp';
       let settled = false;
-      const done = (value: any) => { if (!settled) { settled = true; socket.destroy(); resolve(value); } };
+      const done = (value: BridgeCheckOutcome) => { if (!settled) { settled = true; socket.destroy(); resolve(value); } };
       const request = (sock: net.Socket) => {
         stage = 'http';
         let data = '';
@@ -344,17 +365,19 @@ export class FailoverService {
         ? tls.connect({ host: bridge.host, port, servername: name && !net.isIP(name) ? name : undefined, rejectUnauthorized: false, ca: options.ca, ALPNProtocols: ['http/1.1'] })
         : net.connect({ host: bridge.host, port });
       socket.setTimeout(timeout, () => done({ stage, error: `нет ответа за ${Math.round(timeout / 1000)} с` }));
-      socket.on('error', (err: any) => done({ stage, error: err.code || err.message }));
+      socket.on('error', (err: NodeJS.ErrnoException) => done({ stage, error: err.code || err.message }));
       if (https) {
         socket.on('connect', () => { stage = 'tls'; });
         socket.once('secureConnect', () => {
           const t = socket as tls.TLSSocket;
           // Проверка имени — своя: rejectUnauthorized выключен, чтобы показать, что именно не так
           const cert = t.getPeerCertificate();
-          const nameOk = name ? !tls.checkServerIdentity(name, cert as any) : false;
+          const nameOk = name ? !tls.checkServerIdentity(name, cert) : false;
+          const subjectCn = cert.subject?.CN;
+          const cn = Array.isArray(subjectCn) ? subjectCn.join(', ') : subjectCn ?? '?';
           if (!t.authorized || !nameOk) {
             return done({ stage: 'tls', authorized: false, error: !nameOk
-              ? `сертификат не выписан на ${name ?? 'имя панели'} (CN=${(cert?.subject as any)?.CN ?? '?'})`
+              ? `сертификат не выписан на ${name ?? 'имя панели'} (CN=${cn})`
               : `сертификат не принят: ${t.authorizationError}` });
           }
           request(t);
@@ -394,7 +417,10 @@ export class FailoverService {
     let resolved: string[] = [];
     let error: string | null = null;
     try { resolved = (await resolver.resolve4(domain)).sort(); }
-    catch (err: any) { error = err.code === 'ENOTFOUND' || err.code === 'ENODATA' ? 'имя не найдено в DNS' : (err.code || err.message); }
+    catch (err: unknown) {
+      const code = errorCode(err);
+      error = code === 'ENOTFOUND' || code === 'ENODATA' ? 'имя не найдено в DNS' : (code || errorMessage(err));
+    }
     return {
       domain, resolved, published,
       missing: published.filter((ip) => !resolved.includes(ip)),

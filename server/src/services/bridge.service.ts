@@ -20,6 +20,13 @@ import {
   openCascadeFirewall, pickCascadePort,
   clearBridgeConntrack, generateCascadeSecret, parseCascadeSni, prepareCascadeImage, removeCascadeContainer, requireAwgLoopback, type CascadeLink,
 } from './bridge-cascade.service.js';
+import {
+  buildBridgeRules, expectedRuleCount, HEALTH_SCRIPT, panelPort, parseBridgeCheck, type BridgeRuleLink, type PanelForward,
+} from './bridge-rules.js';
+export {
+  buildBridgeRules, expectedRuleCount, HEALTH_SCRIPT, linkForwards, panelPort, parseBridgeCheck, parseHealth,
+  type BridgeCheckResult, type BridgeRuleLink, type PanelForward,
+} from './bridge-rules.js';
 
 /**
  * Мосты (docs/bridges.md): серверы в стране пользователей, пересылающие UDP-трафик AmneziaWG на зарубежные ноды правилами
@@ -63,21 +70,28 @@ const LINK_MODES: LinkMode[] = ['main', 'auto', 'always', 'off'];
 export const DEFAULT_LINK_MODE: LinkMode = 'main';
 const COUNTRY = /^[a-z]{2}$/;
 
-export interface BridgeRuleLink {
-  listen_port: number;
-  host: string;
-  awg_port: number;
-  stub_port: number | null;
-  /** Протокол ноды: AWG пересылается по UDP (+ TCP заглушки проверки), VLESS — только по TCP */
-  protocol?: string | null;
+type BridgeFieldValue = string | number | null;
+type LinkServerProjection = Pick<ServerRow, 'id' | 'host' | 'awg_port' | 'status'>;
+type CascadeLinkProjection = Pick<BridgeLinkRow, 'server_id' | 'listen_port' | 'cascade_pending'> &
+  Pick<ServerRow, 'host' | 'protocol' | 'stub_port'> & {
+    cascade_port: NonNullable<BridgeLinkRow['cascade_port']>;
+    cascade_secret: NonNullable<BridgeLinkRow['cascade_secret']>;
+    vpn_port: ServerRow['awg_port'];
+  };
+type BridgeLinkCheckProjection = Pick<BridgeLinkRow, 'bridge_id' | 'server_id' | 'listen_port' | 'cascade_port'> &
+  Pick<ServerRow, 'stub_token' | 'reality_sni' | 'reality_dest' | 'awg_port'> & { bridge_host: BridgeRow['host'] };
+type AutoPairProjection = Pick<BridgeLinkRow, 'server_id'> & Pick<BridgeRow, 'country'> & Pick<ServerRow, 'status'>;
+type BridgeRouteProjection = Pick<BridgeLinkRow, 'server_id' | 'listen_port' | 'mode'> & Pick<BridgeRow, 'host'> & {
+  bridge_id: BridgeRow['id'];
+  bridge_name: BridgeRow['name'];
+};
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : {};
 }
 
-/** Правила пересылки одной привязки: [протокол, порт ноды] */
-function linkForwards(link: BridgeRuleLink): Array<['udp' | 'tcp', number]> {
-  if (link.protocol === 'vless') return [['tcp', Number(link.awg_port)]];
-  const forwards: Array<['udp' | 'tcp', number]> = [['udp', Number(link.awg_port)]];
-  if (link.stub_port) forwards.push(['tcp', Number(link.stub_port)]);
-  return forwards;
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export interface BridgeRoute {
@@ -87,19 +101,6 @@ export interface BridgeRoute {
   port: number;
   /** Режим `main`: в подписке и запись через мост, и прямая (запасная) */
   keepDirect: boolean;
-}
-
-/** Пересылка порта панели через мост (резервный путь к панели и подпискам, docs/bridges.md#panel) */
-export interface PanelForward {
-  /** IPv4 сервера панели */
-  ip: string;
-  /** Порт панели (HTTP+HTTPS на одном порту); на мосту слушается тот же номер */
-  port: number;
-}
-
-/** Порт, на котором работает панель (HTTP и HTTPS на одном порту, инвариант 20) */
-export function panelPort(): number {
-  return Number(process.env.PORT) || 3001;
 }
 
 const pendingApply = new Map<number, Promise<OperationResult>>();
@@ -120,67 +121,6 @@ function readDeployScript(): string {
   throw new Error('Установочный скрипт deploy-bridge.sh не найден');
 }
 
-/**
- * Скрипт правил пересылки. Цепочки панели перестраиваются целиком; переходы в них ставятся первыми, чтобы политика DROP
- * в FORWARD (Docker, ufw) не отбрасывала пересылаемый трафик. DNAT срабатывает только для пакетов на адреса самого моста.
- * Ноды, заданные доменом, разрешаются на мосту при каждом применении (и при загрузке).
- */
-export function buildBridgeRules(links: BridgeRuleLink[], panel: PanelForward | null = null): string {
-  const lines = [
-    '#!/bin/sh',
-    '# Сгенерировано Dementia Panel — не редактируйте вручную, правила перезаписываются панелью',
-    'set -e',
-    'resolve() {',
-    '  case "$1" in',
-    "    *[!0-9.]*) getent ahostsv4 \"$1\" | awk 'NR == 1 {print $1}' ;;",
-    '    *) echo "$1" ;;',
-    '  esac',
-    '}',
-    'sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true',
-    'for c in DEMENTIA-BRIDGE DEMENTIA-BRIDGE-POST; do iptables -t nat -N "$c" 2>/dev/null || true; iptables -t nat -F "$c"; done',
-    'iptables -N DEMENTIA-BRIDGE-FWD 2>/dev/null || true',
-    'iptables -F DEMENTIA-BRIDGE-FWD',
-    'while iptables -t nat -D PREROUTING -m addrtype --dst-type LOCAL -j DEMENTIA-BRIDGE 2>/dev/null; do :; done',
-    'iptables -t nat -I PREROUTING 1 -m addrtype --dst-type LOCAL -j DEMENTIA-BRIDGE',
-    'while iptables -t nat -D POSTROUTING -j DEMENTIA-BRIDGE-POST 2>/dev/null; do :; done',
-    'iptables -t nat -I POSTROUTING 1 -j DEMENTIA-BRIDGE-POST',
-    'while iptables -D FORWARD -j DEMENTIA-BRIDGE-FWD 2>/dev/null; do :; done',
-    'iptables -I FORWARD 1 -j DEMENTIA-BRIDGE-FWD',
-    'iptables -A DEMENTIA-BRIDGE-FWD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT',
-    'forward() {',
-    '  ip=$(resolve "$3")',
-    '  if [ -z "$ip" ]; then echo "Не удалось определить IP-адрес ноды $3" >&2; return 1; fi',
-    '  iptables -t nat -A DEMENTIA-BRIDGE -p "$1" --dport "$2" -j DNAT --to-destination "$ip:$4"',
-    '  iptables -t nat -A DEMENTIA-BRIDGE-POST -p "$1" -d "$ip" --dport "$4" -j MASQUERADE',
-    '  iptables -A DEMENTIA-BRIDGE-FWD -p "$1" -d "$ip" --dport "$4" -j ACCEPT',
-    '}',
-  ];
-  for (const link of links) {
-    if (!isValidHost(link.host) || net.isIPv6(link.host)) throw new Error(`Адрес ноды ${link.host} не поддерживается мостом (нужен IPv4 или домен)`);
-    for (const [proto, port] of linkForwards(link)) {
-      lines.push(`forward ${proto} ${Number(link.listen_port)} ${shellQuote(link.host)} ${port}`);
-    }
-  }
-  if (panel) {
-    // TCP как есть: TLS панели завершается на самой панели, сертификат остаётся её (мост ничего не расшифровывает)
-    if (!net.isIPv4(panel.ip)) throw new Error('Для пересылки панели нужен IPv4-адрес сервера панели');
-    lines.push(`forward tcp ${Number(panel.port)} ${shellQuote(panel.ip)} ${Number(panel.port)}`);
-  }
-  lines.push(`echo "---RULES ${expectedRuleCount(links, panel)}"`);
-  return lines.join('\n') + '\n';
-}
-
-export function expectedRuleCount(links: BridgeRuleLink[], panel: PanelForward | null = null): number {
-  return links.reduce((n, l) => n + linkForwards(l).length, 0) + (panel ? 1 : 0);
-}
-
-/** Проверка моста: число правил DNAT и то, что переход в цепочку панели — первое правило FORWARD */
-const HEALTH_SCRIPT = [
-  'echo "RULES $(iptables -t nat -S DEMENTIA-BRIDGE 2>/dev/null | grep -c \'^-A DEMENTIA-BRIDGE \' || true)"',
-  'echo "FIRST $(iptables -S FORWARD 2>/dev/null | sed -n 2p)"',
-  'echo "PRE $(iptables -t nat -S PREROUTING 2>/dev/null | grep -c \'DEMENTIA-BRIDGE$\' || true)"',
-].join('\n');
-
 const TEARDOWN_SCRIPT = [
   'while iptables -t nat -D PREROUTING -m addrtype --dst-type LOCAL -j DEMENTIA-BRIDGE 2>/dev/null; do :; done',
   'while iptables -t nat -D POSTROUTING -j DEMENTIA-BRIDGE-POST 2>/dev/null; do :; done',
@@ -193,15 +133,6 @@ const TEARDOWN_SCRIPT = [
   'if command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload >/dev/null 2>&1; fi',
   'echo done',
 ].join('\n');
-
-export function parseHealth(output: string): { rules: number; forwardFirst: boolean; prerouting: boolean } {
-  const rules = Number(/^RULES (\d+)$/m.exec(output)?.[1] ?? 0);
-  return {
-    rules,
-    forwardFirst: /^FIRST -A FORWARD -j DEMENTIA-BRIDGE-FWD\s*$/m.test(output),
-    prerouting: Number(/^PRE (\d+)$/m.exec(output)?.[1] ?? 0) === 1,
-  };
-}
 
 function loadBridge(id: number): BridgeRow {
   const bridge = db.prepare('SELECT * FROM bridges WHERE id = ?').get(id) as BridgeRow | undefined;
@@ -237,17 +168,7 @@ function cascadeLinks(bridgeId: number): CascadeLink[] {
       COALESCE(s.deployed_port, s.awg_port) AS vpn_port, s.stub_port
     FROM bridge_links l JOIN servers s ON s.id = l.server_id
     WHERE l.bridge_id = ? AND l.cascade_port IS NOT NULL ORDER BY l.server_id
-  `).all(bridgeId) as Array<{
-    server_id: number;
-    listen_port: number;
-    cascade_port: number;
-    cascade_secret: string;
-    cascade_pending: number;
-    host: string;
-    protocol: string;
-    vpn_port: number;
-    stub_port: number | null;
-  }>;
+  `).all(bridgeId) as unknown as CascadeLinkProjection[];
   return rows.map((row) => ({
     bridgeId, serverId: row.server_id, host: row.host, port: row.cascade_port, listenPort: row.listen_port,
     vpnPort: row.vpn_port, stubPort: row.stub_port, protocol: nodeProtocol(row), secret: JSON.parse(decryptSecret(row.cascade_secret)!),
@@ -353,8 +274,9 @@ export class BridgeService {
   }
 
   /** Поля моста из тела запроса; SSH-секреты шифруются (инвариант 2) */
-  static parseFields(body: any, existing: any | null): Record<string, unknown> {
-    const fields: Record<string, unknown> = {};
+  static parseFields(input: unknown, existing: BridgeRow | null): Record<string, BridgeFieldValue> {
+    const body = objectRecord(input);
+    const fields: Record<string, BridgeFieldValue> = {};
     if (body.name !== undefined || !existing) {
       if (typeof body.name !== 'string' || !body.name.trim()) throw new HttpError(400, 'Имя моста обязательно');
       if (body.name.trim().length > 64) throw new HttpError(400, 'Имя моста не длиннее 64 символов');
@@ -405,18 +327,18 @@ export class BridgeService {
     return fields;
   }
 
-  static create(body: any): number {
+  static create(body: unknown): number {
     const fields = this.parseFields(body ?? {}, null);
     const duplicate = db.prepare('SELECT id FROM bridges WHERE LOWER(host) = LOWER(?)').get(fields.host as string);
     if (duplicate) throw new HttpError(409, `Мост ${fields.host} уже добавлен в панель`);
     const keys = Object.keys(fields);
     const result = db.prepare(`INSERT INTO bridges (${keys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`).run(
-      ...(keys.map((k) => fields[k]) as any[])
+      ...keys.map((k) => fields[k])
     );
     return Number(result.lastInsertRowid);
   }
 
-  static update(id: number, body: any): void {
+  static update(id: number, body: unknown): void {
     const bridge = loadBridge(id);
     const fields = this.parseFields(body ?? {}, bridge);
     if (fields.host !== undefined && String(fields.host).toLowerCase() !== String(bridge.host).toLowerCase()) {
@@ -425,7 +347,7 @@ export class BridgeService {
     }
     const keys = Object.keys(fields);
     if (keys.length) {
-      db.prepare(`UPDATE bridges SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(...(keys.map((k) => fields[k]) as any[]), id);
+      db.prepare(`UPDATE bridges SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(...keys.map((k) => fields[k]), id);
     }
   }
 
@@ -443,7 +365,7 @@ export class BridgeService {
 
   private static async withNode(serverId: number, action: (creds: SshCredentials) => Promise<void>): Promise<void> {
     await runExclusive(serverId, async () => {
-      const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as any;
+      const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as unknown as ServerRow | undefined;
       if (!server || server.remote_panel_id) throw new Error('Нужна локальная нода с доступом по SSH');
       await action(ProvisionService.getCredentials(server));
     });
@@ -457,14 +379,14 @@ export class BridgeService {
    * TCP-порты, которые панель считает занятыми на хосте ноды: порты всех локальных нод с тем же адресом (VPN, заглушка, CDN, SSH,
    * запасные) и порты каскадов других мостов. Реально слушающие порты проверяются отдельно на самой ноде (`pickCascadePort`).
    */
-  private static reservedNodePorts(server: any, bridgeId: number): Set<number> {
+  private static reservedNodePorts(server: ServerRow, bridgeId: number): Set<number> {
     const reserved = new Set<number>();
     const peers = db.prepare(
       'SELECT * FROM servers WHERE remote_panel_id IS NULL AND (id = ? OR lower(host) = lower(?))'
-    ).all(server.id, server.host) as any[];
+    ).all(server.id, server.host) as unknown as ServerRow[];
     for (const peer of peers) {
       for (const value of [peer.ssh_port, peer.awg_port, peer.deployed_port, peer.stub_port, peer.cdn_port, ...parseExtraPorts(peer.extra_ports)]) {
-        if (Number.isInteger(value)) reserved.add(value);
+        if (typeof value === 'number' && Number.isInteger(value)) reserved.add(value);
       }
       const others = db.prepare('SELECT cascade_port FROM bridge_links WHERE server_id = ? AND bridge_id != ? AND cascade_port IS NOT NULL')
         .all(peer.id, bridgeId) as { cascade_port: number }[];
@@ -492,7 +414,7 @@ export class BridgeService {
    * одной привязки не должна блокировать правила и другие привязки моста, её ошибка возвращается в `failed`.
    * Привязка `strictServerId` (её сейчас настраивает администратор) при сбое бросает исключение, как и раньше.
    */
-  private static async applyCascades(bridge: any, creds: SshCredentials, strictServerId?: number): Promise<Map<number, string>> {
+  private static async applyCascades(bridge: BridgeRow, creds: SshCredentials, strictServerId?: number): Promise<Map<number, string>> {
     const failed = new Map<number, string>();
     const links = cascadeLinks(bridge.id);
     if (links.length) {
@@ -513,9 +435,9 @@ export class BridgeService {
       if (failed.has(link.serverId)) return;
       try {
         await step();
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (link.serverId === strictServerId) throw err;
-        failed.set(link.serverId, String(err?.message ?? err).slice(0, 200));
+        failed.set(link.serverId, errorMessage(err).slice(0, 200));
       }
     };
     for (const link of links) await attempt(link, () => this.withCascadeNode(link, prepareCascadeImage));
@@ -559,9 +481,10 @@ export class BridgeService {
           }
           recordApplied(id, rules, failed);
           return { success: true, log };
-        } catch (err: any) {
-          db.prepare("UPDATE bridges SET status = 'error', last_error = ? WHERE id = ?").run(err.message, id);
-          return { success: false, error: err.message, log: log + `\n❌ ${err.message}\n` };
+        } catch (err: unknown) {
+          const message = errorMessage(err);
+          db.prepare("UPDATE bridges SET status = 'error', last_error = ? WHERE id = ?").run(message, id);
+          return { success: false, error: message, log: log + `\n❌ ${message}\n` };
         }
       });
     } finally {
@@ -609,9 +532,10 @@ export class BridgeService {
       if (result.code !== 0) throw new Error(`Ошибка применения правил моста: ${result.stderr.trim() || `код ${result.code}`}`);
       recordApplied(id, rules, failed);
       return { success: true };
-    } catch (err: any) {
-      db.prepare('UPDATE bridges SET last_error = ? WHERE id = ?').run(err.message, id);
-      return { success: false, error: err.message };
+    } catch (err: unknown) {
+      const message = errorMessage(err);
+      db.prepare('UPDATE bridges SET last_error = ? WHERE id = ?').run(message, id);
+      return { success: false, error: message };
     }
   }
 
@@ -623,8 +547,8 @@ export class BridgeService {
         const result = await SshService.executeCommand(creds, `${SshService.sudo(creds)}sh -c ${shellQuote(TEARDOWN_SCRIPT)}`, { timeoutMs: 60000 });
         if (result.code !== 0) throw new Error(result.stderr.trim() || `код ${result.code}`);
         return { success: true };
-      } catch (err: any) {
-        return { success: false, error: err.message };
+      } catch (err: unknown) {
+        return { success: false, error: errorMessage(err) };
       }
     });
   }
@@ -648,21 +572,22 @@ export class BridgeService {
     const bridge = loadBridge(id);
     if (!Array.isArray(links)) throw new HttpError(400, 'links должен быть массивом');
     const wanted = new Map<number, LinkMode>();
-    for (const item of links) {
-      const serverId = Number((item as any)?.server_id);
-      const mode = ((item as any)?.mode ?? DEFAULT_LINK_MODE) as LinkMode;
+    for (const item of links as unknown[]) {
+      const input = objectRecord(item);
+      const serverId = Number(input.server_id);
+      const mode = (input.mode ?? DEFAULT_LINK_MODE) as LinkMode;
       if (!Number.isInteger(serverId) || serverId <= 0) throw new HttpError(400, 'Некорректный идентификатор ноды');
       if (!LINK_MODES.includes(mode)) throw new HttpError(400, 'Режим моста: main, auto, always или off');
       wanted.set(serverId, mode);
     }
 
-    const previous = db.prepare('SELECT * FROM bridge_links WHERE bridge_id = ?').all(id) as any[];
+    const previous = db.prepare('SELECT * FROM bridge_links WHERE bridge_id = ?').all(id) as unknown as BridgeLinkRow[];
     if (previous.some((link) => link.cascade_port !== null && !wanted.has(link.server_id))) {
       throw new HttpError(409, 'Перед отвязкой ноды отключите её каскад XHTTP');
     }
     transaction(() => {
       for (const serverId of wanted.keys()) {
-        const server = db.prepare('SELECT id, host, awg_port, status FROM servers WHERE id = ?').get(serverId) as any;
+        const server = db.prepare('SELECT id, host, awg_port, status FROM servers WHERE id = ?').get(serverId) as unknown as LinkServerProjection | undefined;
         if (!server) throw new HttpError(404, `Нода #${serverId} не найдена`);
         if (net.isIPv6(server.host)) throw new HttpError(400, `Нода ${server.host}: мост поддерживает только IPv4-адреса и домены`);
       }
@@ -678,8 +603,10 @@ export class BridgeService {
           db.prepare('UPDATE bridge_links SET mode = ? WHERE bridge_id = ? AND server_id = ?').run(mode, id, serverId);
           continue;
         }
-        const used = (db.prepare('SELECT listen_port FROM bridge_links WHERE bridge_id = ?').all(id) as any[]).map((r) => r.listen_port);
-        const server = db.prepare('SELECT awg_port FROM servers WHERE id = ?').get(serverId) as any;
+        const used = (db.prepare('SELECT listen_port FROM bridge_links WHERE bridge_id = ?').all(id) as unknown as Pick<BridgeLinkRow, 'listen_port'>[])
+          .map((row) => row.listen_port);
+        const server = db.prepare('SELECT awg_port FROM servers WHERE id = ?').get(serverId) as unknown as Pick<ServerRow, 'awg_port'> | undefined;
+        if (!server) throw new HttpError(404, `Нода #${serverId} не найдена`);
         // Порт панели занят пересылкой панели, если она включена на этом мосту
         const exclude = [...used, bridge.ssh_port, ...(bridge.panel_forward ? [panelPort()] : [])];
         const port = exclude.includes(server.awg_port) ? stubPortCandidates(exclude, null, 1)[0] : server.awg_port;
@@ -714,8 +641,8 @@ export class BridgeService {
     const sni = port === null ? undefined : parseCascadeSni(requestedSni);
     return runExclusive(queueKey(id), async () => {
       const bridge = loadBridge(id);
-      const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as any;
-      const link = db.prepare('SELECT * FROM bridge_links WHERE bridge_id = ? AND server_id = ?').get(id, serverId) as any;
+      const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as unknown as ServerRow | undefined;
+      const link = db.prepare('SELECT * FROM bridge_links WHERE bridge_id = ? AND server_id = ?').get(id, serverId) as unknown as BridgeLinkRow | undefined;
       if (!link || !server) throw new HttpError(404, 'Привязка к ноде не найдена');
       const previous = cascadeLinks(id).find((item) => item.serverId === serverId);
       if (port === null && !previous) return { success: true };
@@ -758,9 +685,10 @@ export class BridgeService {
         try {
           await this.changeCascadeNode(previous, false);
           await removeCascadeContainer(credentials(bridge), cascadeContainer(previous, 'bridge'));
-        } catch (err: any) {
-          db.prepare('UPDATE bridges SET last_error = ? WHERE id = ?').run(err.message, id);
-          return { success: false, error: err.message };
+        } catch (err: unknown) {
+          const message = errorMessage(err);
+          db.prepare('UPDATE bridges SET last_error = ? WHERE id = ?').run(message, id);
+          return { success: false, error: message };
         }
       }
       const secret = cascadePort === null ? null : (link.cascade_secret || encryptSecret(JSON.stringify(generateCascadeSecret(sni))));
@@ -791,14 +719,14 @@ export class BridgeService {
    * применить заново; раз в две минуты — проверить по SSH, что правила на месте.
    */
   static async checkAll(): Promise<void> {
-    const bridges = db.prepare("SELECT * FROM bridges WHERE status IN ('online', 'offline')").all() as any[];
+    const bridges = db.prepare("SELECT * FROM bridges WHERE status IN ('online', 'offline')").all() as unknown as BridgeRow[];
     for (const bridge of bridges) {
       if (installing.has(bridge.id)) continue;
       let expected: string;
       try {
         expected = rulesFor(bridge);
-      } catch (err: any) {
-        db.prepare('UPDATE bridges SET last_error = ? WHERE id = ?').run(err.message, bridge.id);
+      } catch (err: unknown) {
+        db.prepare('UPDATE bridges SET last_error = ? WHERE id = ?').run(errorMessage(err), bridge.id);
         continue;
       }
       if (bridge.needs_apply || bridge.rules_hash !== sha256(expected)) {
@@ -821,7 +749,7 @@ export class BridgeService {
   }
 
   private static async checkHealth(id: number, expectedRules: number): Promise<void> {
-    const bridge = db.prepare('SELECT * FROM bridges WHERE id = ?').get(id) as any;
+    const bridge = db.prepare('SELECT * FROM bridges WHERE id = ?').get(id) as unknown as BridgeRow | undefined;
     if (!bridge) return;
     try {
       const creds = credentials(bridge);
@@ -833,7 +761,7 @@ export class BridgeService {
       const script = [HEALTH_SCRIPT, ...checks, ...(checks.length ? ['wait'] : [])].join('\n');
       const result = await SshService.executeCommand(creds, `${SshService.sudo(creds)}sh -c ${shellQuote(script)}`, { timeoutMs: 30000 });
       if (result.code !== 0) throw new Error(result.stderr.trim() || `код ${result.code}`);
-      const health = parseHealth(result.stdout);
+      const health = parseBridgeCheck(result.stdout);
       db.prepare("UPDATE bridges SET status = 'online', fail_count = 0, last_seen = datetime('now') WHERE id = ?").run(id);
       // Правила пропали (перезагрузка без systemd, чужой iptables-restore) или переход сдвинут ufw/Docker — применить заново
       const cascadeMissing = cascades.some((link) => !link.pending && !result.stdout.split(/\r?\n/).includes(`CASCADE ${link.serverId}`));
@@ -842,7 +770,7 @@ export class BridgeService {
       } else if (bridge.last_error) {
         db.prepare('UPDATE bridges SET last_error = NULL WHERE id = ?').run(id);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (err instanceof HostKeyMismatchError) {
         db.prepare("UPDATE bridges SET status = 'error', last_error = ? WHERE id = ?").run(err.message, id);
         return;
@@ -851,7 +779,7 @@ export class BridgeService {
         UPDATE bridges SET fail_count = fail_count + 1, last_error = ?,
           status = CASE WHEN fail_count + 1 >= ? THEN 'offline' ELSE status END
         WHERE id = ?
-      `).run(err.message, OFFLINE_THRESHOLD, id);
+      `).run(errorMessage(err), OFFLINE_THRESHOLD, id);
     }
   }
 
@@ -868,10 +796,7 @@ export class BridgeService {
         AND CASE WHEN s.protocol = 'vless' THEN b.needs_apply = 0
                  ELSE s.stub_port IS NOT NULL AND s.stub_token IS NOT NULL END
         AND (? IS NULL OR l.checked_at IS NULL OR l.checked_at <= ?)
-    `).all(protocol, cutoff, cutoff) as {
-      bridge_id: number; server_id: number; listen_port: number; cascade_port: number | null;
-      bridge_host: string; stub_token: string | null; reality_sni: string | null; reality_dest: string | null; awg_port: number;
-    }[];
+    `).all(protocol, cutoff, cutoff) as unknown as BridgeLinkCheckProjection[];
     const check = async (link: typeof links[number]) => {
       let ok = false;
       if (protocol === 'vless') {
@@ -943,7 +868,7 @@ export class BridgeService {
       SELECT DISTINCT l.server_id, b.country, s.status
       FROM bridge_links l JOIN bridges b ON b.id = l.bridge_id JOIN servers s ON s.id = l.server_id
       WHERE l.mode = 'auto'
-    `).all() as { server_id: number; country: string; status: string }[];
+    `).all() as unknown as AutoPairProjection[];
     if (pairs.length === 0) return;
 
     const settings = ProbeService.readSettings();
@@ -960,7 +885,9 @@ export class BridgeService {
       for (const pair of pairs) {
         // Нода не отвечает панели — мост тут не поможет, состояние не меняется
         if (pair.status !== 'online') continue;
-        const state = (select.get(pair.server_id, pair.country) as any) ?? { active: 0, fail_streak: 0, ok_streak: 0, reason: null, changed_at: null };
+        const state = (select.get(pair.server_id, pair.country) as unknown as BridgeStateRow | undefined) ?? {
+          server_id: pair.server_id, country: pair.country, active: 0, fail_streak: 0, ok_streak: 0, reason: null, changed_at: null,
+        };
         let { active, fail_streak: fail, ok_streak: ok, reason, changed_at: changedAt } = state;
 
         const probed = settings.enabled && settings.countries.includes(pair.country);
@@ -1018,7 +945,7 @@ export class BridgeService {
         AND l.cascade_pending = 0 AND (l.cascade_port IS NULL OR b.needs_apply = 0)
         AND (l.mode IN ('main', 'always') OR (l.mode = 'auto' AND st.active = 1))
       ORDER BY b.id
-    `).all(country) as any[];
+    `).all(country) as unknown as BridgeRouteProjection[];
     for (const r of rows) {
       if (!routes.has(r.server_id)) {
         routes.set(r.server_id, {

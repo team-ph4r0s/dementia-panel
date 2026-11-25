@@ -8,13 +8,41 @@ import {
   neighbours,
   nodeKey,
   UNKNOWN_COUNTRY,
-  stretchFor,
   type Orientation,
-  type Health,
   type Selection,
-  type TopoEdge,
   type TopoNode,
 } from '../topology/model';
+import {
+  draggedNodePosition,
+  edgeGeometry,
+  edgeOpacity,
+  edgeStroke,
+  edgeWidth,
+  fitView,
+  flowDuration,
+  flowParticleCount,
+  HEALTH_COLOR,
+  labelSizeForView,
+  LAYERS_KEY,
+  LAYOUT_KEY,
+  nodeAriaLabel,
+  nodeColor,
+  nodePrimaryLabel,
+  orientationForSize,
+  panView,
+  pinchView,
+  readStorage,
+  ringAxes,
+  screenToMap,
+  STATUS_TEXT,
+  tooltipPosition,
+  visibleRingRadii,
+  writeStorage,
+  zoomView,
+  type NodePositionOverrides,
+  type TopologyLayers,
+  type View,
+} from './topologyMapHelpers';
 
 interface TopologyMapProps {
   servers: Server[];
@@ -23,42 +51,6 @@ interface TopologyMapProps {
   selected: Selection | null;
   onSelect: (selection: Selection | null) => void;
   className?: string;
-}
-
-interface View {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
-
-const LAYOUT_KEY = 'dementia.topology.layout.v1';
-const LAYERS_KEY = 'dementia.topology.layers.v1';
-
-const HEALTH_COLOR: Record<Health, string> = {
-  ok: 'var(--color-ok)',
-  warn: 'var(--color-orange)',
-  fail: 'var(--color-pink)',
-  idle: 'var(--color-faint)',
-};
-
-const STATUS_TEXT: Record<Health, string> = { ok: 'в сети', warn: 'внимание', fail: 'нет связи', idle: 'не активна' };
-
-function readStorage<T>(key: string, fallback: T): T {
-  try {
-    const raw = window.localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function writeStorage(key: string, value: unknown): void {
-  try {
-    window.localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // хранилище недоступно (приватный режим) — карта работает и без запоминания
-  }
 }
 
 function usePrefersReducedMotion(): boolean {
@@ -73,54 +65,11 @@ function usePrefersReducedMotion(): boolean {
   return reduced;
 }
 
-/** Подгоняет область под соотношение сторон контейнера, чтобы карта не обрезалась и не «плавала» при перемещении */
-function fitView(bounds: View, aspect: number): View {
-  const w = Math.max(bounds.w, bounds.h * aspect);
-  const h = w / aspect;
-  return { x: bounds.x + bounds.w / 2 - w / 2, y: bounds.y + bounds.h / 2 - h / 2, w, h };
-}
-
-interface Geometry {
-  d: string;
-  /** Середина линии: сюда подвешивается подпись при подсветке */
-  mx: number;
-  my: number;
-}
-
-function edgeGeometry(a: TopoNode, b: TopoNode, curve: boolean): Geometry {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const len = Math.hypot(dx, dy) || 1;
-  const ux = dx / len;
-  const uy = dy / len;
-  const x1 = a.x + ux * (a.r + 3);
-  const y1 = a.y + uy * (a.r + 3);
-  const x2 = b.x - ux * (b.r + 3);
-  const y2 = b.y - uy * (b.r + 3);
-  if (!curve) return { d: `M${x1.toFixed(1)} ${y1.toFixed(1)} L${x2.toFixed(1)} ${y2.toFixed(1)}`, mx: (x1 + x2) / 2, my: (y1 + y2) / 2 };
-  const bend = len * 0.07;
-  const cx = (x1 + x2) / 2 - uy * bend;
-  const cy = (y1 + y2) / 2 + ux * bend;
-  return { d: `M${x1.toFixed(1)} ${y1.toFixed(1)} Q${cx.toFixed(1)} ${cy.toFixed(1)} ${x2.toFixed(1)} ${y2.toFixed(1)}`, mx: (x1 + 2 * cx + x2) / 4, my: (y1 + 2 * cy + y2) / 4 };
-}
-
-function edgeStroke(edge: TopoEdge): string {
-  if (edge.health === 'fail') return 'var(--color-pink)';
-  if (edge.health === 'warn') return 'var(--color-orange)';
-  if (edge.kind === 'bridge-server' || edge.kind === 'country-bridge') return edge.health === 'ok' ? 'var(--color-violet)' : 'var(--color-faint)';
-  if (edge.kind === 'panel-server') return edge.health === 'ok' ? 'var(--color-brand)' : 'var(--color-faint)';
-  return edge.health === 'ok' ? 'var(--color-info)' : 'var(--color-faint)';
-}
-
-function truncate(text: string, max: number): string {
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
-}
-
 export const TopologyMap: React.FC<TopologyMapProps> = ({ servers, bridges, subscribers, selected, onSelect, className = '' }) => {
   const reducedMotion = usePrefersReducedMotion();
 
-  const [layers, setLayers] = useState<{ bridges: boolean; countries: boolean }>(() => readStorage(LAYERS_KEY, { bridges: true, countries: true }));
-  const [overrides, setOverrides] = useState<Record<string, { x: number; y: number }>>(() => readStorage(LAYOUT_KEY, {}));
+  const [layers, setLayers] = useState<TopologyLayers>(() => readStorage(LAYERS_KEY, { bridges: true, countries: true }));
+  const [overrides, setOverrides] = useState<NodePositionOverrides>(() => readStorage<NodePositionOverrides>(LAYOUT_KEY, {}));
   const [hover, setHover] = useState<{ key: string; x: number; y: number } | null>(null);
   const [size, setSize] = useState({ w: 1000, h: 640 });
   const [view, setView] = useState<View | null>(null);
@@ -159,7 +108,7 @@ export const TopologyMap: React.FC<TopologyMapProps> = ({ servers, bridges, subs
       const h = el.clientHeight || 640;
       setSize({ w, h });
       // С гистерезисом, чтобы раскладка не мигала при небольших изменениях размера
-      setOrientation((current) => (current === 'wide' ? (w / h < 0.8 ? 'tall' : 'wide') : w / h > 1 ? 'wide' : 'tall'));
+      setOrientation((current) => orientationForSize(current, w, h));
     };
     update();
     const observer = new ResizeObserver(update);
@@ -189,26 +138,16 @@ export const TopologyMap: React.FC<TopologyMapProps> = ({ servers, bridges, subs
 
   const zoomAt = useCallback(
     (factor: number, focus?: { x: number; y: number }) => {
-      setView((current) => {
-        if (!current) return current;
-        const base = fitView(bounds, aspect);
-        const w = Math.min(base.w * 3, Math.max(base.w * 0.12, current.w * factor));
-        const k = w / current.w;
-        const fx = focus?.x ?? current.x + current.w / 2;
-        const fy = focus?.y ?? current.y + current.h / 2;
-        return { x: fx - (fx - current.x) * k, y: fy - (fy - current.y) * k, w, h: w / aspect };
-      });
+      setView((current) => (current ? zoomView(current, bounds, aspect, factor, focus) : current));
     },
     [bounds, aspect]
   );
 
-  /** Экранные координаты → координаты карты */
   const toMap = useCallback((clientX: number, clientY: number) => {
     const svg = svgRef.current;
     const v = viewRef.current;
     if (!svg || !v) return { x: 0, y: 0 };
-    const rect = svg.getBoundingClientRect();
-    return { x: v.x + ((clientX - rect.left) / rect.width) * v.w, y: v.y + ((clientY - rect.top) / rect.height) * v.h };
+    return screenToMap(clientX, clientY, svg.getBoundingClientRect(), v);
   }, []);
 
   // Колесо мыши: масштаб к курсору (слушатель не пассивный, чтобы страница не прокручивалась)
@@ -259,12 +198,8 @@ export const TopologyMap: React.FC<TopologyMapProps> = ({ servers, bridges, subs
     if (g.type === 'pinch' && pointers.current.size >= 2) {
       const [a, b] = [...pointers.current.values()];
       const distance = Math.hypot(a.x - b.x, a.y - b.y) || 1;
-      const k = g.distance / distance;
-      const w = g.view.w * k;
       const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-      const fx = g.view.x + ((mid.x - rect.left) / rect.width) * g.view.w;
-      const fy = g.view.y + ((mid.y - rect.top) / rect.height) * g.view.h;
-      setView({ x: fx - (fx - g.view.x) * k, y: fy - (fy - g.view.y) * k, w, h: w / aspect });
+      setView(pinchView(g.view, g.distance, distance, mid, rect, aspect));
       return;
     }
     if (g.type === 'pinch') return;
@@ -274,15 +209,13 @@ export const TopologyMap: React.FC<TopologyMapProps> = ({ servers, bridges, subs
       if (!g.moved && Math.hypot(dx, dy) < 4) return;
       g.moved = true;
       setDragging(true);
-      setView({ ...g.view, x: g.view.x - (dx / rect.width) * g.view.w, y: g.view.y - (dy / rect.height) * g.view.h });
+      setView(panView(g.view, dx, dy, rect));
     } else if (g.type === 'node') {
       if (!g.moved && Math.hypot(dx, dy) < 4) return;
       g.moved = true;
       setDragging(true);
-      const v = viewRef.current!;
-      const x = g.nodeX + (dx / rect.width) * v.w;
-      const y = g.nodeY + (dy / rect.height) * v.h;
-      setOverrides((prev) => ({ ...prev, [g.key]: { x, y } }));
+      const position = draggedNodePosition(g.nodeX, g.nodeY, dx, dy, rect, viewRef.current!);
+      setOverrides((prev) => ({ ...prev, [g.key]: position }));
     }
   };
 
@@ -346,11 +279,10 @@ export const TopologyMap: React.FC<TopologyMapProps> = ({ servers, bridges, subs
   };
 
   const hoverNode = hover ? nodeMap.get(hover.key) : undefined;
+  const hoverPosition = hover ? tooltipPosition(hover, size.w) : null;
   const hasOverrides = Object.keys(overrides).length > 0;
   const animate = !reducedMotion;
-  // Подписи не должны мельчать вместе с картой: их размер держится около 13 пикселей экрана при любом масштабе
-  const pxPerUnit = view ? size.w / view.w : 1;
-  const labelSize = Math.min(18, Math.max(11, 13 / pxPerUnit));
+  const labelSize = labelSizeForView(view, size.w);
 
   const describe = (node: TopoNode): string[] => {
     if (node.kind === 'server') {
@@ -396,9 +328,10 @@ export const TopologyMap: React.FC<TopologyMapProps> = ({ servers, bridges, subs
         </defs>
 
         {/* Кольца: ноды, мосты, страны */}
-        {[...new Set(topology.nodes.filter((n) => n.kind !== 'panel' && (layers.bridges || n.kind !== 'bridge') && (layers.countries || n.kind !== 'country')).map((n) => Math.round(Math.hypot(n.x / stretchFor(orientation).sx, n.y / stretchFor(orientation).sy) / 10) * 10))].map((r) => (
-          <ellipse key={r} cx={0} cy={0} rx={r * stretchFor(orientation).sx} ry={r * stretchFor(orientation).sy} fill="none" stroke="var(--color-line)" strokeDasharray="2 7" opacity={0.7} />
-        ))}
+        {visibleRingRadii(topology.nodes, layers, orientation).map((r) => {
+          const axes = ringAxes(r, orientation);
+          return <ellipse key={r} cx={0} cy={0} rx={axes.rx} ry={axes.ry} fill="none" stroke="var(--color-line)" strokeDasharray="2 7" opacity={0.7} />;
+        })}
 
         {/* Линии */}
         <g>
@@ -406,9 +339,9 @@ export const TopologyMap: React.FC<TopologyMapProps> = ({ servers, bridges, subs
             const a = nodeMap.get(edge.from)!;
             const b = nodeMap.get(edge.to)!;
             const geo = edgeGeometry(a, b, edge.kind !== 'panel-server');
-            const emphasised = related?.edges.has(edge.key) || selectedRelated?.edges.has(edge.key);
-            const dimmed = related && !related.edges.has(edge.key);
-            const width = (edge.dashed ? 1.1 : 1.5) + (emphasised ? 1 : 0) + Math.min(1.2, edge.weight * 0.9);
+            const emphasised = Boolean(related?.edges.has(edge.key) || selectedRelated?.edges.has(edge.key));
+            const dimmed = Boolean(related && !related.edges.has(edge.key));
+            const width = edgeWidth(edge, emphasised);
             return (
               <path
                 key={edge.key}
@@ -419,7 +352,7 @@ export const TopologyMap: React.FC<TopologyMapProps> = ({ servers, bridges, subs
                 strokeLinecap="round"
                 strokeDasharray={edge.flow ? undefined : edge.dashed ? '3 6' : undefined}
                 className={edge.flow && animate ? 'topology-flow' : undefined}
-                style={{ opacity: dimmed ? 0.1 : emphasised ? 1 : edge.flow ? 0.75 : edge.kind === 'country-server' ? 0.35 : 0.55, transition: 'opacity .2s' }}
+                style={{ opacity: edgeOpacity(edge, dimmed, emphasised), transition: 'opacity .2s' }}
               >
                 <title>{edge.title}</title>
               </path>
@@ -436,10 +369,10 @@ export const TopologyMap: React.FC<TopologyMapProps> = ({ servers, bridges, subs
                 const a = nodeMap.get(edge.from)!;
                 const b = nodeMap.get(edge.to)!;
                 const geo = edgeGeometry(a, b, edge.kind !== 'panel-server');
-                const count = edge.weight > 0.6 ? 3 : edge.weight > 0.25 ? 2 : 1;
+                const count = flowParticleCount(edge.weight);
                 const length = Math.hypot(b.x - a.x, b.y - a.y);
-                const duration = Math.max(1.6, length / 90);
-                const dimmed = related && !related.edges.has(edge.key);
+                const duration = flowDuration(length);
+                const dimmed = Boolean(related && !related.edges.has(edge.key));
                 return Array.from({ length: count }, (_, i) => (
                   <circle key={`${edge.key}#${i}`} r={2.6} fill={edgeStroke(edge)} opacity={dimmed ? 0.1 : 0.95}>
                     <animateMotion dur={`${duration}s`} begin={`${(-duration * i) / count}s`} repeatCount="indefinite" path={geo.d} />
@@ -454,9 +387,8 @@ export const TopologyMap: React.FC<TopologyMapProps> = ({ servers, bridges, subs
           {nodes.map((node) => {
             const isSelected = node.key === selectedKey;
             const dimmed = related && !related.nodes.has(node.key);
-            const color = node.kind === 'panel' ? 'var(--color-brand)' : node.kind === 'bridge' && node.health === 'ok' ? 'var(--color-violet)' : HEALTH_COLOR[node.health];
-            const label =
-              node.kind === 'panel' ? 'Панель' : `${node.kind === 'server' ? 'Нода' : node.kind === 'bridge' ? 'Мост' : 'Страна'} ${node.label}: ${STATUS_TEXT[node.health]}, ${node.sub}`;
+            const color = nodeColor(node);
+            const label = nodeAriaLabel(node);
             return (
               <g
                 key={node.key}
@@ -548,7 +480,7 @@ export const TopologyMap: React.FC<TopologyMapProps> = ({ servers, bridges, subs
                 )}
 
                 <text y={node.r + labelSize * 1.35} textAnchor="middle" fill="var(--color-ink)" fontSize={labelSize} fontWeight={600} stroke="var(--color-page)" strokeWidth={4} paintOrder="stroke" strokeLinejoin="round">
-                  {truncate(node.kind === 'country' || node.kind === 'panel' ? (node.kind === 'country' ? node.sub : 'dementia · панель') : node.label, 18)}
+                  {nodePrimaryLabel(node)}
                 </text>
                 {node.kind === 'country' && node.id !== UNKNOWN_COUNTRY ? null : node.kind === 'country' ? (
                   <text y={node.r + labelSize * 2.5} textAnchor="middle" fill="var(--color-muted)" fontSize={labelSize * 0.85} fontFamily="var(--font-mono)" stroke="var(--color-page)" strokeWidth={3.5} paintOrder="stroke" strokeLinejoin="round">
@@ -566,11 +498,11 @@ export const TopologyMap: React.FC<TopologyMapProps> = ({ servers, bridges, subs
       </svg>
 
       {/* Подсказка при наведении */}
-      {hoverNode && hover && !dragging && (
+      {hoverNode && hoverPosition && !dragging && (
         <div
           role="tooltip"
           className="pointer-events-none absolute z-10 max-w-64 rounded-lg border border-line bg-card/95 px-3 py-2 shadow-pop text-xs"
-          style={{ left: Math.min(hover.x + 14, size.w - 270), top: Math.max(8, hover.y - 12) }}
+          style={{ left: hoverPosition.x, top: hoverPosition.y }}
         >
           <div className="flex items-center gap-2 font-semibold text-ink">
             <span className="w-2 h-2 rounded-full" style={{ background: HEALTH_COLOR[hoverNode.health] }} />

@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import net from 'node:net';
 import { db, getSetting, setSetting, transaction } from '../db/index.js';
+import type { ProbeResultRow, ServerRow } from '../db/types.js';
 import { HttpError } from '../utils/http.js';
 import { PANEL_VERSION } from './version.service.js';
 import { ProvisionService } from './provision.service.js';
@@ -123,7 +124,30 @@ interface StartedCheck {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const IP = /^[0-9a-fA-F.:]{2,45}$/;
 
-async function providerFetch(path: string): Promise<any> {
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Ответ check-host.net на запуск проверки (`/check-*`): поля читаются с проверкой формата у места использования,
+ * здесь — только форма объекта
+ */
+interface CheckStartResponse {
+  ok?: unknown;
+  request_id?: unknown;
+  error?: unknown;
+  nodes?: Record<string, unknown>;
+}
+
+/** Ответ check-host.net `/nodes/hosts`: узел → расположение [код страны, название, город] и адрес */
+interface NodesHostsResponse {
+  nodes?: Record<string, { location?: unknown; ip?: unknown }>;
+}
+
+/** Проекция строки servers для обхода проверки: только колонки, нужные для выбора способа проверки */
+type ProbeServerProjection = Pick<ServerRow, 'id' | 'name' | 'host' | 'status' | 'probe_port' | 'stub_port' | 'remote_panel_id'>;
+
+async function providerFetch(path: string): Promise<unknown> {
   const res = await fetch(`${API_BASE}${path}`, {
     headers: { Accept: 'application/json', 'User-Agent': `dementia-panel/${PANEL_VERSION}` },
     signal: AbortSignal.timeout(15000),
@@ -145,7 +169,8 @@ export function parseHttpResult(value: unknown): { ok: boolean; rtt: number | nu
 export function parseTcpResult(value: unknown): { ok: boolean; rtt: number | null } | null {
   const entry = Array.isArray(value) ? value[0] : null;
   if (!entry || typeof entry !== 'object') return null;
-  if (typeof (entry as any).time === 'number' && Number.isFinite((entry as any).time)) return { ok: true, rtt: Math.round((entry as any).time * 1000) };
+  const time = (entry as { time?: unknown }).time;
+  if (typeof time === 'number' && Number.isFinite(time)) return { ok: true, rtt: Math.round(time * 1000) };
   if ('error' in entry) return { ok: false, rtt: null };
   return null;
 }
@@ -154,9 +179,9 @@ export function parseTcpResult(value: unknown): { ok: boolean; rtt: number | nul
 export function parseUdpResult(value: unknown): { ok: boolean; rtt: number | null } | null {
   const entry = Array.isArray(value) ? value[0] : null;
   if (!entry || typeof entry !== 'object') return null;
-  const e = entry as any;
+  const e = entry as { time?: unknown; timeout?: unknown };
   if (typeof e.time === 'number' && Number.isFinite(e.time) && !e.timeout) return { ok: true, rtt: Math.round(e.time * 1000) };
-  if ('timeout' in e || 'error' in e) return { ok: false, rtt: null };
+  if ('timeout' in entry || 'error' in entry) return { ok: false, rtt: null };
   return null;
 }
 
@@ -350,10 +375,10 @@ export class ProbeService {
     if (cached && Date.now() - cached.at < COUNTRIES_TTL_MS) return cached;
 
     try {
-      const data = await providerFetch('/nodes/hosts');
+      const data = (await providerFetch('/nodes/hosts')) as NodesHostsResponse | null;
       const byCode = new Map<string, ProbeCountry>();
       const ips = new Map<string, string>();
-      for (const [id, info] of Object.entries<any>(data?.nodes ?? {})) {
+      for (const [id, info] of Object.entries(data?.nodes ?? {})) {
         const location = info?.location;
         if (!NODE_ID.test(id) || !Array.isArray(location) || typeof location[0] !== 'string' || !COUNTRY_CODE.test(location[0])) continue;
         const country = byCode.get(location[0]) ?? { code: location[0], name: String(location[1] ?? location[0]).slice(0, 60), nodes: [], cities: [] };
@@ -367,9 +392,9 @@ export class ProbeService {
       if (list.length === 0) throw new Error('пустой список узлов');
       this.countriesCache = { at: Date.now(), list, ips };
       return this.countriesCache;
-    } catch (err: any) {
+    } catch (err) {
       if (cached) return cached;
-      throw new HttpError(502, `Не удалось получить список стран у check-host.net: ${err.message}`);
+      throw new HttpError(502, `Не удалось получить список стран у check-host.net: ${errorMessage(err)}`);
     }
   }
 
@@ -422,9 +447,10 @@ export class ProbeService {
     countryOfNode: Map<string, string>,
     ipOfNode: Map<string, string>
   ): Promise<StartedCheck> {
-    const started = await providerFetch(`/check-${type}?host=${encodeURIComponent(target)}&${nodeIds.map((n) => `node=${encodeURIComponent(n)}`).join('&')}`);
-    if (started?.ok !== 1 || !REQUEST_ID.test(String(started.request_id))) {
-      throw new Error(typeof started?.error === 'string' ? started.error.slice(0, 120) : 'check-host.net отклонил запрос');
+    const started = (await providerFetch(`/check-${type}?host=${encodeURIComponent(target)}&${nodeIds.map((n) => `node=${encodeURIComponent(n)}`).join('&')}`)) as CheckStartResponse | null;
+    if (!started || started.ok !== 1 || !REQUEST_ID.test(String(started.request_id))) {
+      const detail = started && typeof started.error === 'string' ? started.error.slice(0, 120) : null;
+      throw new Error(detail ?? 'check-host.net отклонил запрос');
     }
     // Страна и адрес узла: из ответа на запуск, иначе из списка узлов
     const nodes = new Map<string, { country: string; ip: string | null }>();
@@ -444,7 +470,7 @@ export class ProbeService {
     let results: Record<string, unknown> = {};
     for (let attempt = 0; ; attempt++) {
       await sleep(this.pollDelayMs ?? Math.min(firstDelayMs + attempt * 1000, POLL_MAX_DELAY_MS));
-      results = (await providerFetch(`/check-result/${check.requestId}`)) ?? {};
+      results = ((await providerFetch(`/check-result/${check.requestId}`)) ?? {}) as Record<string, unknown>;
       const pending = ids.filter((id) => results[id] === null || results[id] === undefined);
       if (pending.length === 0 || Date.now() > deadline) break;
     }
@@ -515,8 +541,8 @@ export class ProbeService {
     let hits: StubHit[] | null = null;
     try {
       hits = await ProvisionService.readProbeHits(server.id);
-    } catch (err: any) {
-      errors.push(`журнал заглушки не прочитан, результат не подтверждён: ${err.message}`);
+    } catch (err) {
+      errors.push(`журнал заглушки не прочитан, результат не подтверждён: ${errorMessage(err)}`);
     }
 
     // Адрес узла из любого из двух запусков
@@ -588,13 +614,13 @@ export class ProbeService {
       try {
         const measurement = await startGlobalpingHttp(server.host, server.stub_port, `/${nonce}`, country, NODES_PER_COUNTRY);
         if (measurement) started.push({ ...measurement, country, nonce });
-      } catch (err: any) {
+      } catch (err) {
         if (err instanceof GlobalpingRateLimitError) {
           this.gpLimited = true;
           errors.push(err.message);
           break;
         }
-        errors.push(`Globalping (${country.toUpperCase()}): ${err.message}`);
+        errors.push(`Globalping (${country.toUpperCase()}): ${errorMessage(err)}`);
       }
     }
     return Promise.all(started.map(async (item) => {
@@ -651,9 +677,9 @@ export class ProbeService {
       const gpCountries = settings.countries.filter((code) => gpCounts.has(code));
       if (settings.globalping && gpCounts.size === 0) errors.push('Globalping недоступен — проверка только через check-host.net');
       // Без Globalping check-host.net обязателен; с ним обход продолжается и при недоступном check-host.net
-      const { list: countries, ips: ipOfNode } = await this.loadNodes().catch((err) => {
+      const { list: countries, ips: ipOfNode } = await this.loadNodes().catch((err: unknown) => {
         if (!gpCountries.length) throw err;
-        errors.push(err.message);
+        errors.push(errorMessage(err));
         return { list: [] as ProbeCountry[], ips: new Map<string, string>() };
       });
       const byCode = new Map(countries.map((c) => [c.code, c]));
@@ -670,15 +696,7 @@ export class ProbeService {
       if (missing.length) errors.push(`нет проверяющих узлов в странах: ${missing.join(', ')}`);
       if (nodeIds.length === 0 && gpCountries.length === 0) throw new Error('для выбранных стран нет проверяющих узлов');
 
-      const servers = db.prepare("SELECT id, name, host, status, probe_port, stub_port, remote_panel_id FROM servers WHERE status != 'uninstalled' AND (protocol IS NULL OR protocol = 'awg') ORDER BY id").all() as {
-        id: number;
-        name: string;
-        host: string;
-        status: string;
-        probe_port: number | null;
-        stub_port: number | null;
-        remote_panel_id: number | null;
-      }[];
+      const servers = db.prepare("SELECT id, name, host, status, probe_port, stub_port, remote_panel_id FROM servers WHERE status != 'uninstalled' AND (protocol IS NULL OR protocol = 'awg') ORDER BY id").all() as unknown as ProbeServerProjection[];
 
       // Ноды проверяются параллельно: ожидание результатов check-host.net (до 150 с) не складывается по числу нод
       const queue = [...servers];
@@ -691,8 +709,8 @@ export class ProbeService {
           if (!server.remote_panel_id && !server.stub_port && server.status === 'online') {
             try {
               server.stub_port = await ProvisionService.ensureProbeStub(server.id);
-            } catch (err: any) {
-              errors.push(`${server.name}: ${err.message}`);
+            } catch (err) {
+              errors.push(`${server.name}: ${errorMessage(err)}`);
             }
           }
           let outcome: CheckOutcome;
@@ -716,13 +734,13 @@ export class ProbeService {
           }
           this.saveResults(server.id, outcome);
           checked++;
-        } catch (err: any) {
-          errors.push(`${server.name}: ${err.message}`);
+        } catch (err) {
+          errors.push(`${server.name}: ${errorMessage(err)}`);
         }
       };
       await Promise.all(Array.from({ length: Math.min(PARALLEL_SERVERS, servers.length) }, worker));
-    } catch (err: any) {
-      errors.push(err.message);
+    } catch (err) {
+      errors.push(errorMessage(err));
     } finally {
       this.running = false;
       setSetting('probe_last_run', new Date().toISOString());
@@ -752,7 +770,7 @@ export class ProbeService {
     return new Date(Date.now() - minutes * 60000).toISOString();
   }
 
-  private static toResult(r: any): ProbeResult {
+  private static toResult(r: ProbeResultRow): ProbeResult {
     return {
       server_id: r.server_id,
       country: r.country,
@@ -776,7 +794,7 @@ export class ProbeService {
     const settings = this.readSettings();
     if (!settings.enabled) return [];
     const since = this.freshSince();
-    const rows = db.prepare('SELECT * FROM probe_results WHERE server_id = ? AND checked_at >= ?').all(serverId, since) as any[];
+    const rows = db.prepare('SELECT * FROM probe_results WHERE server_id = ? AND checked_at >= ?').all(serverId, since) as unknown as ProbeResultRow[];
     return rows
       .filter((r) => settings.countries.includes(r.country))
       .sort((a, b) => settings.countries.indexOf(a.country) - settings.countries.indexOf(b.country))
@@ -786,7 +804,7 @@ export class ProbeService {
   static allResults(): ProbeResult[] {
     const settings = this.readSettings();
     if (!settings.enabled) return [];
-    const rows = db.prepare('SELECT * FROM probe_results WHERE checked_at >= ? ORDER BY server_id').all(this.freshSince()) as any[];
+    const rows = db.prepare('SELECT * FROM probe_results WHERE checked_at >= ? ORDER BY server_id').all(this.freshSince()) as unknown as ProbeResultRow[];
     return rows
       .filter((r) => settings.countries.includes(r.country))
       .sort((a, b) => a.server_id - b.server_id || settings.countries.indexOf(a.country) - settings.countries.indexOf(b.country))

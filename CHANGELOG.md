@@ -3,6 +3,12 @@
 Формат версий `vX.Y.Z` и правила выбора номера — в [docs/releases.md](docs/releases.md). Каждая версия публикуется на GitHub
 как релиз; текст релиза берётся из соответствующего раздела этого файла.
 
+## v0.2.51 — 2026-11-25
+
+### Разработка и рефакторинг
+- **Типизация строк БД на сервере завершена.** Остальные сервисы и роуты (`federation-client`, `federation`, `partner`, `partners`, `remote-panels`, `failover`, `cdn`, `probe`, `extra-ports`, `xray`, `ssl`, `panel-address`, `node-update`, `cloudflare-panel`, `subscription`, `provision`, `servers`, `bridge`) переведены на типы из `db/types.ts` и локальные проекции SQLite; число `any` в `server/src` снижено с 305 до 52 (#109).
+- **Декомпозиция мостов и клиента.** Из `bridge.service.ts` выделен модуль `bridge-rules.ts`; из `client/src/App.tsx` вынесен хук `hooks/usePanelData.ts`; из `TopologyMap.tsx` выделены хелперы `topologyMapHelpers.ts` (#110).
+
 ## v0.2.50 — 2026-11-25
 
 ### Разработка и рефакторинг

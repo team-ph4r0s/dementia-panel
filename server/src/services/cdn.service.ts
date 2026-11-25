@@ -2,9 +2,10 @@ import crypto from 'node:crypto';
 import dns from 'node:dns';
 import net from 'node:net';
 import { db, getSetting } from '../db/index.js';
+import type { ServerRow } from '../db/types.js';
 import { HttpError } from '../utils/http.js';
 import { nodeProtocol } from '../utils/vless-params.js';
-import { SslService, cfFetch, validateDomain } from './ssl.service.js';
+import { SslService, cfFetch, validateDomain, type CloudflareDnsRecord, type CloudflareResponse } from './ssl.service.js';
 import { decryptSecret, encryptSecret } from './secrets.service.js';
 import { CLOUDFLARE_HTTPS_PORTS } from './cloudflare-panel.service.js';
 import { ProvisionService } from './provision.service.js';
@@ -20,6 +21,15 @@ const CDN_COLUMNS = [
   'cdn_enabled', 'cdn_domain', 'cdn_port', 'cdn_address', 'cdn_zone', 'cdn_record', 'cdn_origin_ip',
   'cdn_cert', 'cdn_key', 'cdn_expires_at', 'cdn_error',
 ] as const;
+
+type CdnColumn = (typeof CDN_COLUMNS)[number];
+type CdnValues = Partial<Pick<ServerRow, CdnColumn>>;
+type CdnRecordShape = Partial<Pick<ServerRow, 'cdn_zone' | 'cdn_record' | 'cdn_domain' | 'cdn_origin_ip'>>;
+type DnsChange = { zone: string; id: string; previous: CloudflareDnsRecord | null };
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 export interface CdnInput {
   domain?: unknown;
@@ -59,22 +69,22 @@ function certificateCovers(certPem: string | null, domain: string): boolean {
  * TLS/DNS — через `SslService.exclusive`; приватный ключ сертификата — `encryptSecret`, в API не отдаётся.
  */
 export class CdnService {
-  private static load(serverId: number): any {
-    const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as any;
+  private static load(serverId: number): ServerRow {
+    const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as unknown as ServerRow | undefined;
     if (!server) throw new HttpError(404, 'Сервер не найден');
     if (server.remote_panel_id) throw new HttpError(400, 'Недоступно для ноды партнёра');
     if (nodeProtocol(server) !== 'vless') throw new HttpError(400, 'Вход через CDN доступен только для нод VLESS');
     return server;
   }
 
-  private static snapshot(server: any): Record<string, unknown> {
-    return Object.fromEntries(CDN_COLUMNS.map((key) => [key, server[key] ?? null]));
+  private static snapshot(server: ServerRow): CdnValues {
+    return Object.fromEntries(CDN_COLUMNS.map((key) => [key, server[key] ?? null])) as CdnValues;
   }
 
-  private static write(serverId: number, values: Record<string, unknown>): void {
-    const keys = Object.keys(values);
-    db.prepare(`UPDATE servers SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(
-      ...(keys.map((k) => values[k]) as any[]),
+  private static write(serverId: number, values: CdnValues): void {
+    const entries = Object.entries(values) as [CdnColumn, string | number | null | undefined][];
+    db.prepare(`UPDATE servers SET ${entries.map(([key]) => `${key} = ?`).join(', ')} WHERE id = ?`).run(
+      ...entries.map(([, value]) => value ?? null),
       serverId
     );
   }
@@ -94,7 +104,7 @@ export class CdnService {
     }
   }
 
-  private static async originIp(server: any, input: unknown): Promise<string> {
+  private static async originIp(server: ServerRow, input: unknown): Promise<string> {
     if (input !== undefined && input !== null && input !== '') {
       if (typeof input !== 'string' || !net.isIPv4(input.trim())) throw new HttpError(400, 'IPv4 ноды указан неверно');
       return input.trim();
@@ -109,12 +119,12 @@ export class CdnService {
     throw new HttpError(400, 'Не удалось определить IPv4 ноды: укажите его явно');
   }
 
-  private static async api(token: string, path: string, init?: RequestInit): Promise<any> {
-    let data: any;
-    try { data = await cfFetch(token, path, init); }
+  private static async api<T = unknown>(token: string, path: string, init?: RequestInit): Promise<T> {
+    let data: CloudflareResponse<T>;
+    try { data = await cfFetch<T>(token, path, init); }
     catch { throw new HttpError(502, 'Не удалось связаться с Cloudflare. Повторите позже.'); }
-    if (data?.success !== true) throw new HttpError(400, 'Cloudflare отклонил запрос. Проверьте токен и права Zone:Read, DNS:Edit для зоны.');
-    return data.result;
+    if (data.success !== true) throw new HttpError(400, 'Cloudflare отклонил запрос. Проверьте токен и права Zone:Read, DNS:Edit для зоны.');
+    return data.result as T;
   }
 
   /**
@@ -125,7 +135,7 @@ export class CdnService {
     const server = this.load(serverId);
     let domain: string;
     try { domain = validateDomain(input.domain); }
-    catch (err: any) { throw new HttpError(400, err.message); }
+    catch (err: unknown) { throw new HttpError(400, errorMessage(err)); }
     this.assertDedicatedDomain(domain, serverId);
 
     const port = input.port === undefined || input.port === null || input.port === '' ? 8443 : Number(input.port);
@@ -146,13 +156,13 @@ export class CdnService {
 
     let token: string;
     try { token = SslService.resolveCloudflareToken(input.token); }
-    catch (err: any) { throw new HttpError(400, err.message); }
+    catch (err: unknown) { throw new HttpError(400, errorMessage(err)); }
     if (input.email !== undefined && typeof input.email !== 'string') throw new HttpError(400, 'Email должен быть строкой');
     const email = (typeof input.email === 'string' && input.email.trim()) || getSetting('ssl_email');
     const ip = await this.originIp(server, input.origin_ip);
 
     const before = this.snapshot(server);
-    let dnsChange: { zone: string; id: string; previous: any | null } | null = null;
+    let dnsChange: DnsChange | null = null;
 
     await SslService.exclusive(async () => {
       let zones: { id: string; name: string }[];
@@ -162,11 +172,11 @@ export class CdnService {
       if (!zone || !CF_ID_RE.test(zone.id)) throw new HttpError(400, 'DNS-зона домена не найдена в Cloudflare. Нужны права Zone:Read и DNS:Edit.');
 
       const base = `/zones/${zone.id}/dns_records`;
-      const records = await this.api(token, `${base}?name=${encodeURIComponent(domain)}&per_page=100`);
+      const records = await this.api<CloudflareDnsRecord[]>(token, `${base}?name=${encodeURIComponent(domain)}&per_page=100`);
       if (!Array.isArray(records) || records.length >= 100) throw new HttpError(502, 'Cloudflare вернул некорректный список DNS-записей');
-      const addresses = records.filter((r: any) => ['A', 'AAAA', 'CNAME'].includes(r.type));
-      const owned = (r: any) => r.id === server.cdn_record && zone.id === server.cdn_zone;
-      if (addresses.length > 1 || addresses.some((r: any) => r.type !== 'A' || (r.content !== ip && !owned(r)))) {
+      const addresses = records.filter((r) => ['A', 'AAAA', 'CNAME'].includes(r.type));
+      const owned = (r: CloudflareDnsRecord) => r.id === server.cdn_record && zone.id === server.cdn_zone;
+      if (addresses.length > 1 || addresses.some((r) => r.type !== 'A' || (r.content !== ip && !owned(r)))) {
         throw new HttpError(409, 'Для этого имени уже есть другая A/AAAA/CNAME-запись. Выберите свободный поддомен; записи не изменены.');
       }
       const previous = addresses[0] ?? null;
@@ -187,7 +197,7 @@ export class CdnService {
       }
 
       this.assertDedicatedDomain(domain, serverId); // за время выпуска могли добавить ноду с этим именем
-      const record = await this.api(token, previous ? `${base}/${previous.id}` : base, {
+      const record = await this.api<CloudflareDnsRecord>(token, previous ? `${base}/${previous.id}` : base, {
         method: previous ? 'PATCH' : 'POST',
         body: JSON.stringify(previous
           ? { ...(previous.content !== ip ? { content: ip } : {}), proxied: true, ttl: 1 }
@@ -223,7 +233,7 @@ export class CdnService {
     EventService.log('info', 'server.cdn_enabled', `Вход через CDN ${domain}:${port} для ноды «${server.name}»`, { kind: 'server', id: serverId });
   }
 
-  private static async rollbackDns(token: string, change: { zone: string; id: string; previous: any | null }): Promise<void> {
+  private static async rollbackDns(token: string, change: DnsChange): Promise<void> {
     const path = `/zones/${change.zone}/dns_records/${change.id}`;
     if (change.previous) {
       await this.api(token, path, {
@@ -236,11 +246,11 @@ export class CdnService {
   }
 
   /** Удаляет A-запись входа через CDN, только если она всё ещё указывает на сохранённый IP ноды */
-  private static async deleteOwnedRecord(token: string, server: any): Promise<void> {
+  private static async deleteOwnedRecord(token: string, server: CdnRecordShape): Promise<void> {
     if (!CF_ID_RE.test(String(server.cdn_zone)) || !CF_ID_RE.test(String(server.cdn_record))) return;
     const path = `/zones/${server.cdn_zone}/dns_records/${server.cdn_record}`;
-    const current = await this.api(token, path);
-    if (current?.type !== 'A' || current?.name !== server.cdn_domain || current?.content !== server.cdn_origin_ip) return;
+    const current = await this.api<CloudflareDnsRecord>(token, path);
+    if (current.type !== 'A' || current.name !== server.cdn_domain || current.content !== server.cdn_origin_ip) return;
     await this.api(token, path, { method: 'DELETE' });
   }
 
@@ -269,7 +279,7 @@ export class CdnService {
   }
 
   /** При удалении ноды: убрать нашу A-запись (без ошибок — нода удаляется в любом случае) */
-  static async forget(server: any): Promise<void> {
+  static async forget(server: CdnRecordShape | null | undefined): Promise<void> {
     if (!server?.cdn_record) return;
     try {
       const token = SslService.resolveCloudflareToken();
@@ -286,20 +296,23 @@ export class CdnService {
   static async renewAll(): Promise<void> {
     const due = (db.prepare(`
       SELECT * FROM servers WHERE protocol = 'vless' AND cdn_enabled = 1 AND cdn_domain IS NOT NULL AND remote_panel_id IS NULL
-    `).all() as any[]).filter((s) => !s.cdn_expires_at || new Date(s.cdn_expires_at).getTime() - Date.now() < RENEW_BEFORE_MS);
+    `).all() as unknown as ServerRow[]).filter((s) => !s.cdn_expires_at || new Date(s.cdn_expires_at).getTime() - Date.now() < RENEW_BEFORE_MS);
     for (const server of due) {
       try {
         const token = SslService.resolveCloudflareToken();
         const email = getSetting('ssl_email');
         if (!email) throw new Error('не сохранён email Let’s Encrypt');
-        if (!CF_ID_RE.test(String(server.cdn_zone))) throw new Error('не сохранена зона Cloudflare');
-        const issued = await SslService.exclusive(() => SslService.obtainDns01Certificate(server.cdn_domain, email, token, server.cdn_zone));
+        if (!server.cdn_domain) throw new Error('не сохранён домен Cloudflare');
+        if (!server.cdn_zone || !CF_ID_RE.test(server.cdn_zone)) throw new Error('не сохранена зона Cloudflare');
+        const domain = server.cdn_domain;
+        const zone = server.cdn_zone;
+        const issued = await SslService.exclusive(() => SslService.obtainDns01Certificate(domain, email, token, zone));
         this.write(server.id, {
           cdn_cert: issued.cert, cdn_key: encryptSecret(issued.key), cdn_expires_at: certificateExpiry(issued.cert), cdn_error: null,
         });
         await ProvisionService.requestSync(server.id);
-      } catch (err: any) {
-        this.write(server.id, { cdn_error: `Не удалось продлить сертификат входа через CDN: ${err.message}` });
+      } catch (err: unknown) {
+        this.write(server.id, { cdn_error: `Не удалось продлить сертификат входа через CDN: ${errorMessage(err)}` });
       }
     }
     // Фоновая запись вне /api: интерфейс перечитает данные (инвариант 42)

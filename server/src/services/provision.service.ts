@@ -76,6 +76,45 @@ const OFFLINE_THRESHOLD = 3;
 /** Как часто перечитываются версии ПО AmneziaWG на ноде (после установки и подключения — сразу) */
 const NODE_INFO_TTL_MS = 12 * 60 * 60 * 1000;
 
+type SqlValue = string | number | null;
+type ServerClientRow = ClientRow & { subscriber_active: number };
+
+interface NodeContainerSpec {
+  name: string;
+  iface: string;
+  confPath: string;
+  tool: 'awg' | 'wg' | 'xray';
+  quick: string;
+}
+
+interface RemotePanelIdProjection {
+  remote_panel_id: number | null;
+}
+
+interface RemotePanelStateProjection {
+  status: string;
+  last_error: string | null;
+}
+
+interface ClientEndpointProjection {
+  client_public_key: string;
+  client_ip: string;
+}
+
+interface ServerNeedsFlagsProjection {
+  needs_sync: number;
+  needs_apply: number;
+}
+
+interface DetectedContainerWithConfig extends DetectedContainer {
+  confPath: string;
+  config: string;
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 // Запрошенная, но ещё не начатая синхронизация (повторные запросы объединяются)
 const pendingSync = new Map<number, Promise<OperationResult>>();
 // То же для применения параметров: каждое применение перезапускает контейнер и рвёт туннели всех клиентов
@@ -86,7 +125,7 @@ const installing = new Set<number>();
  * перед первой правкой). По ней откатываются неудачные правки: несколько правок до применения объединяются в одно, и откат
  * к «прежнему» значению отдельного запроса вернул бы в БД значение, которого на ноде никогда не было (инвариант 28).
  */
-const appliedBaseline = new Map<number, Record<string, unknown>>();
+const appliedBaseline = new Map<number, Record<string, SqlValue>>();
 
 function loadServer(serverId: number): ServerRow {
   const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as ServerRow | undefined;
@@ -104,7 +143,7 @@ function loadLocalServer(serverId: number): ServerRow {
 }
 
 function remotePanelOf(serverId: number): number | null {
-  const row = db.prepare('SELECT remote_panel_id FROM servers WHERE id = ?').get(serverId) as any;
+  const row = db.prepare('SELECT remote_panel_id FROM servers WHERE id = ?').get(serverId) as RemotePanelIdProjection | undefined;
   return row?.remote_panel_id ?? null;
 }
 
@@ -150,7 +189,7 @@ export class ProvisionService {
   /**
    * Клиенты сервера с признаком активности подписчика (выключен/истёк/превышен лимит → 0)
    */
-  static getServerClients(serverId: number): any[] {
+  static getServerClients(serverId: number): ServerClientRow[] {
     // Клиент партнёра активен, пока доступ включён, не приостановлен и нода не отозвана у партнёра
     return db.prepare(`
       SELECT c.*,
@@ -167,7 +206,7 @@ export class ProvisionService {
       LEFT JOIN partners p ON p.id = c.partner_id
       LEFT JOIN partner_nodes pn ON pn.partner_id = c.partner_id AND pn.server_id = c.server_id
       WHERE c.server_id = ?
-    `).all(serverId) as any[];
+    `).all(serverId) as unknown as ServerClientRow[];
   }
 
   static isInstalling(serverId: number): boolean {
@@ -183,13 +222,13 @@ export class ProvisionService {
     });
   }
 
-  private static container(server: any) {
+  private static container(server: ServerRow): NodeContainerSpec {
     if (nodeProtocol(server) === 'vless') {
       return {
         name: String(server.container_name || XRAY_CONTAINER),
         iface: '',
         confPath: String(server.conf_path || XRAY_CONF_PATH),
-        tool: 'xray' as any,
+        tool: 'xray',
         quick: '',
       };
     }
@@ -207,7 +246,7 @@ export class ProvisionService {
    * Команда, атомарно записывающая stdin в конфиг внутри контейнера.
    * Для контейнера панели /opt/amnezia/awg смонтирован с хоста, для контейнера Amnezia — живёт внутри.
    */
-  private static writeConfigCommand(credentials: SshCredentials, server: any): string {
+  private static writeConfigCommand(credentials: SshCredentials, server: ServerRow): string {
     if (nodeProtocol(server) === 'vless') {
       // Новый конфиг проверяется `xray run -test` образом работающего контейнера до замены: иначе непринятый конфиг
       // (например, после смены формата в новом Xray) уронил бы ноду после restart, а прежний был бы уже перезаписан.
@@ -234,7 +273,7 @@ export class ProvisionService {
     return `${SshService.sudo(credentials)}sh -c ${shellQuote(`umask 077 && mkdir -p ${AWG_DIR} && cat > ${tmp} && mv -f ${tmp} ${remotePath}`)}`;
   }
 
-  private static envFileContent(server: any): string {
+  private static envFileContent(server: ServerRow): string {
     return `AWG_NETWORK=${AwgService.getTunnelNetwork(server.subnet)}\nAWG_PORT=${server.awg_port}\n`;
   }
 
@@ -245,7 +284,7 @@ export class ProvisionService {
   /**
    * Ищет на ноде контейнеры AmneziaWG (панели или приложения Amnezia) и читает их конфигурацию
    */
-  static async detectContainers(server: any): Promise<DetectedContainer[]> {
+  static async detectContainers(server: ServerRow): Promise<DetectedContainer[]> {
     const script = [
       'command -v docker >/dev/null 2>&1 || exit 0',
       'for c in $(docker ps -a --format "{{.Names}}"); do',
@@ -294,7 +333,7 @@ export class ProvisionService {
       const containers = detected.map((d) => ({ name: d.name, image: d.image, running: d.running, managedBy: d.managedBy }));
 
       // Предпочтение — контейнеру панели, затем любому работающему с конфигурацией
-      const candidates = detected.filter((d) => d.running && d.config);
+      const candidates = detected.filter((d): d is DetectedContainerWithConfig => d.running && d.config !== null && d.confPath !== null);
       const target = candidates.find((d) => d.managedBy === 'demension') || candidates[0];
       if (!target) {
         const stopped = detected.filter((d) => !d.running).map((d) => d.name);
@@ -309,9 +348,9 @@ export class ProvisionService {
 
       let parsed: ParsedServerConfig;
       try {
-        parsed = parseServerConfig(target.config as string);
-      } catch (err: any) {
-        return { found: false, containers, message: `Контейнер ${target.name} найден, но его конфигурацию не удалось разобрать: ${err.message}` };
+        parsed = parseServerConfig(target.config);
+      } catch (err) {
+        return { found: false, containers, message: `Контейнер ${target.name} найден, но его конфигурацию не удалось разобрать: ${errorMessage(err)}` };
       }
 
       const adopted = this.adoptConfig(server, target, parsed);
@@ -329,10 +368,10 @@ export class ProvisionService {
     });
   }
 
-  private static adoptConfig(server: any, target: DetectedContainer, parsed: ParsedServerConfig): NonNullable<ScanResult['adopted']> {
+  private static adoptConfig(server: ServerRow, target: DetectedContainerWithConfig, parsed: ParsedServerConfig): NonNullable<ScanResult['adopted']> {
     // Подсеть Amnezia задаётся адресом сети (10.8.1.0/24) — проверяем мягко
     parseSubnet(parsed.address, false);
-    const iface = path.basename(target.confPath as string, '.conf');
+    const iface = path.basename(target.confPath, '.conf');
     const publicKey = AwgService.derivePublicKey(parsed.privateKey);
     const serverPsk = parsed.peers.find((p) => p.presharedKey)?.presharedKey || server.preshared_key;
     // Сканирование долго ждёт SSH: за это время могли выдать архив переноса. Запись после снимка потерялась бы (инвариант 30)
@@ -354,13 +393,13 @@ export class ProvisionService {
           status = 'online', needs_sync = 0, needs_apply = 0, fail_count = 0, last_error = NULL, last_seen = datetime('now'), node_info_at = NULL
         WHERE id = ?
       `).run(
-        ...(Object.values(columns) as any[]),
+        ...Object.values(columns),
         parsed.listenPort, parsed.listenPort, parsed.address, parsed.privateKey, publicKey, serverPsk,
         target.name, iface, target.confPath, target.tool, target.managedBy,
         server.id
       );
 
-      const existing = db.prepare('SELECT client_public_key, client_ip FROM clients WHERE server_id = ?').all(server.id) as any[];
+      const existing = db.prepare('SELECT client_public_key, client_ip FROM clients WHERE server_id = ?').all(server.id) as unknown as ClientEndpointProjection[];
       const knownKeys = new Set(existing.map((c) => c.client_public_key));
       const usedIps = new Set(existing.map((c) => c.client_ip));
       const insert = db.prepare(`
@@ -420,7 +459,7 @@ export class ProvisionService {
    * Контейнер, уже подключённый к этому серверу (managed_by = amnezia), заменять можно — его клиенты хранятся в БД панели.
    * Занятый тем же UDP-портом контейнер тоже мешает: после удаления своего контейнера docker run упал бы на порту.
    */
-  static async findForeignContainer(server: any): Promise<DetectedContainer | null> {
+  static async findForeignContainer(server: ServerRow): Promise<DetectedContainer | null> {
     const adopted = server.managed_by === 'amnezia' ? String(server.container_name) : null;
     for (const container of await this.detectContainers(server)) {
       if (container.managedBy !== 'amnezia' || container.name === adopted) continue;
@@ -447,10 +486,11 @@ export class ProvisionService {
         log(`\r\n❌ Ошибка: ${error}\r\n`);
         return { success: false, error };
       }
-    } catch (err: any) {
-      db.prepare("UPDATE servers SET status = 'error', last_error = ? WHERE id = ?").run(err.message, serverId);
-      log(`\r\n❌ Ошибка: ${err.message}\r\n`);
-      return { success: false, error: err.message };
+    } catch (err) {
+      const message = errorMessage(err);
+      db.prepare("UPDATE servers SET status = 'error', last_error = ? WHERE id = ?").run(message, serverId);
+      log(`\r\n❌ Ошибка: ${message}\r\n`);
+      return { success: false, error: message };
     }
 
     db.prepare("UPDATE servers SET status = 'installing', last_error = NULL WHERE id = ?").run(serverId);
@@ -528,20 +568,21 @@ export class ProvisionService {
       `).run(pubKey, privKey, psk, PANEL_CONTAINER, PANEL_CONF, serverId);
 
       // После установки на ноде ровно то, что в БД: это новая база для отката неудачных правок
-      appliedBaseline.set(serverId, { ...(db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as any) });
+      appliedBaseline.set(serverId, { ...(db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as unknown as ServerRow) });
       await this.reapplyExtraPorts(serverId, log);
       log('\r\n=== AmneziaWG успешно установлен и готов к работе! ===\r\n');
       EventService.log('info', 'server.installed', `AmneziaWG установлен на ноде «${server.name}»`, { kind: 'server', id: serverId });
       return { success: true };
-    } catch (err: any) {
-      db.prepare("UPDATE servers SET status = 'error', last_error = ? WHERE id = ?").run(err.message, serverId);
-      EventService.log('error', 'server.install_failed', `Не удалось установить ноду «${server.name}»: ${err.message}`, { kind: 'server', id: serverId });
-      log(`\r\n❌ Ошибка: ${err.message}\r\n`);
-      return { success: false, error: err.message };
+    } catch (err) {
+      const message = errorMessage(err);
+      db.prepare("UPDATE servers SET status = 'error', last_error = ? WHERE id = ?").run(message, serverId);
+      EventService.log('error', 'server.install_failed', `Не удалось установить ноду «${server.name}»: ${message}`, { kind: 'server', id: serverId });
+      log(`\r\n❌ Ошибка: ${message}\r\n`);
+      return { success: false, error: message };
     }
   }
 
-  private static async doInstallVless(serverId: number, server: any, onLog?: (chunk: string) => void): Promise<OperationResult> {
+  private static async doInstallVless(serverId: number, server: ServerRow, onLog?: (chunk: string) => void): Promise<OperationResult> {
     const log = (text: string) => onLog?.(text);
     const port = Number(server.awg_port || DEFAULT_VLESS_PORT);
     // Порт входа через CDN (VLESS + XHTTP + TLS) — второй TCP-порт того же контейнера
@@ -594,10 +635,11 @@ export class ProvisionService {
         log(`\r\n❌ Ошибка: ${error}\r\n`);
         return { success: false, error };
       }
-    } catch (err: any) {
-      db.prepare("UPDATE servers SET status = 'error', last_error = ? WHERE id = ?").run(err.message, serverId);
-      log(`\r\n❌ Ошибка: ${err.message}\r\n`);
-      return { success: false, error: err.message };
+    } catch (err) {
+      const message = errorMessage(err);
+      db.prepare("UPDATE servers SET status = 'error', last_error = ? WHERE id = ?").run(message, serverId);
+      log(`\r\n❌ Ошибка: ${message}\r\n`);
+      return { success: false, error: message };
     }
 
     db.prepare("UPDATE servers SET status = 'installing', last_error = NULL WHERE id = ?").run(serverId);
@@ -697,15 +739,16 @@ export class ProvisionService {
         serverId
       );
 
-      appliedBaseline.set(serverId, { ...(db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as any) });
+      appliedBaseline.set(serverId, { ...(db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as unknown as ServerRow) });
       log('\r\n=== Xray (VLESS) успешно установлен и готов к работе! ===\r\n');
       EventService.log('info', 'server.installed', `Xray (VLESS) установлен на ноде «${server.name}»`, { kind: 'server', id: serverId });
       return { success: true };
-    } catch (err: any) {
-      db.prepare("UPDATE servers SET status = 'error', last_error = ? WHERE id = ?").run(err.message, serverId);
-      EventService.log('error', 'server.install_failed', `Не удалось установить Xray на ноду «${server.name}»: ${err.message}`, { kind: 'server', id: serverId });
-      log(`\r\n❌ Ошибка: ${err.message}\r\n`);
-      return { success: false, error: err.message };
+    } catch (err) {
+      const message = errorMessage(err);
+      db.prepare("UPDATE servers SET status = 'error', last_error = ? WHERE id = ?").run(message, serverId);
+      EventService.log('error', 'server.install_failed', `Не удалось установить Xray на ноду «${server.name}»: ${message}`, { kind: 'server', id: serverId });
+      log(`\r\n❌ Ошибка: ${message}\r\n`);
+      return { success: false, error: message };
     }
   }
 
@@ -722,7 +765,7 @@ export class ProvisionService {
     const remotePanelId = remotePanelOf(serverId);
     if (remotePanelId) {
       return FederationClient.requestSync(remotePanelId).then(() => {
-        const panel = db.prepare('SELECT status, last_error FROM remote_panels WHERE id = ?').get(remotePanelId) as any;
+        const panel = db.prepare('SELECT status, last_error FROM remote_panels WHERE id = ?').get(remotePanelId) as RemotePanelStateProjection | undefined;
         return panel?.status === 'online' && !panel.last_error
           ? { success: true }
           : { success: false, error: panel?.last_error || 'Панель партнёра недоступна' };
@@ -748,7 +791,7 @@ export class ProvisionService {
   }
 
   private static async doSync(serverId: number): Promise<OperationResult> {
-    const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as any;
+    const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as ServerRow | undefined;
     if (!server) return { success: false, error: 'Сервер удалён' };
     if (installing.has(serverId) || server.status === 'uninstalled' || server.status === 'installing') {
       return { success: false, error: 'Сервер не установлен' };
@@ -777,13 +820,14 @@ export class ProvisionService {
       }
       db.prepare('UPDATE servers SET needs_sync = 0, last_error = NULL WHERE id = ?').run(serverId);
       return { success: true };
-    } catch (err: any) {
-      db.prepare('UPDATE servers SET last_error = ? WHERE id = ?').run(err.message, serverId);
-      return { success: false, error: err.message };
+    } catch (err) {
+      const message = errorMessage(err);
+      db.prepare('UPDATE servers SET last_error = ? WHERE id = ?').run(message, serverId);
+      return { success: false, error: message };
     }
   }
 
-  private static async doSyncVless(serverId: number, server: any): Promise<OperationResult> {
+  private static async doSyncVless(serverId: number, server: ServerRow): Promise<OperationResult> {
     try {
       const conf = XrayService.generateServerConfig(server, this.getServerClients(serverId));
       const credentials = this.getCredentials(server);
@@ -798,9 +842,10 @@ export class ProvisionService {
       }
       db.prepare('UPDATE servers SET needs_sync = 0, last_error = NULL WHERE id = ?').run(serverId);
       return { success: true };
-    } catch (err: any) {
-      db.prepare('UPDATE servers SET last_error = ? WHERE id = ?').run(err.message, serverId);
-      return { success: false, error: err.message };
+    } catch (err) {
+      const message = errorMessage(err);
+      db.prepare('UPDATE servers SET last_error = ? WHERE id = ?').run(message, serverId);
+      return { success: false, error: message };
     }
   }
 
@@ -834,7 +879,7 @@ export class ProvisionService {
   }
 
   private static async doApply(serverId: number): Promise<OperationResult> {
-    const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as any;
+    const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as ServerRow | undefined;
     if (!server) return { success: false, error: 'Сервер удалён' };
     if (installing.has(serverId) || server.status === 'uninstalled' || server.status === 'installing') {
       return { success: false, error: 'Сервер не установлен' };
@@ -873,9 +918,10 @@ export class ProvisionService {
       appliedBaseline.set(serverId, { ...server });
       await this.reapplyExtraPorts(serverId);
       return { success: true };
-    } catch (err: any) {
-      db.prepare('UPDATE servers SET last_error = ? WHERE id = ?').run(err.message, serverId);
-      return { success: false, error: err.message };
+    } catch (err) {
+      const message = errorMessage(err);
+      db.prepare('UPDATE servers SET last_error = ? WHERE id = ?').run(message, serverId);
+      return { success: false, error: message };
     }
   }
 
@@ -888,12 +934,12 @@ export class ProvisionService {
     try {
       const { ExtraPortsService } = await import('./extra-ports.service.js');
       await ExtraPortsService.reapplyLocked(serverId);
-    } catch (err: any) {
-      log?.(`Предупреждение: запасные порты не применены: ${err.message}\r\n`);
+    } catch (err) {
+      log?.(`Предупреждение: запасные порты не применены: ${errorMessage(err)}\r\n`);
     }
   }
 
-  private static async doApplyVless(serverId: number, server: any): Promise<OperationResult> {
+  private static async doApplyVless(serverId: number, server: ServerRow): Promise<OperationResult> {
     try {
       const conf = XrayService.generateServerConfig(server, this.getServerClients(serverId));
       const credentials = this.getCredentials(server);
@@ -909,19 +955,20 @@ export class ProvisionService {
       db.prepare('UPDATE servers SET needs_apply = 0, needs_sync = 0, last_error = NULL WHERE id = ?').run(serverId);
       appliedBaseline.set(serverId, { ...server });
       return { success: true };
-    } catch (err: any) {
-      db.prepare('UPDATE servers SET last_error = ? WHERE id = ?').run(err.message, serverId);
-      return { success: false, error: err.message };
+    } catch (err) {
+      const message = errorMessage(err);
+      db.prepare('UPDATE servers SET last_error = ? WHERE id = ?').run(message, serverId);
+      return { success: false, error: message };
     }
   }
 
   /** Запоминает работающие на ноде параметры перед первой правкой (если неприменённых изменений нет) */
-  static noteAppliedBaseline(server: any): void {
+  static noteAppliedBaseline(server: ServerRow): void {
     if (!appliedBaseline.has(server.id) && !server.needs_apply) appliedBaseline.set(server.id, { ...server });
   }
 
   /** Значения, к которым откатывать неудачное применение; undefined — неизвестно (тогда откат к значению запроса) */
-  static appliedBaselineOf(serverId: number): Record<string, unknown> | undefined {
+  static appliedBaselineOf(serverId: number): Record<string, SqlValue> | undefined {
     return appliedBaseline.get(serverId);
   }
 
@@ -956,8 +1003,8 @@ export class ProvisionService {
         );
         if (result.code !== 0) throw new Error(result.stderr.trim() || `код ${result.code}`);
         return { success: true };
-      } catch (err: any) {
-        return { success: false, error: err.message };
+      } catch (err) {
+        return { success: false, error: errorMessage(err) };
       }
     });
   }
@@ -1028,7 +1075,7 @@ export class ProvisionService {
    * Poll live interface stats (rx/tx, handshake), accumulate traffic and update server status
    */
   static async fetchServerStats(serverId: number): Promise<void> {
-    const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as any;
+    const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as ServerRow | undefined;
     if (!server || server.remote_panel_id || server.status === 'uninstalled' || server.status === 'installing' || installing.has(serverId)) return;
 
     try {
@@ -1070,24 +1117,25 @@ export class ProvisionService {
       const infoAge = server.node_info_at ? Date.now() - Date.parse(server.node_info_at) : Infinity;
       if (!(infoAge < NODE_INFO_TTL_MS)) await this.fetchNodeInfo(server);
 
-      const fresh = db.prepare('SELECT needs_sync, needs_apply FROM servers WHERE id = ?').get(serverId) as any;
+      const fresh = db.prepare('SELECT needs_sync, needs_apply FROM servers WHERE id = ?').get(serverId) as ServerNeedsFlagsProjection | undefined;
       if (fresh?.needs_apply) {
         this.requestApply(serverId).catch(() => {});
       } else if (fresh?.needs_sync || !wasOnline) {
         this.requestSync(serverId).catch(() => {});
       }
-    } catch (err: any) {
+    } catch (err) {
+      const message = errorMessage(err);
       if (err instanceof HostKeyMismatchError) {
-        db.prepare("UPDATE servers SET status = 'error', last_error = ? WHERE id = ?").run(err.message, serverId);
+        db.prepare("UPDATE servers SET status = 'error', last_error = ? WHERE id = ?").run(message, serverId);
         return;
       }
       db.prepare(`
         UPDATE servers SET fail_count = fail_count + 1, last_error = ?,
           status = CASE WHEN fail_count + 1 >= ? THEN 'offline' ELSE status END
         WHERE id = ?
-      `).run(err.message, OFFLINE_THRESHOLD, serverId);
+      `).run(message, OFFLINE_THRESHOLD, serverId);
       if (server.status !== 'offline' && server.fail_count + 1 >= OFFLINE_THRESHOLD) {
-        EventService.log('error', 'server.offline', `Нода «${server.name}» недоступна: ${err.message}`, { kind: 'server', id: serverId });
+        EventService.log('error', 'server.offline', `Нода «${server.name}» недоступна: ${message}`, { kind: 'server', id: serverId });
       }
     }
   }
@@ -1096,7 +1144,7 @@ export class ProvisionService {
    * Версии ПО на ноде: для AWG — amneziawg-go и awg/wg, для VLESS — xray version, а также образ с датой сборки.
    * Только чтение; ошибка не влияет на статус ноды (версии останутся прежними, повтор — при следующем опросе).
    */
-  static async fetchNodeInfo(server: any): Promise<void> {
+  static async fetchNodeInfo(server: ServerRow): Promise<void> {
     const c = this.container(server);
     const isVless = nodeProtocol(server) === 'vless';
     const script = isVless

@@ -1,6 +1,7 @@
 import { isIP } from 'node:net';
 import { Router, type Request } from 'express';
 import { db, getSetting } from '../db/index.js';
+import type { ClientRow, ServerRow, SubscriberRow } from '../db/types.js';
 import { AwgService } from '../services/awg.service.js';
 import { cdnReady, XrayService } from '../services/xray.service.js';
 import { SubscriptionService } from '../services/subscription.service.js';
@@ -36,7 +37,7 @@ function mihomoValue(value: string): string | number | boolean {
 /**
  * amnezia-wg-option для mihomo: version 3 включает параметры AWG 3.x (S3/S4, диапазоны H, защиту заголовков)
  */
-export function mihomoAmneziaOption(server: any): Record<string, unknown> {
+export function mihomoAmneziaOption(server: Partial<ServerRow>): Record<string, unknown> {
   const p = paramsFromRow(server);
   const option: Record<string, unknown> = { jc: p.jc, jmin: p.jmin, jmax: p.jmax, s1: p.s1, s2: p.s2 };
   if (p.awg_version === 3) option.version = 3;
@@ -83,6 +84,30 @@ const CLASH_GROUP = 'Dementia';
 const CLASH_HEALTH_URL = 'https://www.gstatic.com/generate_204';
 const CLASH_HEALTH_INTERVAL = 300;
 
+/** Запись подписки: нода — проекция строки servers (у моста подменены host/awg_port), клиент — проекция строки clients */
+export interface ClashEntry {
+  name: string;
+  server: Pick<ServerRow, 'host' | 'awg_port' | 'server_public_key'> & Partial<ServerRow> & { via_cdn?: boolean };
+  client: Pick<ClientRow, 'client_ip' | 'client_private_key'> & Partial<ClientRow>;
+}
+
+/**
+ * Строка выборки подписки: клиент (`c.*`) и колонки его ноды. Сертификат и ключ CDN не выбираются (инвариант:
+ * `cdn_key` не покидает БД) — вместо них флаг `cdn_has_cert`; ключ сервера — `server_psk`, чтобы не перекрыть ключ клиента.
+ */
+type SubscriptionPeer = ClientRow & Pick<ServerRow,
+  | 'sub_name' | 'host' | 'awg_port' | 'server_public_key' | 'protocol'
+  | 'reality_sni' | 'reality_dest' | 'reality_short_ids' | 'xray_flow' | 'xray_fingerprint'
+  | 'xray_transport' | 'xhttp_path' | 'xhttp_mode' | 'cdn_enabled' | 'cdn_domain' | 'cdn_port' | 'cdn_address'
+  | 'awg_version' | 'jc' | 'jmin' | 'jmax' | 's1' | 's2' | 's3' | 's4' | 'h1' | 'h2' | 'h3' | 'h4'
+  | 'i1' | 'i2' | 'i3' | 'i4' | 'i5' | 'header_protection_key' | 'extra_params'
+  | 'extra_ports' | 'extra_ports_hash' | 'container_name' | 'deployed_port' | 'remote_panel_id'
+> & {
+  server_name: string;
+  server_psk: string | null;
+  cdn_has_cert: number;
+};
+
 /**
  * Конфигурация mihomo в виде JSON (валидный YAML 1.2): прокси, группа выбора и правило по умолчанию.
  *
@@ -91,7 +116,7 @@ const CLASH_HEALTH_INTERVAL = 300;
  * перестаёт отвечать. Сервер видит доступность только из дата-центров, а приложение — из сети пользователя.
  * Выбранная пользователем вручную нода остаётся выбранной. С одной нодой переключаться не на что — группа не нужна.
  */
-export function buildClashConfig(entries: { name: string; server: any; client: any }[], dns: string[], mtu: number, auto = false): string {
+export function buildClashConfig(entries: ClashEntry[], dns: string[], mtu: number, auto = false): string {
   // Имена групп заняты заранее: прокси с таким же именем сломал бы профиль
   const used = new Set<string>([CLASH_GROUP, CLASH_AUTO_GROUP]);
   const proxies = entries.map(({ name, server, client }) => {
@@ -177,7 +202,7 @@ subscriptionRouter.get('/:token', (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.vary('Accept').vary('Sec-Fetch-Mode').vary('Sec-Fetch-Dest').vary('User-Agent');
 
-  const subscriber = db.prepare('SELECT * FROM subscribers WHERE token = ?').get(token) as any;
+  const subscriber = db.prepare('SELECT * FROM subscribers WHERE token = ?').get(token) as unknown as SubscriberRow | undefined;
   if (!subscriber) {
     return res.status(404).type('text/plain').send('Subscription not found');
   }
@@ -216,7 +241,7 @@ subscriptionRouter.get('/:token', (req, res) => {
         WHERE c.subscriber_id = ? AND c.enabled = 1 AND c.external = 0 AND s.status != 'uninstalled'
           AND c.client_ip NOT LIKE 'pending:%' AND COALESCE(c.remote_state, '') != 'blocked' AND s.server_public_key IS NOT NULL
         ORDER BY s.sub_order, s.id
-      `).all(subscriber.id) as any[])
+      `).all(subscriber.id) as unknown as SubscriptionPeer[])
     : [];
 
   const settings = AwgService.getClientNetworkSettings();
@@ -224,11 +249,12 @@ subscriptionRouter.get('/:token', (req, res) => {
   const marks = ProbeService.getNameMarks();
   // Ноды, недоступные из страны пользователя, выдаются через мост этой страны: меняется только Endpoint (docs/bridges.md)
   const routes = BridgeService.routesFor(subscriber.country);
-  const entries = peers.filter((p) => p.protocol !== 'vless' || p.client_uuid).flatMap((p) => {
+  const entries: ClashEntry[] = peers.filter((p) => p.protocol !== 'vless' || p.client_uuid).flatMap((p) => {
     const route = routes.get(p.server_id);
     const base = p.sub_name || p.server_name;
     const direct = {
-      name: [base, marks.get(p.server_id), route ? `🌉 ${countryFlag(subscriber.country)}` : null].filter(Boolean).join(' · '),
+      // Маршрут через мост есть только при заданной стране подписчика (routesFor иначе пуст) — country здесь не null
+      name: [base, marks.get(p.server_id), route ? `🌉 ${countryFlag(subscriber.country!)}` : null].filter(Boolean).join(' · '),
       server: { ...p, preshared_key: p.server_psk, ...(route ? { host: route.host, awg_port: route.port } : {}) },
       client: p,
     };
@@ -237,8 +263,9 @@ subscriptionRouter.get('/:token', (req, res) => {
       ? [{ name: [base, marks.get(p.server_id), 'напрямую'].filter(Boolean).join(' · '), server: { ...p, preshared_key: p.server_psk }, client: p }]
       : [];
     // Нода VLESS с готовым входом через CDN — вторая запись: адрес Cloudflare вместо IP ноды (docs/vless.md#cdn).
-    // Мост её не трогает: у неё свой адрес и порт
-    const viaCdn = p.protocol === 'vless' && cdnReady({ ...p, cdn_cert: p.cdn_has_cert, cdn_key: p.cdn_has_cert })
+    // Мост её не трогает: у неё свой адрес и порт. cdn_has_cert (0/1) подставляется как «сертификат есть/нет»:
+    // cdnReady проверяет только заполненность, сам сертификат в выборку не входит
+    const viaCdn = p.protocol === 'vless' && cdnReady({ ...p, cdn_cert: p.cdn_has_cert ? 'set' : null, cdn_key: p.cdn_has_cert ? 'set' : null })
       ? [{ name: [p.sub_name || p.server_name, 'CDN'].join(' · '), server: { ...p, via_cdn: true }, client: p }]
       : [];
     // Запасные порты ноды (docs/node-management.md#extra-ports) — записи с тем же конфигом и другим портом Endpoint.

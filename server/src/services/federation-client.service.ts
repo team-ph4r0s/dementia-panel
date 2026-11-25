@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import net from 'node:net';
 import { db, transaction } from '../db/index.js';
+import type { ClientRow, RemotePanelRow, ServerRow, SubscriberRow } from '../db/types.js';
 import { decryptSecret, encryptSecret } from './secrets.service.js';
 import { paramsToColumns, AwgParams, isWireGuardKey, sanitizeRemoteParams } from '../utils/awg-params.js';
 import { HttpError } from '../utils/http.js';
@@ -49,6 +50,43 @@ interface RemotePeer {
   last_handshake: string | null;
 }
 
+type RemotePanelConnection = Pick<RemotePanelRow, 'base_url' | 'token'>;
+type RemotePanelReference = Pick<RemotePanelRow, 'id'>;
+type SyncedRemoteClientRow = Omit<ClientRow, 'remote_peer_id'> & {
+  remote_peer_id: number;
+  sub_enabled: number | null;
+  sub_suspended: number | null;
+};
+type RemoteServerReferenceRow = Pick<ServerRow, 'id'> & { remote_node_id: number };
+type DesiredEnabledClient = Pick<ClientRow, 'enabled' | 'subscriber_id'> & {
+  sub_enabled?: number | null;
+  sub_suspended?: number | null;
+};
+type SqlValue = string | number | null;
+type UnknownFields = Record<string, unknown>;
+
+interface IdProjection {
+  id: number;
+}
+
+function asFields(value: unknown): UnknownFields {
+  return value !== null && typeof value === 'object' ? (value as UnknownFields) : {};
+}
+
+function objectMessage(value: unknown): unknown {
+  return value === null || value === undefined ? undefined : (value as { message?: unknown }).message;
+}
+
+function errorMessage(err: unknown): string {
+  return String(objectMessage(err));
+}
+
+function responseError(data: unknown): string | null {
+  if (data === null || typeof data !== 'object') return null;
+  const error = (data as { error?: unknown }).error;
+  return error ? String(error) : null;
+}
+
 const pendingSync = new Map<number, Promise<void>>();
 const runningSync = new Map<number, Promise<void>>();
 
@@ -57,47 +95,60 @@ const runningSync = new Map<number, Promise<void>>();
  * строка с переводом строки позволила бы дописать в чужой .conf любые директивы (например, PostUp).
  * Поэтому адрес, порт, ключ и параметры проверяются по формату; некорректная нода пропускается.
  */
-export function sanitizeRemoteNode(node: any): {
+export function sanitizeRemoteNode(node: unknown): {
   id: number; name: string; host: string; port: number; publicKey: string | null; status: string; params: AwgParams;
 } {
-  const id = Number(node?.id);
+  const input = asFields(node);
+  const id = Number(input.id);
   if (!Number.isInteger(id) || id <= 0) throw new Error('некорректный идентификатор ноды');
-  if (!isValidHost(node.host)) throw new Error('некорректный адрес ноды');
-  if (!isValidPort(node.port)) throw new Error('некорректный порт ноды');
-  const publicKey = node.public_key === null || node.public_key === undefined || node.public_key === '' ? null : node.public_key;
-  if (publicKey !== null && !isWireGuardKey(publicKey)) throw new Error('некорректный публичный ключ ноды');
+  if (!isValidHost(input.host)) throw new Error('некорректный адрес ноды');
+  const host = input.host;
+  if (!isValidPort(input.port)) throw new Error('некорректный порт ноды');
+  const port = input.port;
+  const rawPublicKey = input.public_key;
+  let publicKey: string | null = null;
+  if (!(rawPublicKey === null || rawPublicKey === undefined || rawPublicKey === '')) {
+    if (!isWireGuardKey(rawPublicKey)) throw new Error('некорректный публичный ключ ноды');
+    publicKey = rawPublicKey;
+  }
   // eslint-disable-next-line no-control-regex
-  const name = String(node.name ?? '').replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, 64) || `Нода #${id}`;
+  const name = String(input.name ?? '').replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, 64) || `Нода #${id}`;
   return {
     id,
     name,
-    host: String(node.host).trim(),
-    port: node.port,
+    host: host.trim(),
+    port,
     publicKey,
-    status: typeof node.status === 'string' ? node.status : 'offline',
-    params: sanitizeRemoteParams(node.params),
+    status: typeof input.status === 'string' ? input.status : 'offline',
+    params: sanitizeRemoteParams(input.params),
   };
 }
 
 /**
  * Клиент у владельца: IP и PSK подставляются в наш конфиг клиента, поэтому проверяются так же строго
  */
-export function sanitizeRemotePeer(peer: any): {
+export function sanitizeRemotePeer(peer: unknown): {
   id: number; clientIp: string; presharedKey: string | null; totalRx: number; totalTx: number; lastHandshake: string | null;
 } {
-  const id = Number(peer?.id);
+  const input = asFields(peer);
+  const id = Number(input.id);
   if (!Number.isInteger(id) || id <= 0) throw new Error('некорректный идентификатор клиента');
-  if (typeof peer.client_ip !== 'string' || !net.isIPv4(peer.client_ip)) throw new Error('некорректный IP клиента');
-  const presharedKey = peer.preshared_key === null || peer.preshared_key === undefined || peer.preshared_key === '' ? null : peer.preshared_key;
-  if (presharedKey !== null && !isWireGuardKey(presharedKey)) throw new Error('некорректный PSK клиента');
+  if (typeof input.client_ip !== 'string' || !net.isIPv4(input.client_ip)) throw new Error('некорректный IP клиента');
+  const clientIp = input.client_ip;
+  const rawPresharedKey = input.preshared_key;
+  let presharedKey: string | null = null;
+  if (!(rawPresharedKey === null || rawPresharedKey === undefined || rawPresharedKey === '')) {
+    if (!isWireGuardKey(rawPresharedKey)) throw new Error('некорректный PSK клиента');
+    presharedKey = rawPresharedKey;
+  }
   const counter = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0);
   return {
     id,
-    clientIp: peer.client_ip,
+    clientIp,
     presharedKey,
-    totalRx: counter(peer.total_rx),
-    totalTx: counter(peer.total_tx),
-    lastHandshake: typeof peer.last_handshake === 'string' && peer.last_handshake.length <= 40 ? peer.last_handshake : null,
+    totalRx: counter(input.total_rx),
+    totalTx: counter(input.total_tx),
+    lastHandshake: typeof input.last_handshake === 'string' && input.last_handshake.length <= 40 ? input.last_handshake : null,
   };
 }
 
@@ -131,7 +182,7 @@ export function parseConnectString(input: string): { baseUrl: string; token: str
   return { baseUrl: `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}`, token };
 }
 
-async function call<T>(panel: any, method: string, path: string, body?: unknown): Promise<T> {
+async function call<T>(panel: RemotePanelConnection, method: string, path: string, body?: unknown): Promise<T> {
   const token = decryptSecret(panel.token);
   let res: Response;
   try {
@@ -142,16 +193,18 @@ async function call<T>(panel: any, method: string, path: string, body?: unknown)
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       redirect: 'error',
     });
-  } catch (err: any) {
-    throw new FederationError(0, `Панель партнёра недоступна: ${err.cause?.message || err.message}`);
+  } catch (err: unknown) {
+    const cause = err === null || err === undefined ? undefined : (err as { cause?: unknown }).cause;
+    const causeMessage = objectMessage(cause);
+    throw new FederationError(0, `Панель партнёра недоступна: ${causeMessage ? String(causeMessage) : errorMessage(err)}`);
   }
-  const data = (await res.json().catch(() => null)) as any;
-  if (!res.ok) throw new FederationError(res.status, data?.error || `Ошибка панели партнёра (HTTP ${res.status})`);
+  const data: unknown = await res.json().catch(() => null);
+  if (!res.ok) throw new FederationError(res.status, responseError(data) || `Ошибка панели партнёра (HTTP ${res.status})`);
   return data as T;
 }
 
-function loadPanel(panelId: number): any {
-  return db.prepare('SELECT * FROM remote_panels WHERE id = ?').get(panelId) as any;
+function loadPanel(panelId: number): RemotePanelRow | undefined {
+  return db.prepare('SELECT * FROM remote_panels WHERE id = ?').get(panelId) as unknown as RemotePanelRow | undefined;
 }
 
 export class FederationClient {
@@ -160,12 +213,12 @@ export class FederationClient {
    */
   static async connect(input: string, name?: string): Promise<number> {
     const { baseUrl, token } = parseConnectString(input);
-    const probe = { base_url: baseUrl, token: encryptSecret(token) };
+    const probe = { base_url: baseUrl, token: encryptSecret(token)! };
     const info = await call<{ partner_name: string; limits: unknown }>(probe, 'GET', '/info').catch((err: FederationError) => {
       throw new HttpError(err.status === 401 || err.status === 403 ? 400 : 502, err.message);
     });
 
-    const exists = db.prepare('SELECT id FROM remote_panels WHERE base_url = ?').get(baseUrl) as any;
+    const exists = db.prepare('SELECT id FROM remote_panels WHERE base_url = ?').get(baseUrl) as unknown as IdProjection | undefined;
     if (exists) throw new HttpError(409, 'Эта панель уже подключена');
 
     const label = (name || '').trim().slice(0, 64) || new URL(baseUrl).host;
@@ -217,7 +270,7 @@ export class FederationClient {
   }
 
   static async syncAll(): Promise<void> {
-    const panels = db.prepare('SELECT id FROM remote_panels').all() as { id: number }[];
+    const panels = db.prepare('SELECT id FROM remote_panels').all() as unknown as IdProjection[];
     await Promise.allSettled(panels.map((p) => this.requestSync(p.id)));
   }
 
@@ -231,11 +284,11 @@ export class FederationClient {
       db.prepare('UPDATE remote_panels SET limits = ? WHERE id = ?').run(JSON.stringify(limits ?? null), panelId);
 
       // 2. Клиенты, ещё не созданные у владельца
-      const servers = db.prepare("SELECT * FROM servers WHERE remote_panel_id = ? AND status != 'uninstalled'").all(panelId) as any[];
+      const servers = db.prepare("SELECT * FROM servers WHERE remote_panel_id = ? AND status != 'uninstalled'").all(panelId) as unknown as ServerRow[];
       for (const server of servers) {
         const pending = db.prepare(`
           SELECT c.* FROM clients c WHERE c.server_id = ? AND c.remote_peer_id IS NULL
-        `).all(server.id) as any[];
+        `).all(server.id) as unknown as ClientRow[];
         for (const client of pending) {
           try {
             const response = await call<{ peer: RemotePeer }>(panel, 'POST', '/peers', {
@@ -252,9 +305,9 @@ export class FederationClient {
               peer.presharedKey,
               client.id
             );
-          } catch (err: any) {
-            db.prepare('UPDATE clients SET remote_state = ? WHERE id = ?').run(`error: ${err.message}`.slice(0, 300), client.id);
-            errors.push(`${client.name}: ${err.message}`);
+          } catch (err: unknown) {
+            db.prepare('UPDATE clients SET remote_state = ? WHERE id = ?').run(`error: ${errorMessage(err)}`.slice(0, 300), client.id);
+            errors.push(`${client.name}: ${errorMessage(err)}`);
           }
         }
       }
@@ -268,7 +321,7 @@ export class FederationClient {
         JOIN servers s ON s.id = c.server_id
         LEFT JOIN subscribers sub ON sub.id = c.subscriber_id
         WHERE s.remote_panel_id = ? AND c.remote_peer_id IS NOT NULL
-      `).all(panelId) as any[];
+      `).all(panelId) as unknown as SyncedRemoteClientRow[];
       const byPeerId = new Map(local.map((c) => [c.remote_peer_id, c]));
       const remoteIds = new Set<number>();
 
@@ -277,15 +330,15 @@ export class FederationClient {
         const client = byPeerId.get(peer.id);
         if (!client) {
           // Клиент удалён у нас (вместе с пользователем, нодой из подписки и т.п.) — удаляем у владельца
-          await call(panel, 'DELETE', `/peers/${peer.id}`).catch((err) => errors.push(err.message));
+          await call(panel, 'DELETE', `/peers/${peer.id}`).catch((err: unknown) => errors.push(errorMessage(err)));
           continue;
         }
-        let state;
+        let state: ReturnType<typeof sanitizeRemotePeer>;
         try {
           state = sanitizeRemotePeer(peer);
-        } catch (err: any) {
+        } catch (err: unknown) {
           // Некорректные данные не сохраняются: IP и PSK подставляются в конфиг клиента
-          errors.push(`${client.name}: ${err.message}`);
+          errors.push(`${client.name}: ${errorMessage(err)}`);
           continue;
         }
         db.prepare(`
@@ -299,7 +352,7 @@ export class FederationClient {
         const name = normalizePeerName(client.name);
         if (name !== peer.name) patch.name = name;
         if (Object.keys(patch).length > 0) {
-          await call(panel, 'PATCH', `/peers/${peer.id}`, patch).catch((err) => errors.push(err.message));
+          await call(panel, 'PATCH', `/peers/${peer.id}`, patch).catch((err: unknown) => errors.push(errorMessage(err)));
         }
       }
 
@@ -314,12 +367,12 @@ export class FederationClient {
         errors.length ? errors.slice(0, 3).join('; ') : null,
         panelId
       );
-    } catch (err: any) {
+    } catch (err: unknown) {
       const revoked = err instanceof FederationError && (err.status === 401 || err.status === 403);
-      db.prepare('UPDATE remote_panels SET status = ?, last_error = ? WHERE id = ?').run(revoked ? 'revoked' : 'error', err.message, panelId);
+      db.prepare('UPDATE remote_panels SET status = ?, last_error = ? WHERE id = ?').run(revoked ? 'revoked' : 'error', errorMessage(err), panelId);
       if (revoked) {
         // Доступ отозван: ноды убираются из подписок, клиенты остаются до решения администратора
-        db.prepare("UPDATE servers SET status = 'uninstalled', last_error = ? WHERE remote_panel_id = ?").run(err.message, panelId);
+        db.prepare("UPDATE servers SET status = 'uninstalled', last_error = ? WHERE remote_panel_id = ?").run(errorMessage(err), panelId);
       }
     }
   }
@@ -327,35 +380,35 @@ export class FederationClient {
   /**
    * Клиент должен быть включён у владельца, если он включён у нас и его пользователь активен
    */
-  private static desiredEnabled(client: any): boolean {
+  private static desiredEnabled(client: DesiredEnabledClient): boolean {
     if (!client.enabled) return false;
     if (client.subscriber_id === null || client.subscriber_id === undefined) return true;
     const sub =
       client.sub_enabled !== undefined
         ? { enabled: client.sub_enabled, suspended: client.sub_suspended }
-        : (db.prepare('SELECT enabled, suspended FROM subscribers WHERE id = ?').get(client.subscriber_id) as any);
+        : (db.prepare('SELECT enabled, suspended FROM subscribers WHERE id = ?').get(client.subscriber_id) as unknown as Pick<SubscriberRow, 'enabled' | 'suspended'> | undefined);
     return Boolean(sub && sub.enabled && !sub.suspended);
   }
 
   /**
    * Обновление нод партнёра; возвращает описания пропущенных нод с некорректными данными
    */
-  private static upsertNodes(panel: any, nodes: RemoteNode[]): string[] {
+  private static upsertNodes(panel: RemotePanelReference, nodes: RemoteNode[]): string[] {
     const problems: string[] = [];
     transaction(() => {
       const seen = new Set<number>();
       for (const raw of nodes) {
-        const remoteId = Number((raw as any)?.id);
-        let node;
+        const remoteId = Number(raw?.id);
+        let node: ReturnType<typeof sanitizeRemoteNode>;
         try {
           node = sanitizeRemoteNode(raw);
-        } catch (err: any) {
+        } catch (err: unknown) {
           // Нода не удаляется, но недоступна для подписок, пока владелец не исправит данные
-          problems.push(`нода #${Number.isInteger(remoteId) ? remoteId : '?'}: ${err.message}`);
+          problems.push(`нода #${Number.isInteger(remoteId) ? remoteId : '?'}: ${errorMessage(err)}`);
           if (Number.isInteger(remoteId)) {
             seen.add(remoteId);
             db.prepare("UPDATE servers SET status = 'uninstalled', last_error = ? WHERE remote_panel_id = ? AND remote_node_id = ?").run(
-              `Панель партнёра отдала некорректные данные ноды: ${err.message}`.slice(0, 300),
+              `Панель партнёра отдала некорректные данные ноды: ${errorMessage(err)}`.slice(0, 300),
               panel.id,
               remoteId
             );
@@ -365,8 +418,8 @@ export class FederationClient {
         seen.add(node.id);
         const status = node.status === 'uninstalled' || !node.publicKey ? 'uninstalled' : node.status === 'online' ? 'online' : 'offline';
         const columns = paramsToColumns(node.params);
-        const existing = db.prepare('SELECT id FROM servers WHERE remote_panel_id = ? AND remote_node_id = ?').get(panel.id, node.id) as any;
-        const common: Record<string, unknown> = {
+        const existing = db.prepare('SELECT id FROM servers WHERE remote_panel_id = ? AND remote_node_id = ?').get(panel.id, node.id) as unknown as IdProjection | undefined;
+        const common: Record<string, SqlValue> = {
           name: node.name,
           host: node.host,
           awg_port: node.port,
@@ -378,18 +431,18 @@ export class FederationClient {
         const keys = Object.keys(common);
         if (existing) {
           db.prepare(`UPDATE servers SET ${keys.map((k) => `${k} = ?`).join(', ')}, last_seen = datetime('now') WHERE id = ?`).run(
-            ...(keys.map((k) => common[k]) as any[]),
+            ...keys.map((k) => common[k]),
             existing.id
           );
         } else {
           db.prepare(`
             INSERT INTO servers (${keys.join(', ')}, remote_panel_id, remote_node_id, ssh_user, managed_by, last_seen)
             VALUES (${keys.map(() => '?').join(', ')}, ?, ?, 'partner', 'partner', datetime('now'))
-          `).run(...(keys.map((k) => common[k]) as any[]), panel.id, node.id);
+          `).run(...keys.map((k) => common[k]), panel.id, node.id);
         }
       }
       // Ноды, которые владелец больше не предоставляет, убираются из подписок
-      const rows = db.prepare('SELECT id, remote_node_id FROM servers WHERE remote_panel_id = ?').all(panel.id) as any[];
+      const rows = db.prepare('SELECT id, remote_node_id FROM servers WHERE remote_panel_id = ?').all(panel.id) as unknown as RemoteServerReferenceRow[];
       for (const row of rows) {
         if (!seen.has(row.remote_node_id)) {
           db.prepare("UPDATE servers SET status = 'uninstalled', last_error = 'Нода больше не предоставляется партнёром' WHERE id = ?").run(row.id);

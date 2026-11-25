@@ -49,13 +49,41 @@ function validateEmail(email: unknown): string {
   return clean;
 }
 
-export async function cfFetch(token: string, url: string, init: RequestInit = {}): Promise<any> {
+export interface CloudflareError {
+  message?: string;
+}
+
+export interface CloudflareResponse<T = unknown> {
+  success?: boolean;
+  result?: T;
+  errors?: CloudflareError[];
+}
+
+export interface CloudflareZone {
+  id: string;
+  name: string;
+}
+
+export interface CloudflareDnsRecord {
+  id: string;
+  type: string;
+  name: string;
+  content: string;
+  proxied?: boolean;
+  ttl?: number;
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+export async function cfFetch<T = unknown>(token: string, url: string, init: RequestInit = {}): Promise<CloudflareResponse<T>> {
   const res = await fetch(`https://api.cloudflare.com/client/v4${url}`, {
     ...init,
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(init.headers || {}) },
     signal: AbortSignal.timeout(20000),
   });
-  return res.json();
+  return await res.json() as CloudflareResponse<T>;
 }
 
 /**
@@ -194,25 +222,25 @@ export class SslService {
    */
   static async verifyCloudflareToken(token: string): Promise<{ valid: boolean; message: string }> {
     try {
-      const data = await cfFetch(token, '/user/tokens/verify');
+      const data = await cfFetch<{ status?: string }>(token, '/user/tokens/verify');
       if (data.success && data.result?.status === 'active') {
         return { valid: true, message: 'Токен Cloudflare успешно подтвержден!' };
       }
       return { valid: false, message: data.errors?.[0]?.message || 'Токен Cloudflare недействителен' };
-    } catch (err: any) {
-      return { valid: false, message: `Ошибка проверки токена: ${err.message}` };
+    } catch (err: unknown) {
+      return { valid: false, message: `Ошибка проверки токена: ${errorMessage(err)}` };
     }
   }
 
   /**
    * Get list of Cloudflare zones accessible with this token
    */
-  static async getCloudflareZones(token: string): Promise<{ id: string; name: string }[]> {
-    const data = await cfFetch(token, '/zones?status=active&per_page=50');
+  static async getCloudflareZones(token: string): Promise<CloudflareZone[]> {
+    const data = await cfFetch<CloudflareZone[]>(token, '/zones?status=active&per_page=50');
     if (!data.success) {
       throw new Error(data.errors?.[0]?.message || 'Не удалось получить список зон Cloudflare');
     }
-    return (data.result || []).map((z: any) => ({ id: z.id, name: z.name }));
+    return (data.result || []).map((z) => ({ id: z.id, name: z.name }));
   }
 
   /**
@@ -258,9 +286,10 @@ export class SslService {
     if (createARecord) {
       try {
         const publicIpRes = await fetch('https://api.ipify.org?format=json', { signal: AbortSignal.timeout(10000) });
-        const { ip } = (await publicIpRes.json()) as any;
+        const body = await publicIpRes.json() as { ip?: unknown };
+        const ip = typeof body.ip === 'string' ? body.ip : '';
         if (net.isIPv4(ip)) {
-          const existing = await cfFetch(
+          const existing = await cfFetch<CloudflareDnsRecord[]>(
             cfToken,
             `/zones/${matchedZone.id}/dns_records?type=A&name=${encodeURIComponent(cleanDomain)}`
           );
@@ -328,7 +357,7 @@ export class SslService {
         if (challenge.type !== 'dns-01') return;
         const challengeZone = zoneOf.get(authz.identifier.value) ?? zoneId;
         zonesByToken.set(challenge.token, challengeZone);
-        const cfData = await cfFetch(cfToken, `/zones/${challengeZone}/dns_records`, {
+        const cfData = await cfFetch<CloudflareDnsRecord>(cfToken, `/zones/${challengeZone}/dns_records`, {
           method: 'POST',
           body: JSON.stringify({
             type: 'TXT',
@@ -340,7 +369,9 @@ export class SslService {
         if (!cfData.success) {
           throw new Error(cfData.errors?.[0]?.message || 'Не удалось создать TXT-запись в Cloudflare');
         }
-        createdRecordIds.set(challenge.token, cfData.result.id);
+        const recordId = cfData.result?.id;
+        if (!recordId) throw new Error('Cloudflare не подтвердил создание TXT-записи');
+        createdRecordIds.set(challenge.token, recordId);
         // Wait for DNS propagation across Cloudflare authoritative servers
         await new Promise((r) => setTimeout(r, 15000));
       },
@@ -375,7 +406,7 @@ export class SslService {
     });
 
     await new Promise<void>((resolve, reject) => {
-      helper.once('error', (err: any) =>
+      helper.once('error', (err: NodeJS.ErrnoException) =>
         reject(
           new Error(
             err.code === 'EADDRINUSE'
@@ -529,8 +560,8 @@ export class SslService {
         await this.issueLetsEncryptHttp(status.domain, email);
       }
       console.log('[SSL] Сертификат успешно продлён');
-    } catch (err: any) {
-      console.error(`[SSL] Ошибка продления сертификата: ${err.message}`);
+    } catch (err: unknown) {
+      console.error(`[SSL] Ошибка продления сертификата: ${errorMessage(err)}`);
     }
   }
 }

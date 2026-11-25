@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { db, getSetting, setSetting, transaction } from '../db/index.js';
+import type { NodeUpdateRow, ServerRow } from '../db/types.js';
 import { HttpError } from '../utils/http.js';
 import { shellQuote } from '../utils/net.js';
 import { ProvisionService } from './provision.service.js';
@@ -11,11 +12,7 @@ import { LiveService } from './live.service.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 export interface NodeUpdateSettings { auto_update: boolean; hour_utc: number }
-export interface NodeUpdateState {
-  server_id: number; current_image: string | null; latest_image: string | null;
-  available: number; checked_at: string | null; attempted_at: string | null;
-  updated_at: string | null; result: string | null; error: string | null;
-}
+export type NodeUpdateState = NodeUpdateRow;
 
 export class NodeUpdateService {
   private static running = false;
@@ -49,7 +46,7 @@ export class NodeUpdateService {
     };
   }
 
-  private static eligible(s: any): boolean {
+  private static eligible(s: ServerRow | null | undefined): s is ServerRow {
     return Boolean(s && !s.remote_panel_id && s.managed_by === 'demension' && s.status === 'online' &&
       (s.protocol === null || s.protocol === undefined || s.protocol === 'awg') &&
       s.container_name === 'amnezia-awg' && s.iface === 'awg0' && s.awg_tool === 'awg' &&
@@ -60,7 +57,7 @@ export class NodeUpdateService {
   static async operate(id: number, mode: 'check' | 'update'): Promise<void> {
     await ProvisionService.maintainContainer(id, async () => {
       if (MigrationService.isBackgroundPaused()) throw new HttpError(423, 'Идёт перенос панели');
-      const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(id) as any;
+      const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(id) as unknown as ServerRow | undefined;
       if (!this.eligible(server)) throw new HttpError(409, 'Обновление доступно для работающей ноды панели без ожидающих изменений');
       db.prepare('INSERT OR IGNORE INTO node_updates(server_id) VALUES (?)').run(id);
       if (mode === 'update') db.prepare('UPDATE node_updates SET attempted_at = ? WHERE server_id = ?').run(new Date().toISOString(), id);
@@ -144,8 +141,8 @@ export class NodeUpdateService {
       .finally(() => { this.running = false; LiveService.notify(); });
   }
 
-  private static servers(): any[] {
-    return (db.prepare("SELECT * FROM servers WHERE remote_panel_id IS NULL AND managed_by = 'demension' ORDER BY id").all() as any[]).filter((s) => this.eligible(s));
+  private static servers(): ServerRow[] {
+    return (db.prepare("SELECT * FROM servers WHERE remote_panel_id IS NULL AND managed_by = 'demension' ORDER BY id").all() as unknown as ServerRow[]).filter((s) => this.eligible(s));
   }
 
   private static async batch(mode: 'check' | 'update', ids: number[]): Promise<void> {
