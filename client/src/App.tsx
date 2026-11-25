@@ -79,7 +79,6 @@ export const App: React.FC = () => {
   // Номер последнего запроса клиентов: ответ для ранее выбранного сервера отбрасывается
   const clientsRequestRef = useRef(0);
   const dataInFlightRef = useRef(false);
-  const settingsLoadedRef = useRef(false);
   const [isAccountOpen, setIsAccountOpen] = useState(false);
   const [migrationState, setMigrationState] = useState<MigrationStatus['state']>('idle');
   // Гость видит панель, но не меняет её: кнопки и поля внутри <main> блокируются (сервер всё равно отклонит запись)
@@ -114,7 +113,7 @@ export const App: React.FC = () => {
         api.getServers(),
         api.getSubscribers(),
         api.getBridges().catch(() => null),
-        settingsLoadedRef.current ? Promise.resolve(null) : api.getSettings().catch(() => null),
+        api.getSettings().catch(() => null),
         isGuest ? Promise.resolve(null) : api.getMigrationStatus().catch(() => null),
         isGuest ? Promise.resolve(null) : api.getPanelIp().catch(() => null),
       ]);
@@ -124,7 +123,6 @@ export const App: React.FC = () => {
       setSubscribers(subscribersData);
       if (bridgesData) setBridges(bridgesData);
       if (settings) {
-        settingsLoadedRef.current = true;
         setPublicUrl(settings.public_url || null);
         setSubscriptionUrl(settings.subscription_url || null);
       }
@@ -391,7 +389,10 @@ export const App: React.FC = () => {
           /* Security: HTTPS & Fail2ban Tab */
           <SecurityView
             publicUrl={publicUrl}
-            onSettingsSaved={(settings) => setPublicUrl(settings.public_url || null)}
+            onSettingsSaved={(settings) => {
+            setPublicUrl(settings.public_url || null);
+            setSubscriptionUrl(settings.subscription_url || null);
+          }}
             onMigrationChange={loadData}
           />
         ) : activeTab === 'subscribers' ? (

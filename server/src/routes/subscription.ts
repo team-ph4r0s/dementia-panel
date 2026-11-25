@@ -9,6 +9,7 @@ import { contentDisposition } from '../utils/http.js';
 import { paramsFromRow } from '../utils/awg-params.js';
 import { countryFlag, ProbeService } from '../services/probe.service.js';
 import { BridgeService } from '../services/bridge.service.js';
+import { FailoverService } from '../services/failover.service.js';
 import { ExtraPortsService } from '../services/extra-ports.service.js';
 import { buildClashDirectRules } from '../services/direct-routing.service.js';
 import { renderSubscriptionPage, SUBSCRIPTION_PAGE_SCRIPT } from './subscription-page.js';
@@ -247,6 +248,10 @@ subscriptionRouter.get('/:token', (req, res) => {
   });
 
   if (showPage) {
+    // Адрес в поле копирования и кнопках приложений — тот же, что выдаёт панель: резервный домен, иначе публичный адрес,
+    // иначе адрес самого запроса (иначе пользователь получал ссылку на IP панели вместо резервного домена)
+    const base = FailoverService.subscriptionBaseUrl()
+      || (getSetting('public_url') || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
     return res.type('html').send(renderSubscriptionPage({
       title: subscriber.name,
       status: expired ? 'Срок истёк' : overLimit ? 'Лимит исчерпан' : 'Активна',
@@ -255,7 +260,7 @@ subscriptionRouter.get('/:token', (req, res) => {
       used: usage.used,
       limit: subscriber.traffic_limit,
       nodes: entries.map((entry) => entry.name),
-      url: `${(getSetting('public_url') || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '')}/sub/${encodeURIComponent(token)}`,
+      url: `${base}/sub/${encodeURIComponent(token)}`,
       protocols: [...new Set(entries.map((entry) => (entry.server.protocol === 'vless' ? 'vless' : 'awg') as 'vless' | 'awg'))],
     }));
   }

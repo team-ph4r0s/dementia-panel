@@ -140,6 +140,17 @@ describe('API: Подписчики и подписки (интеграцион�
     expect(script.status).toBe(200);
     expect(script.headers.get('content-type')).toContain('javascript');
 
+    // С включённым резервным доменом страница выдаёт ссылку с ним, как и панель, а не с адресом запроса
+    db.prepare("INSERT INTO settings (key, value) VALUES ('failover_domain', 'sub.example.com') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
+    try {
+      const failover = await navigate(path);
+      const failoverHtml = await failover.text();
+      expect(failoverHtml).toContain('https://sub.example.com:3001/sub/');
+      expect(failoverHtml).not.toContain(`incy://import/${testEnv.baseUrl}`);
+    } finally {
+      db.prepare("DELETE FROM settings WHERE key = 'failover_domain'").run();
+    }
+
     const vpn = await testEnv.request(path, { headers: { Accept: headers.Accept, 'User-Agent': 'Incy/1.0' } });
     expect(await vpn.text()).toBe(payload);
     for (const format of ['awg', 'incy', 'json', 'clash', 'mihomo', 'unknown', '']) {
