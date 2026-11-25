@@ -43,7 +43,7 @@ import { MigrationService } from './services/migration.service.js';
 import { PANEL_VERSION } from './services/version.service.js';
 import { PartnerService } from './services/partner.service.js';
 import { FederationClient } from './services/federation-client.service.js';
-import { ProvisionService } from './services/provision.service.js';
+import { ProvisionService, waitForActiveOperations } from './services/provision.service.js';
 import { SubscriptionService } from './services/subscription.service.js';
 import { CdnService } from './services/cdn.service.js';
 import { PanelAddressService } from './services/panel-address.service.js';
@@ -55,6 +55,7 @@ import { cloudflareClientIp } from './middleware/cloudflare.js';
 import { CloudflarePanelService } from './services/cloudflare-panel.service.js';
 import { PanelIngressService } from './services/panel-ingress.service.js';
 import { httpsRedirectLocation } from './utils/net.js';
+import { HttpError } from './utils/http.js';
 
 process.on('unhandledRejection', (reason) => {
   console.error('[FATAL?] Необработанное отклонение промиса:', reason);
@@ -92,7 +93,6 @@ app.use('/sub', subscriptionFreeze, subscriptionRouter);
 // При включённом HTTPS остальные запросы по обычному HTTP перенаправляются на HTTPS
 app.use((req, res, next) => {
   if (!SslService.isActive() || isEncrypted(req)) return next();
-  // Проверка запуска (install.sh опрашивает http://127.0.0.1:порт) не раскрывает ничего, кроме статуса
   // Проверка запуска (install.sh опрашивает http://127.0.0.1:порт) не раскрывает ничего, кроме статуса
   if (req.path === '/api/health') return next();
   if (req.path.startsWith('/api/')) {
@@ -132,22 +132,25 @@ app.use('/api/auth', authRouter);
 app.use('/api/migration', migrationRouter);
 
 // Protected Admin API Routes
-app.use('/api/servers', requireAuth, serversRouter);
-app.use('/api/subscribers', subscribersRouter);
-app.use('/api/security', securityRouter);
-app.use('/api/settings', settingsRouter);
-app.use('/api/subscription-settings', subscriptionSettingsRouter);
-app.use('/api/partners', partnersRouter);
-app.use('/api/remote-panels', remotePanelsRouter);
-app.use('/api/probes', probesRouter);
-app.use('/api/bridges', bridgesRouter);
-app.use('/api/events', eventsRouter);
-app.use('/api/telegram', telegramRouter);
-app.use('/api/backups', backupsRouter);
-app.use('/api/node-updates', nodeUpdatesRouter);
-app.use('/api/providers', providersRouter);
-app.use('/api/version', versionRouter);
-app.use('/api', requireAuth, clientsRouter);
+const protectedApi = express.Router();
+protectedApi.use(requireAuth);
+protectedApi.use('/servers', serversRouter);
+protectedApi.use('/subscribers', subscribersRouter);
+protectedApi.use('/security', securityRouter);
+protectedApi.use('/settings', settingsRouter);
+protectedApi.use('/subscription-settings', subscriptionSettingsRouter);
+protectedApi.use('/partners', partnersRouter);
+protectedApi.use('/remote-panels', remotePanelsRouter);
+protectedApi.use('/probes', probesRouter);
+protectedApi.use('/bridges', bridgesRouter);
+protectedApi.use('/events', eventsRouter);
+protectedApi.use('/telegram', telegramRouter);
+protectedApi.use('/backups', backupsRouter);
+protectedApi.use('/node-updates', nodeUpdatesRouter);
+protectedApi.use('/providers', providersRouter);
+protectedApi.use('/version', versionRouter);
+protectedApi.use('/', clientsRouter);
+app.use('/api', protectedApi);
 
 // Unknown API routes must not fall through to the SPA
 app.use('/api', (req, res) => {
@@ -213,6 +216,9 @@ PanelIngressService.configure(() => net.createServer(panelConnection));
 // WebSocket: живые логи установки и сигнал «данные изменились» для интерфейса. Первое сообщение — {type: 'auth', token}.
 // ==============================================================================
 
+const MAX_PENDING_WS_AUTH = 50;
+let pendingWsAuth = 0;
+
 const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
 wss.on('error', (err) => console.error('[WS] Ошибка сервера:', err));
 
@@ -221,6 +227,10 @@ function handleUpgrade(req: http.IncomingMessage, socket: import('node:stream').
   const encrypted = Boolean((socket as TLSSocket).encrypted);
   if (pathname !== '/ws' || (SslService.isActive() && !encrypted)) {
     socket.destroy();
+    return;
+  }
+  if (pendingWsAuth >= MAX_PENDING_WS_AUTH) {
+    socket.end('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n');
     return;
   }
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
@@ -234,6 +244,13 @@ const send = (ws: WebSocket, payload: unknown) => {
 wss.on('connection', (ws: WebSocket) => {
   let user: SessionUser | null = null;
   let sessionToken = '';
+  let authPending = true;
+  pendingWsAuth++;
+  const releasePendingAuth = () => {
+    if (!authPending) return;
+    authPending = false;
+    pendingWsAuth = Math.max(0, pendingWsAuth - 1);
+  };
   /** Сессия по-прежнему действительна и принадлежит администратору (выход, отзыв, смена пароля — закрывают сокет) */
   const sessionValid = () => AuthService.validateSession(sessionToken)?.role === 'admin';
   // Некорректный фрейм не должен ронять процесс
@@ -241,7 +258,10 @@ wss.on('connection', (ws: WebSocket) => {
   const authTimer = setTimeout(() => {
     if (!user) ws.close(4401, 'auth timeout');
   }, 10000);
-  ws.on('close', () => clearTimeout(authTimer));
+  ws.on('close', () => {
+    clearTimeout(authTimer);
+    releasePendingAuth();
+  });
 
   ws.on('message', async (data) => {
     let msg: any;
@@ -262,6 +282,7 @@ wss.on('connection', (ws: WebSocket) => {
         return ws.close(4401, 'unauthorized');
       }
       clearTimeout(authTimer);
+      releasePendingAuth();
       sessionToken = msg.token;
       LiveService.add(ws, sessionValid);
       return send(ws, { type: 'auth_ok' });
@@ -286,7 +307,12 @@ wss.on('connection', (ws: WebSocket) => {
         LiveService.notify();
       }
     } catch (err: any) {
-      send(ws, { type: 'error', message: err.message });
+      if (err instanceof HttpError) {
+        send(ws, { type: 'error', message: err.message });
+      } else {
+        console.error('[WS] Ошибка команды:', err);
+        send(ws, { type: 'error', message: 'Ошибка выполнения команды' });
+      }
     }
   });
 });
@@ -306,16 +332,35 @@ async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<v
   await Promise.all(workers);
 }
 
+let shuttingDown = false;
+const backgroundTimeouts = new Set<NodeJS.Timeout>();
+const backgroundIntervals = new Set<NodeJS.Timeout>();
+
+function scheduleTimeout(fn: () => void, delayMs: number): void {
+  if (shuttingDown) return;
+  const handle = setTimeout(() => {
+    backgroundTimeouts.delete(handle);
+    if (!shuttingDown) fn();
+  }, delayMs);
+  backgroundTimeouts.add(handle);
+}
+
+function registerInterval(fn: () => void, ms: number): void {
+  backgroundIntervals.add(setInterval(fn, ms));
+}
+
 // Опрос нод: статистика, восстановление статуса, досинхронизация. Следующий цикл — после завершения текущего.
 async function statsLoop() {
   try {
     // Пока ноды переходят к новой панели, эта не должна ни синхронизировать их, ни менять статусы
-    if (MigrationService.isBackgroundPaused()) return;
+    if (MigrationService.isBackgroundPaused() || shuttingDown) return;
     const servers = db.prepare("SELECT id FROM servers WHERE status IN ('online', 'offline', 'error')").all() as { id: number }[];
     await mapLimit(servers, 5, async (s) => {
+      if (shuttingDown) return;
       await ProvisionService.fetchServerStats(s.id);
       LiveService.notify();
     });
+    if (shuttingDown) return;
     // Мосты: правила из БД применены и на месте
     await BridgeService.checkAll();
     // Запасные порты нод: правила из БД применены и ведут на нынешний адрес контейнера
@@ -326,24 +371,24 @@ async function statsLoop() {
   } catch (err) {
     console.error('[STATS] Ошибка фонового опроса:', err);
   } finally {
-    setTimeout(statsLoop, 30000);
+    scheduleTimeout(statsLoop, 30000);
   }
 }
-setTimeout(statsLoop, 5000);
+scheduleTimeout(statsLoop, 5000);
 
 // Синхронизация нод и клиентов на панелях партнёров
 async function federationLoop() {
   try {
-    if (MigrationService.isBackgroundPaused()) return;
+    if (MigrationService.isBackgroundPaused() || shuttingDown) return;
     await FederationClient.syncAll();
     LiveService.notify();
   } catch (err) {
     console.error('[FEDERATION] Ошибка синхронизации:', err);
   } finally {
-    setTimeout(federationLoop, 60000);
+    scheduleTimeout(federationLoop, 60000);
   }
 }
-setTimeout(federationLoop, 10000);
+scheduleTimeout(federationLoop, 10000);
 
 // После проверки из стран — сквозная проверка мостов и пересчёт, кому из пользователей нужен мост
 ProbeService.afterRun = () => BridgeService.afterProbeRun();
@@ -351,7 +396,7 @@ ProbeService.afterRun = () => BridgeService.afterProbeRun();
 // Проверка доступности нод из выбранных стран (если включена): раз в минуту смотрим, не пора ли
 async function probeLoop() {
   try {
-    if (MigrationService.isBackgroundPaused()) return;
+    if (MigrationService.isBackgroundPaused() || shuttingDown) return;
     if (ProbeService.isDue()) await ProbeService.runAll();
     // Сигнал от клиентов (обрыв рукопожатий) учитывается чаще, чем идут проверки из стран
     BridgeService.evaluate(false);
@@ -359,38 +404,49 @@ async function probeLoop() {
   } catch (err) {
     console.error('[PROBE] Ошибка проверки:', err);
   } finally {
-    setTimeout(probeLoop, 60000);
+    scheduleTimeout(probeLoop, 60000);
   }
 }
-setTimeout(probeLoop, 20000);
+scheduleTimeout(probeLoop, 20000);
 
 async function backupLoop() {
   try {
+    if (shuttingDown) return;
     await BackupService.runIfDue();
   } catch (err) {
     console.error('[BACKUP] Ошибка фонового копирования:', err);
   } finally {
-    setTimeout(backupLoop, 60000);
+    scheduleTimeout(backupLoop, 60000);
   }
 }
-setTimeout(backupLoop, 30000);
+scheduleTimeout(backupLoop, 30000);
 
 async function nodeUpdateLoop() {
-  try { await NodeUpdateService.tick(); }
-  catch (err) { console.error('[NODE UPDATE] Ошибка обслуживания образов:', err); }
-  finally { setTimeout(nodeUpdateLoop, 60000); }
+  try {
+    if (shuttingDown) return;
+    await NodeUpdateService.tick();
+  } catch (err) {
+    console.error('[NODE UPDATE] Ошибка обслуживания образов:', err);
+  } finally {
+    scheduleTimeout(nodeUpdateLoop, 60000);
+  }
 }
-setTimeout(nodeUpdateLoop, 45000);
+scheduleTimeout(nodeUpdateLoop, 45000);
 
 // Напоминания об оплате серверов в Telegram (docs/providers.md): раз в 15 минут, каждое уходит один раз
 async function providerReminderLoop() {
-  try { await ProviderService.tick(); }
-  catch (err) { console.error('[PROVIDERS] Ошибка напоминаний об оплате:', err); }
-  finally { setTimeout(providerReminderLoop, 15 * 60 * 1000); }
+  try {
+    if (shuttingDown) return;
+    await ProviderService.tick();
+  } catch (err) {
+    console.error('[PROVIDERS] Ошибка напоминаний об оплате:', err);
+  } finally {
+    scheduleTimeout(providerReminderLoop, 15 * 60 * 1000);
+  }
 }
-setTimeout(providerReminderLoop, 90000);
+scheduleTimeout(providerReminderLoop, 90000);
 
-setInterval(() => {
+registerInterval(() => {
   cleanupFederationLimits();
   AuthService.cleanupExpiredSessions();
   loginIpLimiter.cleanup();
@@ -400,22 +456,22 @@ setInterval(() => {
 }, 60 * 60 * 1000);
 
 // Смена публичного IP панели: раз в 10 минут (docs/security.md#panel-ip)
-setInterval(() => {
-  if (MigrationService.isBackgroundPaused()) return;
+registerInterval(() => {
+  if (MigrationService.isBackgroundPaused() || shuttingDown) return;
   PanelAddressService.check().catch((err) => console.error('[IP]', err));
 }, 10 * 60 * 1000);
-setTimeout(() => {
-  if (!MigrationService.isBackgroundPaused()) PanelAddressService.check().catch((err) => console.error('[IP]', err));
+scheduleTimeout(() => {
+  if (!MigrationService.isBackgroundPaused() && !shuttingDown) PanelAddressService.check().catch((err) => console.error('[IP]', err));
 }, 60 * 1000);
 
 const renew = () => {
   // Сертификат перенесённой панели продлевает новая
-  if (MigrationService.isBackgroundPaused()) return;
+  if (MigrationService.isBackgroundPaused() || shuttingDown) return;
   SslService.renewIfNeeded().catch((err) => console.error('[SSL]', err));
   CdnService.renewAll().catch((err) => console.error('[CDN]', err));
 };
-setTimeout(renew, 60 * 1000);
-setInterval(renew, 12 * 60 * 60 * 1000);
+scheduleTimeout(renew, 60 * 1000);
+registerInterval(renew, 12 * 60 * 60 * 1000);
 
 loadTls();
 
@@ -424,3 +480,32 @@ mainServer.listen(PORT, () => {
   void CloudflarePanelService.restoreIngress();
   console.log(`🚀 Dementia Panel ${PANEL_VERSION} running on port ${PORT} (${SslService.isActive() ? 'HTTPS + HTTP для подписок' : 'HTTP'})`);
 });
+
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[SHUTDOWN] Получен ${signal}, завершение работы...`);
+
+  for (const handle of backgroundTimeouts) clearTimeout(handle);
+  backgroundTimeouts.clear();
+  for (const handle of backgroundIntervals) clearInterval(handle);
+  backgroundIntervals.clear();
+
+  LiveService.shutdown();
+  PanelIngressService.closeAll();
+  wss.close();
+  mainServer.close();
+  httpServer.close();
+  httpsServer?.close();
+
+  await waitForActiveOperations(10_000);
+  try {
+    db.close();
+  } catch {
+    // БД уже закрыта
+  }
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));

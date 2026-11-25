@@ -23,6 +23,15 @@ function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
+function scryptAsync(password: string, salt: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(password, salt, 64, (err, derivedKey) => {
+      if (err) reject(err);
+      else resolve(derivedKey);
+    });
+  });
+}
+
 /** Логин — буква и 9 символов a-z0-9, пароль — 20 символов A-Za-z0-9 (без знаков, которые путаются при вводе) */
 const LOGIN_FIRST = 'abcdefghijklmnopqrstuvwxyz';
 const LOGIN_REST = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -53,11 +62,23 @@ export class AuthService {
     return { hash, salt };
   }
 
+  static async hashPasswordAsync(password: string, customSalt?: string): Promise<{ hash: string; salt: string }> {
+    const salt = customSalt || crypto.randomBytes(16).toString('hex');
+    const hash = (await scryptAsync(password, salt)).toString('hex');
+    return { hash, salt };
+  }
+
   /**
    * Verify a password against a stored hash and salt
    */
   static verifyPassword(password: string, hash: string, salt: string): boolean {
     const computed = crypto.scryptSync(password, salt, 64);
+    const expected = Buffer.from(hash, 'hex');
+    return computed.length === expected.length && crypto.timingSafeEqual(computed, expected);
+  }
+
+  static async verifyPasswordAsync(password: string, hash: string, salt: string): Promise<boolean> {
+    const computed = await scryptAsync(password, salt);
     const expected = Buffer.from(hash, 'hex');
     return computed.length === expected.length && crypto.timingSafeEqual(computed, expected);
   }
@@ -215,10 +236,31 @@ export class AuthService {
     });
   }
 
+  static async changePasswordAsync(adminId: number, oldPass: string, newPass: string, ip?: string, userAgent?: string): Promise<string | null> {
+    const admin = db.prepare('SELECT * FROM admins WHERE id = ?').get(adminId) as any;
+    if (!admin) return null;
+
+    if (!(await this.verifyPasswordAsync(oldPass, admin.password_hash, admin.salt))) {
+      return null;
+    }
+
+    const { hash, salt } = await this.hashPasswordAsync(newPass);
+    return transaction(() => {
+      db.prepare('UPDATE admins SET password_hash = ?, salt = ? WHERE id = ?').run(hash, salt, adminId);
+      db.prepare('DELETE FROM sessions WHERE admin_id = ?').run(adminId);
+      return this.createSession(adminId, ip, userAgent);
+    });
+  }
+
   /** Проверка пароля администратора для действий, которые требуют подтверждения (смена логина, перенос панели) */
   static confirmPassword(adminId: number, password: string): boolean {
     const admin = db.prepare('SELECT password_hash, salt FROM admins WHERE id = ?').get(adminId) as any;
     return Boolean(admin) && this.verifyPassword(password, admin.password_hash, admin.salt);
+  }
+
+  static async confirmPasswordAsync(adminId: number, password: string): Promise<boolean> {
+    const admin = db.prepare('SELECT password_hash, salt FROM admins WHERE id = ?').get(adminId) as any;
+    return Boolean(admin) && (await this.verifyPasswordAsync(password, admin.password_hash, admin.salt));
   }
 
   /**
@@ -231,6 +273,18 @@ export class AuthService {
     return transaction(() => {
       const taken = db.prepare('SELECT 1 FROM admins WHERE username = ? AND id != ?').get(newUsername, adminId);
       // Логин гостя занят: иначе вход этим логином шёл бы мимо гостевой проверки
+      if (taken || newUsername === getSetting('guest_username')) return 'taken' as const;
+      db.prepare('UPDATE admins SET username = ? WHERE id = ?').run(newUsername, adminId);
+      db.prepare('DELETE FROM sessions WHERE admin_id = ?').run(adminId);
+      return { token: this.createSession(adminId, ip, userAgent), username: newUsername };
+    });
+  }
+
+  static async changeUsernameAsync(adminId: number, password: string, newUsername: string, ip?: string, userAgent?: string): Promise<{ token: string; username: string } | 'wrong_password' | 'taken'> {
+    if (!(await this.confirmPasswordAsync(adminId, password))) return 'wrong_password';
+
+    return transaction(() => {
+      const taken = db.prepare('SELECT 1 FROM admins WHERE username = ? AND id != ?').get(newUsername, adminId);
       if (taken || newUsername === getSetting('guest_username')) return 'taken' as const;
       db.prepare('UPDATE admins SET username = ? WHERE id = ?').run(newUsername, adminId);
       db.prepare('DELETE FROM sessions WHERE admin_id = ?').run(adminId);
@@ -445,6 +499,38 @@ export class AuthService {
     };
   }
 
+  static async loginWithTotpAsync(
+    username: string,
+    password: string,
+    totp?: string,
+    recoveryCode?: string,
+    ip?: string,
+    userAgent?: string,
+  ): Promise<{ token: string; user: SessionUser } | 'totp_required' | 'invalid_code' | null> {
+    const admin = db.prepare('SELECT * FROM admins WHERE username = ?').get(username) as any;
+    if (!admin) return this.loginGuestAsync(username, password, ip, userAgent);
+
+    if (!(await this.verifyPasswordAsync(password, admin.password_hash, admin.salt))) return null;
+
+    if (admin.totp_enabled) {
+      if (!totp && !recoveryCode) return 'totp_required';
+
+      let codeValid = false;
+      if (totp) {
+        codeValid = this.checkTotp(admin.id, totp);
+      } else if (recoveryCode) {
+        codeValid = this.useRecoveryCode(admin.id, recoveryCode);
+      }
+
+      if (!codeValid) return 'invalid_code';
+    }
+
+    return {
+      token: this.createSession(admin.id, ip, userAgent),
+      user: { id: admin.id, username: admin.username, role: 'admin' },
+    };
+  }
+
   // ========== Гостевой доступ ==========
 
   /** Гость: отдельные логин и пароль, сессия только для просмотра (ограничения — в auth.middleware.ts) */
@@ -479,12 +565,39 @@ export class AuthService {
     return this.getGuestSettings();
   }
 
+  static async saveGuestSettingsAsync(input: { enabled: boolean; username: string; password?: string }): Promise<{ enabled: boolean; username: string; has_password: boolean }> {
+    const hashed = input.password ? await this.hashPasswordAsync(input.password) : null;
+    transaction(() => {
+      setSetting('guest_enabled', input.enabled ? '1' : '0');
+      setSetting('guest_username', input.username || null);
+      if (hashed) {
+        setSetting('guest_password_hash', hashed.hash);
+        setSetting('guest_password_salt', hashed.salt);
+      }
+      db.prepare("DELETE FROM sessions WHERE role = 'guest'").run();
+    });
+    return this.getGuestSettings();
+  }
+
   private static loginGuest(username: string, password: string, ip?: string, userAgent?: string): { token: string; user: SessionUser } | null {
     const hash = getSetting('guest_password_hash');
     const salt = getSetting('guest_password_salt');
     const matches = getSetting('guest_enabled') === '1' && getSetting('guest_username') === username && Boolean(hash) && Boolean(salt);
     // Хэш считается всегда: по времени ответа нельзя отличить гостевой логин от несуществующего
     const valid = matches ? this.verifyPassword(password, hash!, salt!) : (this.hashPassword(password), false);
+    const owner = db.prepare('SELECT id FROM admins ORDER BY id LIMIT 1').get() as { id: number } | undefined;
+    if (!valid || !owner) return null;
+    return {
+      token: this.createSession(owner.id, ip, userAgent, 'guest'),
+      user: { id: 0, username, role: 'guest' },
+    };
+  }
+
+  private static async loginGuestAsync(username: string, password: string, ip?: string, userAgent?: string): Promise<{ token: string; user: SessionUser } | null> {
+    const hash = getSetting('guest_password_hash');
+    const salt = getSetting('guest_password_salt');
+    const matches = getSetting('guest_enabled') === '1' && getSetting('guest_username') === username && Boolean(hash) && Boolean(salt);
+    const valid = matches ? await this.verifyPasswordAsync(password, hash!, salt!) : (await this.hashPasswordAsync(password), false);
     const owner = db.prepare('SELECT id FROM admins ORDER BY id LIMIT 1').get() as { id: number } | undefined;
     if (!valid || !owner) return null;
     return {

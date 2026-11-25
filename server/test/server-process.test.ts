@@ -187,6 +187,24 @@ describe('WebSocket /ws: авторизация первым сообщение�
     expect(await healthy()).toBe(true);
     expect(child.exitCode).toBeNull();
   });
+
+  it('ограничивает число одновременных неавторизованных WebSocket-подключений', async () => {
+    const sockets: WebSocket[] = [];
+    try {
+      for (let i = 0; i < 50; i++) {
+        const { ws } = await open();
+        sockets.push(ws);
+      }
+      await expect(open()).rejects.toThrow();
+    } finally {
+      for (const ws of sockets) ws.close();
+      await sleep(100);
+    }
+    const { ws, messages } = await open();
+    ws.send(JSON.stringify({ type: 'auth', token }));
+    await waitFor(messages, (m) => m.type === 'auth_ok');
+    ws.close();
+  }, 15000);
 });
 
 describe('партнёрский API только по HTTPS (инвариант 8)', () => {

@@ -49,22 +49,25 @@ export function createTestApp() {
   app.use('/api/migration', migrationRouter);
 
   // Protected Admin API Routes
-  app.use('/api/servers', requireAuth, serversRouter);
-  app.use('/api/subscribers', subscribersRouter);
-  app.use('/api/security', securityRouter);
-  app.use('/api/settings', settingsRouter);
-  app.use('/api/subscription-settings', subscriptionSettingsRouter);
-  app.use('/api/partners', partnersRouter);
-  app.use('/api/remote-panels', remotePanelsRouter);
-  app.use('/api/probes', probesRouter);
-  app.use('/api/bridges', bridgesRouter);
-  app.use('/api/events', eventsRouter);
-  app.use('/api/telegram', telegramRouter);
-  app.use('/api/backups', backupsRouter);
-  app.use('/api/node-updates', nodeUpdatesRouter);
-  app.use('/api/providers', providersRouter);
-  app.use('/api/version', versionRouter);
-  app.use('/api', requireAuth, clientsRouter);
+  const protectedApi = express.Router();
+  protectedApi.use(requireAuth);
+  protectedApi.use('/servers', serversRouter);
+  protectedApi.use('/subscribers', subscribersRouter);
+  protectedApi.use('/security', securityRouter);
+  protectedApi.use('/settings', settingsRouter);
+  protectedApi.use('/subscription-settings', subscriptionSettingsRouter);
+  protectedApi.use('/partners', partnersRouter);
+  protectedApi.use('/remote-panels', remotePanelsRouter);
+  protectedApi.use('/probes', probesRouter);
+  protectedApi.use('/bridges', bridgesRouter);
+  protectedApi.use('/events', eventsRouter);
+  protectedApi.use('/telegram', telegramRouter);
+  protectedApi.use('/backups', backupsRouter);
+  protectedApi.use('/node-updates', nodeUpdatesRouter);
+  protectedApi.use('/providers', providersRouter);
+  protectedApi.use('/version', versionRouter);
+  protectedApi.use('/', clientsRouter);
+  app.use('/api', protectedApi);
 
   // Тот же обработчик ошибок, что и в index.ts
   app.use(errorHandler);

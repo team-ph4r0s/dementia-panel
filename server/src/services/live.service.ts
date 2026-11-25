@@ -89,6 +89,24 @@ export class LiveService {
     }
   }
 
+  /** Завершение работы сервера: останавливает таймеры и закрывает открытые сокеты */
+  static shutdown(): void {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (pinger) {
+      clearInterval(pinger);
+      pinger = null;
+    }
+    for (const client of [...clients]) {
+      if (client.ws.readyState === WebSocket.OPEN) {
+        client.ws.close(1001, 'server shutting down');
+      }
+      clients.delete(client);
+    }
+  }
+
   static get subscribers(): number {
     return clients.size;
   }

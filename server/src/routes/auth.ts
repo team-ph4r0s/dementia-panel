@@ -4,7 +4,7 @@ import { db } from '../db/index.js';
 import { AuthService, MIN_PASSWORD_LENGTH, USERNAME_PATTERN } from '../services/auth.service.js';
 import { requireAuth, AuthenticatedRequest, getBearerToken } from '../middleware/auth.middleware.js';
 import { loginIpLimiter, loginUserLimiter, reauthLimiter } from '../middleware/rate-limit.js';
-import { HttpError } from '../utils/http.js';
+import { HttpError, asyncHandler } from '../utils/http.js';
 import { EventService } from '../services/event.service.js';
 import { LiveService } from '../services/live.service.js';
 
@@ -31,7 +31,7 @@ function assertReauthAllowed(adminId: number): string {
 }
 
 // POST /api/auth/login
-authRouter.post('/login', (req, res) => {
+authRouter.post('/login', asyncHandler(async (req, res) => {
   const { username, password, totp, recovery_code } = req.body ?? {};
   if (typeof username !== 'string' || typeof password !== 'string' || !username || !password) {
     return res.status(400).json({ error: 'Логин и пароль обязательны' });
@@ -63,7 +63,7 @@ authRouter.post('/login', (req, res) => {
     return res.status(429).json({ error: `Слишком много неверных кодов. Повторите через ${Math.ceil(codeBlockedMs / 60000)} мин.` });
   }
 
-  let result = AuthService.loginWithTotp(username, password, totp, recovery_code, req.ip, req.get('user-agent'));
+  let result = await AuthService.loginWithTotpAsync(username, password, totp, recovery_code, req.ip, req.get('user-agent'));
   if (result === 'invalid_code') {
     reauthLimiter.registerFailure(codeKey);
     result = null;
@@ -96,7 +96,7 @@ authRouter.post('/login', (req, res) => {
     EventService.log('info', 'auth.login', `Администратор ${result.user.username} вошёл в панель`, { kind: 'admin', id: result.user.id });
   }
   res.json(result);
-});
+}));
 
 // GET /api/auth/me
 authRouter.get('/me', requireAuth, (req: AuthenticatedRequest, res) => {
@@ -111,7 +111,7 @@ authRouter.post('/logout', requireAuth, (req: AuthenticatedRequest, res) => {
 });
 
 // POST /api/auth/change-password
-authRouter.post('/change-password', requireAuth, (req: AuthenticatedRequest, res) => {
+authRouter.post('/change-password', requireAuth, asyncHandler(async (req: AuthenticatedRequest, res) => {
   const { oldPassword, newPassword } = req.body ?? {};
   if (typeof oldPassword !== 'string' || typeof newPassword !== 'string' || !oldPassword || !newPassword) {
     return res.status(400).json({ error: 'Старый и новый пароли обязательны' });
@@ -121,7 +121,7 @@ authRouter.post('/change-password', requireAuth, (req: AuthenticatedRequest, res
   }
 
   const limiterKey = assertReauthAllowed(req.user!.id);
-  const token = AuthService.changePassword(req.user!.id, oldPassword, newPassword, req.ip, req.get('user-agent'));
+  const token = await AuthService.changePasswordAsync(req.user!.id, oldPassword, newPassword, req.ip, req.get('user-agent'));
   if (!token) {
     reauthLimiter.registerFailure(limiterKey);
     return res.status(400).json({ error: 'Неверный старый пароль' });
@@ -129,10 +129,10 @@ authRouter.post('/change-password', requireAuth, (req: AuthenticatedRequest, res
   reauthLimiter.reset(limiterKey);
   EventService.log('info', 'auth.password_changed', 'Пароль администратора изменён', { kind: 'admin', id: req.user!.id });
   res.json({ success: true, token, message: 'Пароль успешно изменен. Остальные сессии завершены.' });
-});
+}));
 
 // POST /api/auth/change-username — смена логина администратора по текущему паролю
-authRouter.post('/change-username', requireAuth, (req: AuthenticatedRequest, res) => {
+authRouter.post('/change-username', requireAuth, asyncHandler(async (req: AuthenticatedRequest, res) => {
   const { password, newUsername } = req.body ?? {};
   if (typeof password !== 'string' || typeof newUsername !== 'string' || !password || !newUsername.trim()) {
     return res.status(400).json({ error: 'Текущий пароль и новый логин обязательны' });
@@ -146,7 +146,7 @@ authRouter.post('/change-username', requireAuth, (req: AuthenticatedRequest, res
   }
 
   const limiterKey = assertReauthAllowed(req.user!.id);
-  const result = AuthService.changeUsername(req.user!.id, password, username, req.ip, req.get('user-agent'));
+  const result = await AuthService.changeUsernameAsync(req.user!.id, password, username, req.ip, req.get('user-agent'));
   if (result === 'wrong_password') {
     reauthLimiter.registerFailure(limiterKey);
     return res.status(400).json({ error: 'Неверный пароль' });
@@ -162,7 +162,7 @@ authRouter.post('/change-username', requireAuth, (req: AuthenticatedRequest, res
     user: { id: req.user!.id, username: result.username, role: 'admin' },
     message: 'Логин изменён. Остальные сессии завершены.',
   });
-});
+}));
 
 // ========== Гостевой доступ ==========
 
@@ -173,7 +173,7 @@ authRouter.get('/guest', requireAuth, (req: AuthenticatedRequest, res) => {
 
 // PUT /api/auth/guest — включить/отключить гостя, задать логин и пароль (по паролю администратора).
 // Любое изменение завершает действующие гостевые сессии.
-authRouter.put('/guest', requireAuth, (req: AuthenticatedRequest, res) => {
+authRouter.put('/guest', requireAuth, asyncHandler(async (req: AuthenticatedRequest, res) => {
   const { enabled, username, password, current_password } = req.body ?? {};
   if (typeof enabled !== 'boolean' || typeof current_password !== 'string' || !current_password) {
     return res.status(400).json({ error: 'Укажите, включить ли гостевой доступ, и пароль администратора' });
@@ -197,19 +197,19 @@ authRouter.put('/guest', requireAuth, (req: AuthenticatedRequest, res) => {
   }
 
   const limiterKey = assertReauthAllowed(req.user!.id);
-  if (!AuthService.confirmPassword(req.user!.id, current_password)) {
+  if (!(await AuthService.confirmPasswordAsync(req.user!.id, current_password))) {
     reauthLimiter.registerFailure(limiterKey);
     return res.status(400).json({ error: 'Неверный пароль' });
   }
   reauthLimiter.reset(limiterKey);
-  if (password && AuthService.confirmPassword(req.user!.id, password)) {
+  if (password && (await AuthService.confirmPasswordAsync(req.user!.id, password))) {
     return res.status(400).json({ error: 'Пароль гостя не должен совпадать с паролем администратора' });
   }
 
-  const saved = AuthService.saveGuestSettings({ enabled, username: guestName, password: password || undefined });
+  const saved = await AuthService.saveGuestSettingsAsync({ enabled, username: guestName, password: password || undefined });
   EventService.log('warning', 'auth.guest_updated', enabled ? `Гостевой доступ включён (логин ${saved.username})` : 'Гостевой доступ отключён', { kind: 'admin', id: req.user!.id });
   res.json(saved);
-});
+}));
 
 // ========== 2FA / TOTP ==========
 
@@ -220,13 +220,13 @@ authRouter.post('/totp/setup', requireAuth, (req: AuthenticatedRequest, res) => 
 });
 
 // POST /api/auth/totp/enable — включает 2FA после подтверждения первым кодом
-authRouter.post('/totp/enable', requireAuth, (req: AuthenticatedRequest, res) => {
+authRouter.post('/totp/enable', requireAuth, asyncHandler(async (req: AuthenticatedRequest, res) => {
   const { secret, code, password } = req.body ?? {};
   if (typeof secret !== 'string' || typeof code !== 'string' || typeof password !== 'string' || !secret || !code || !password) {
     return res.status(400).json({ error: 'Секрет, код и пароль обязательны' });
   }
   const limiterKey = assertReauthAllowed(req.user!.id);
-  if (!AuthService.confirmPassword(req.user!.id, password)) {
+  if (!(await AuthService.confirmPasswordAsync(req.user!.id, password))) {
     reauthLimiter.registerFailure(limiterKey);
     return res.status(400).json({ error: 'Неверный пароль' });
   }
@@ -238,17 +238,17 @@ authRouter.post('/totp/enable', requireAuth, (req: AuthenticatedRequest, res) =>
   }
 
   res.json({ success: true, recovery_codes: result.recoveryCodes, message: 'Двухфакторная аутентификация включена. Сохраните коды восстановления.' });
-});
+}));
 
 // POST /api/auth/totp/disable — отключает 2FA (требует пароль)
-authRouter.post('/totp/disable', requireAuth, (req: AuthenticatedRequest, res) => {
+authRouter.post('/totp/disable', requireAuth, asyncHandler(async (req: AuthenticatedRequest, res) => {
   const { password } = req.body ?? {};
   if (typeof password !== 'string' || !password) {
     return res.status(400).json({ error: 'Пароль обязателен' });
   }
 
   const limiterKey = assertReauthAllowed(req.user!.id);
-  if (!AuthService.confirmPassword(req.user!.id, password)) {
+  if (!(await AuthService.confirmPasswordAsync(req.user!.id, password))) {
     reauthLimiter.registerFailure(limiterKey);
     return res.status(400).json({ error: 'Неверный пароль' });
   }
@@ -256,17 +256,17 @@ authRouter.post('/totp/disable', requireAuth, (req: AuthenticatedRequest, res) =
 
   AuthService.disableTotp(req.user!.id);
   res.json({ success: true, message: 'Двухфакторная аутентификация отключена' });
-});
+}));
 
 // POST /api/auth/totp/recovery/rotate — пересоздаёт коды восстановления (требует пароль)
-authRouter.post('/totp/recovery/rotate', requireAuth, (req: AuthenticatedRequest, res) => {
+authRouter.post('/totp/recovery/rotate', requireAuth, asyncHandler(async (req: AuthenticatedRequest, res) => {
   const { password } = req.body ?? {};
   if (typeof password !== 'string' || !password) {
     return res.status(400).json({ error: 'Пароль обязателен' });
   }
 
   const limiterKey = assertReauthAllowed(req.user!.id);
-  if (!AuthService.confirmPassword(req.user!.id, password)) {
+  if (!(await AuthService.confirmPasswordAsync(req.user!.id, password))) {
     reauthLimiter.registerFailure(limiterKey);
     return res.status(400).json({ error: 'Неверный пароль' });
   }
@@ -274,7 +274,7 @@ authRouter.post('/totp/recovery/rotate', requireAuth, (req: AuthenticatedRequest
 
   const newCodes = AuthService.rotateRecoveryCodes(req.user!.id);
   res.json({ success: true, recovery_codes: newCodes, message: 'Новые коды восстановления созданы. Старые более не действительны.' });
-});
+}));
 
 // ========== Управление сессиями ==========
 

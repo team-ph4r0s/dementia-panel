@@ -24,7 +24,7 @@
 
 | Файл | Назначение |
 |---|---|
-| `index.ts` | Порядок middleware, роутеры, единый порт HTTP+HTTPS (сниффинг первого байта), WebSocket (установка и живые обновления), фоновые задачи |
+| `index.ts` | Порядок middleware, единый защищённый под-роутер `protectedApi` с `requireAuth`, единый порт HTTP+HTTPS (сниффинг первого байта), WebSocket (установка и живые обновления), фоновые задачи, graceful shutdown (`SIGTERM`/`SIGINT`) |
 | `middleware/static-cache.ts` | Заголовки кеширования статики: `/assets/*` — `immutable`, `sw.js`/`index.html`/манифест — `no-cache` |
 | `services/live.service.ts` | Рассылка сигнала `{type:'changed'}` WebSocket-подписчикам (слияние за 250 мс, проверка сессии, пинг мёртвых сокетов); middleware записи через API |
 | `config.ts` | Каталог данных (`DEMENTIA_DATA_DIR`, по умолчанию `./data`) |

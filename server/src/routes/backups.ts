@@ -60,14 +60,14 @@ backupsRouter.delete('/:id', asyncHandler(async (req, res) => {
   await BackupService.delete(String(req.params.id));
   res.json({ success: true });
 }));
-backupsRouter.post('/recovery-key', (req: AuthenticatedRequest, res) => {
+backupsRouter.post('/recovery-key', asyncHandler(async (req: AuthenticatedRequest, res) => {
   const key = `admin:${req.user!.id}`;
   if (reauthLimiter.blockedFor(key) > 0) throw new HttpError(429, 'Слишком много неверных паролей. Повторите позже');
   const admin = db.prepare('SELECT password_hash, salt FROM admins WHERE id = ?').get(req.user!.id) as { password_hash: string; salt: string };
-  if (typeof req.body?.password !== 'string' || !AuthService.verifyPassword(req.body.password, admin.password_hash, admin.salt)) {
+  if (typeof req.body?.password !== 'string' || !(await AuthService.verifyPasswordAsync(req.body.password, admin.password_hash, admin.salt))) {
     reauthLimiter.registerFailure(key);
     throw new HttpError(400, 'Неверный пароль');
   }
   reauthLimiter.reset(key);
   res.json({ recovery_key: BackupService.recoveryKey() });
-});
+}));

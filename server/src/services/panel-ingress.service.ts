@@ -28,4 +28,11 @@ export class PanelIngressService {
     this.listeners.get(port)?.close();
     this.listeners.delete(port);
   }
+
+  static closeAll(): void {
+    for (const server of this.listeners.values()) {
+      server.close();
+    }
+    this.listeners.clear();
+  }
 }

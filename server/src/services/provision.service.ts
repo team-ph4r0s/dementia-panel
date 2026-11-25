@@ -108,9 +108,29 @@ export function runExclusive<T>(serverId: number | string, fn: () => Promise<T>)
   return next;
 }
 
+/**
+ * Ожидает завершения активных операций в очереди нод и мостов (с ограничением по времени для graceful shutdown).
+ */
+export async function waitForActiveOperations(timeoutMs = 15000): Promise<void> {
+  if (chains.size === 0) return;
+  const active = Promise.allSettled([...chains.values()]);
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      active,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function loadServer(serverId: number): any {
   const server = db.prepare('SELECT * FROM servers WHERE id = ?').get(serverId) as any;
-  if (!server) throw new Error(`Сервер #${serverId} не найден`);
+  if (!server) throw new HttpError(404, `Сервер #${serverId} не найден`);
   return server;
 }
 
@@ -119,7 +139,7 @@ function loadServer(serverId: number): any {
  */
 function loadLocalServer(serverId: number): any {
   const server = loadServer(serverId);
-  if (server.remote_panel_id) throw new Error(REMOTE_NODE_ERROR);
+  if (server.remote_panel_id) throw new HttpError(400, REMOTE_NODE_ERROR);
   return server;
 }
 
@@ -586,7 +606,7 @@ export class ProvisionService {
   static async installServer(serverId: number, onLog?: (chunk: string) => void): Promise<OperationResult> {
     const server = loadLocalServer(serverId);
     if (installing.has(serverId)) {
-      throw new Error('Установка этого сервера уже выполняется');
+      throw new HttpError(409, 'Установка этого сервера уже выполняется');
     }
     installing.add(serverId);
     pendingSync.delete(serverId);

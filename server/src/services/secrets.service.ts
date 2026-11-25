@@ -26,7 +26,11 @@ function getKey(): Buffer {
 
   const keyFile = path.join(dataDir, 'secret.key');
   if (fs.existsSync(keyFile)) {
-    cachedKey = Buffer.from(fs.readFileSync(keyFile, 'utf-8').trim(), 'base64');
+    const key = Buffer.from(fs.readFileSync(keyFile, 'utf-8').trim(), 'base64');
+    if (key.length !== 32) {
+      throw new Error('Файл secret.key повреждён: ожидается 32 байта в base64');
+    }
+    cachedKey = key;
   } else {
     cachedKey = crypto.randomBytes(32);
     fs.writeFileSync(keyFile, cachedKey.toString('base64'), { mode: 0o600 });

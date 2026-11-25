@@ -52,14 +52,14 @@ migrationRouter.get('/status', (req, res) => {
 });
 
 // POST /api/migration/prepare — выдать код переноса (по паролю администратора); показывается один раз
-migrationRouter.post('/prepare', (req: AuthenticatedRequest, res) => {
+migrationRouter.post('/prepare', asyncHandler(async (req: AuthenticatedRequest, res) => {
   const password = req.body?.password;
   if (typeof password !== 'string' || !password) throw new HttpError(400, 'Введите пароль администратора');
 
   const key = `admin:${req.user!.id}`;
   const blockedMs = reauthLimiter.blockedFor(key);
   if (blockedMs > 0) throw new HttpError(429, `Слишком много неверных паролей. Повторите через ${Math.ceil(blockedMs / 60000)} мин.`);
-  if (!AuthService.confirmPassword(req.user!.id, password)) {
+  if (!(await AuthService.confirmPasswordAsync(req.user!.id, password))) {
     reauthLimiter.registerFailure(key);
     throw new HttpError(400, 'Неверный пароль');
   }
@@ -68,7 +68,7 @@ migrationRouter.post('/prepare', (req: AuthenticatedRequest, res) => {
   const { code, expiresAt } = MigrationService.prepare();
   console.log('[MIGRATION] Выдан код переноса панели (действует 1 час)');
   res.json({ code, expiresAt });
-});
+}));
 
 // GET /api/migration/download — тот же архив файлом (если новому серверу недоступен адрес этой панели)
 migrationRouter.get('/download', asyncHandler(async (req, res) => {
