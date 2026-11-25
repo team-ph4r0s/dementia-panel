@@ -49,7 +49,9 @@ describe('WebSocket: сигнал «данные изменились»', () => 
     const created = await createSubscriber('live-1');
     expect(created.status).toBe(201);
     await sleep(600);
-    expect(socket.messages).toEqual([{ type: 'changed' }]);
+    expect(socket.messages).toHaveLength(1);
+    expect(socket.messages[0]).toEqual({ type: 'changed', scopes: expect.arrayContaining(['subscribers', 'servers']) });
+    expect(Object.keys(socket.messages[0]).sort()).toEqual(['scopes', 'type']);
     socket.ws.close();
   });
 

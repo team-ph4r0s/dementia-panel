@@ -12,6 +12,7 @@ import { BridgeService } from '../services/bridge.service.js';
 import { FailoverService } from '../services/failover.service.js';
 import { ExtraPortsService } from '../services/extra-ports.service.js';
 import { buildClashDirectRules } from '../services/direct-routing.service.js';
+import { subscriptionIpLimiter } from '../middleware/rate-limit.js';
 import { renderSubscriptionPage, SUBSCRIPTION_PAGE_SCRIPT } from './subscription-page.js';
 
 /** Названия доп. параметров AWG 3.x в amnezia-wg-option mihomo */
@@ -164,6 +165,11 @@ subscriptionRouter.get('/page.js', (_req, res) => {
 });
 
 subscriptionRouter.get('/:token', (req, res) => {
+  const blockedMs = subscriptionIpLimiter.consume(req.ip || 'unknown');
+  if (blockedMs > 0) {
+    res.setHeader('Retry-After', Math.ceil(blockedMs / 1000));
+    return res.status(429).type('text/plain').send('Too many requests');
+  }
   const { token } = req.params;
   const format = detectFormat(req.query.format, req.get('user-agent'));
   const showPage = format === 'awg' && isBrowserNavigation(req);

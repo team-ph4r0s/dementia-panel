@@ -40,16 +40,23 @@ describe('журнал событий', () => {
     expect(response.body.items[0].message).toBe('Ошибка');
   });
 
-  it('ограничивает журнал последними 5000 записями', () => {
+  it('ограничивает журнал последними 5000 записями через prune и автоматически при частых вставках', () => {
     const insert = db.prepare("INSERT INTO events(level, type, message) VALUES ('info', 'test.bulk', 'bulk')");
     db.exec('BEGIN');
     for (let i = 0; i < 5005; i++) insert.run();
     db.exec('COMMIT');
 
     EventService.log('info', 'test.last', 'Последнее событие');
+    EventService.prune();
     const count = (db.prepare('SELECT COUNT(*) AS c FROM events').get() as { c: number }).c;
     expect(count).toBe(5000);
     expect(EventService.list({ limit: 1, offset: 0 }).items[0].type).toBe('test.last');
+
+    for (let i = 0; i < EventService.PRUNE_EVERY; i++) {
+      EventService.log('info', 'test.auto', `Auto ${i}`);
+    }
+    const countAfterBatch = (db.prepare('SELECT COUNT(*) AS c FROM events').get() as { c: number }).c;
+    expect(countAfterBatch).toBe(5000);
   });
 
   it('записывает входы и основные действия администратора', async () => {

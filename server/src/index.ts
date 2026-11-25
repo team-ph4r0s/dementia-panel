@@ -9,7 +9,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { initDatabase, db } from './db/index.js';
 import { AuthService, type SessionUser } from './services/auth.service.js';
 import { requireAuth } from './middleware/auth.middleware.js';
-import { loginIpLimiter, loginUserLimiter, migrationCodeLimiter, reauthLimiter } from './middleware/rate-limit.js';
+import { loginIpLimiter, loginUserLimiter, migrationCodeLimiter, reauthLimiter, subscriptionIpLimiter } from './middleware/rate-limit.js';
 import { authRouter } from './routes/auth.js';
 import { serversRouter } from './routes/servers.js';
 import { clientsRouter } from './routes/clients.js';
@@ -35,6 +35,7 @@ import { NodeUpdateService } from './services/node-update.service.js';
 import { ProviderService } from './services/provider.service.js';
 import { BackupService } from './services/backup.service.js';
 import { LiveService } from './services/live.service.js';
+import { EventService } from './services/event.service.js';
 import { serveSpa } from './middleware/static-cache.js';
 import { BridgeService } from './services/bridge.service.js';
 import { ExtraPortsService } from './services/extra-ports.service.js';
@@ -358,7 +359,7 @@ async function statsLoop() {
     await mapLimit(servers, 5, async (s) => {
       if (shuttingDown) return;
       await ProvisionService.fetchServerStats(s.id);
-      LiveService.notify();
+      LiveService.notify('servers');
     });
     if (shuttingDown) return;
     // Мосты: правила из БД применены и на месте
@@ -367,7 +368,7 @@ async function statsLoop() {
     await ExtraPortsService.checkAll();
     SubscriptionService.refreshSuspension();
     PartnerService.refreshSuspension();
-    LiveService.notify();
+    LiveService.notify(['servers', 'bridges', 'subscribers']);
   } catch (err) {
     console.error('[STATS] Ошибка фонового опроса:', err);
   } finally {
@@ -381,7 +382,7 @@ async function federationLoop() {
   try {
     if (MigrationService.isBackgroundPaused() || shuttingDown) return;
     await FederationClient.syncAll();
-    LiveService.notify();
+    LiveService.notify(['servers', 'clients']);
   } catch (err) {
     console.error('[FEDERATION] Ошибка синхронизации:', err);
   } finally {
@@ -400,7 +401,7 @@ async function probeLoop() {
     if (ProbeService.isDue()) await ProbeService.runAll();
     // Сигнал от клиентов (обрыв рукопожатий) учитывается чаще, чем идут проверки из стран
     BridgeService.evaluate(false);
-    LiveService.notify();
+    LiveService.notify(['servers', 'bridges']);
   } catch (err) {
     console.error('[PROBE] Ошибка проверки:', err);
   } finally {
@@ -449,10 +450,12 @@ scheduleTimeout(providerReminderLoop, 90000);
 registerInterval(() => {
   cleanupFederationLimits();
   AuthService.cleanupExpiredSessions();
+  EventService.prune();
   loginIpLimiter.cleanup();
   loginUserLimiter.cleanup();
   reauthLimiter.cleanup();
   migrationCodeLimiter.cleanup();
+  subscriptionIpLimiter.cleanup();
 }, 60 * 60 * 1000);
 
 // Смена публичного IP панели: раз в 10 минут (docs/security.md#panel-ip)

@@ -554,6 +554,10 @@ const migrations: Array<() => void> = [
       );
     `);
   },
+  // v22: удаление избыточного индекса idx_events_id (id уже INTEGER PRIMARY KEY)
+  () => {
+    db.exec('DROP INDEX IF EXISTS idx_events_id;');
+  },
 ];
 
 /** Версия схемы, которую умеет эта сборка панели (число миграций) */

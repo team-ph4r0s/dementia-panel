@@ -9,7 +9,7 @@ const MAX_DELAY = 30_000;
  * пока соединение авторизовано. Обрыв связи — повтор с нарастающей паузой (1 с … 30 с); код 4401 (сессия недействительна, гостю
  * сокет не нужен) повторов не вызывает — дальше работает обычный опрос. При возвращении на вкладку данные обновляются сразу.
  */
-export function useLiveUpdates(enabled: boolean, onChange: () => void): boolean {
+export function useLiveUpdates(enabled: boolean, onChange: (scopes?: string[]) => void): boolean {
   const [connected, setConnected] = useState(false);
   const onChangeRef = useRef(onChange);
   useEffect(() => {
@@ -29,7 +29,7 @@ export function useLiveUpdates(enabled: boolean, onChange: () => void): boolean 
       ws = socket;
       socket.onopen = () => socket.send(JSON.stringify({ type: 'auth', token: getToken() }));
       socket.onmessage = (event) => {
-        let msg: { type?: string };
+        let msg: { type?: string; scopes?: unknown };
         try {
           msg = JSON.parse(String(event.data));
         } catch {
@@ -39,9 +39,10 @@ export function useLiveUpdates(enabled: boolean, onChange: () => void): boolean 
           delay = MIN_DELAY;
           setConnected(true);
           // Пока сокет не был подключён, изменения могли пройти мимо
-          onChangeRef.current();
+          onChangeRef.current(undefined);
         } else if (msg.type === 'changed') {
-          onChangeRef.current();
+          const scopes = Array.isArray(msg.scopes) ? msg.scopes.filter((s): s is string => typeof s === 'string') : undefined;
+          onChangeRef.current(scopes?.length ? scopes : undefined);
         }
       };
       socket.onclose = (event) => {

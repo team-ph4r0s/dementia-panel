@@ -2,10 +2,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { initDatabase } from '../src/db/index.js';
+import { db, initDatabase } from '../src/db/index.js';
 import { AuthService } from '../src/services/auth.service.js';
 import { runExclusive, waitForActiveOperations } from '../src/services/provision.service.js';
 import { LiveService } from '../src/services/live.service.js';
+import { RequestLimiter } from '../src/middleware/rate-limit.js';
 
 beforeAll(() => {
   initDatabase();
@@ -103,5 +104,58 @@ describe('SecretsService: проверка длины data/secret.key', () => {
 
     const secrets = await import('../src/services/secrets.service.js');
     expect(() => secrets.encryptSecret('hello')).toThrow(/32 байта/);
+  });
+});
+
+describe('Производительность и оптимизации (#104, #106, #107)', () => {
+  it('AuthService.touchSession троттлится на 60 секунд в памяти и обновляется после интервала', () => {
+    AuthService.resetAdmin('touch_admin', 'TouchPass123!');
+    const login = AuthService.login('touch_admin', 'TouchPass123!')!;
+    const initial = new Date(Date.now() - 120_000).toISOString();
+    db.prepare('UPDATE sessions SET last_activity = ?').run(initial);
+
+    const t0 = Date.now();
+    AuthService.touchSession(login.token, t0);
+    const firstRow = db.prepare('SELECT last_activity FROM sessions').get() as { last_activity: string };
+    expect(firstRow.last_activity).toBe(new Date(t0).toISOString());
+
+    // Повторный вызов через 10 с в БД не пишет
+    AuthService.touchSession(login.token, t0 + 10_000);
+    const secondRow = db.prepare('SELECT last_activity FROM sessions').get() as { last_activity: string };
+    expect(secondRow.last_activity).toBe(new Date(t0).toISOString());
+
+    // Через 61 с обновляет last_activity
+    AuthService.touchSession(login.token, t0 + 61_000);
+    const thirdRow = db.prepare('SELECT last_activity FROM sessions').get() as { last_activity: string };
+    expect(thirdRow.last_activity).toBe(new Date(t0 + 61_000).toISOString());
+  });
+
+  it('LiveService.notify(scopes) сливает домены без данных', async () => {
+    const sent: string[] = [];
+    const fakeWs = { readyState: 1, on: vi.fn(), send: (msg: string) => sent.push(msg), close: vi.fn(), terminate: vi.fn() } as any;
+    LiveService.add(fakeWs, () => true);
+    try {
+      LiveService.notify('servers');
+      LiveService.notify(['bridges', 'servers']);
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      expect(sent).toHaveLength(1);
+      expect(JSON.parse(sent[0])).toEqual({ type: 'changed', scopes: ['servers', 'bridges'] });
+    } finally {
+      LiveService.shutdown();
+    }
+  });
+
+  it('RequestLimiter ограничивает частые запросы и сбрасывается после окна', () => {
+    const limiter = new RequestLimiter(3, 60_000);
+    expect(limiter.consume('1.2.3.4')).toBe(0);
+    expect(limiter.consume('1.2.3.4')).toBe(0);
+    expect(limiter.consume('1.2.3.4')).toBe(0);
+    expect(limiter.consume('1.2.3.4')).toBeGreaterThan(0);
+    expect(limiter.consume('5.6.7.8')).toBe(0);
+  });
+
+  it('миграция v22 удалила избыточный индекс idx_events_id', () => {
+    const idx = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_events_id'").get();
+    expect(idx).toBeUndefined();
   });
 });

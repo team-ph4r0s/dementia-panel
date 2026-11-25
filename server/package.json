@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc && node -e \"const fs=require('fs'); fs.mkdirSync('dist/scripts', {recursive:true}); fs.copyFileSync('src/scripts/deploy-awg.sh', 'dist/scripts/deploy-awg.sh'); fs.copyFileSync('src/scripts/deploy-bridge.sh', 'dist/scripts/deploy-bridge.sh'); fs.copyFileSync('src/scripts/deploy-xray.sh', 'dist/scripts/deploy-xray.sh'); fs.copyFileSync('src/scripts/update-awg.sh', 'dist/scripts/update-awg.sh'); fs.copyFileSync('src/scripts/update-panel.sh', 'dist/scripts/update-panel.sh');\"",
+    "lint": "oxlint src",
     "start": "node dist/index.js",
     "reset-admin": "node dist/cli/reset-admin.js",
     "restore-backup": "node dist/cli/restore-backup.js",
@@ -26,6 +27,7 @@
     "@types/qrcode": "^1.5.5",
     "@types/ssh2": "^1.15.3",
     "@types/ws": "^8.5.13",
+    "oxlint": "^1.95.0",
     "tsx": "^4.19.2",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0"

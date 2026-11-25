@@ -14,6 +14,14 @@ export interface PanelEvent {
 }
 
 export class EventService {
+  static readonly PRUNE_EVERY = 50;
+  private static insertsSincePrune = 0;
+
+  static prune(): void {
+    db.prepare('DELETE FROM events WHERE id < (SELECT id FROM events ORDER BY id DESC LIMIT 1 OFFSET 4999)').run();
+    this.insertsSincePrune = 0;
+  }
+
   static log(level: EventLevel, type: string, message: string, entity?: { kind: string; id: number | string }): void {
     db.prepare('INSERT INTO events(level, type, message, entity_kind, entity_id) VALUES (?, ?, ?, ?, ?)').run(
       level,
@@ -22,7 +30,10 @@ export class EventService {
       entity?.kind.slice(0, 50) ?? null,
       entity ? String(entity.id).slice(0, 100) : null,
     );
-    db.prepare('DELETE FROM events WHERE id < (SELECT id FROM events ORDER BY id DESC LIMIT 1 OFFSET 4999)').run();
+    this.insertsSincePrune++;
+    if (this.insertsSincePrune >= this.PRUNE_EVERY) {
+      this.prune();
+    }
     void TelegramService.deliverEvent({ level, type, message });
   }
 

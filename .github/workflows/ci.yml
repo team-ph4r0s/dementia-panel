@@ -26,6 +26,7 @@ jobs:
       # Известные уязвимости в зависимостях, попадающих на сервер панели, блокируют CI
       - run: npm audit --omit=dev --audit-level=high
       - run: npx tsc --noEmit
+      - run: npm run lint
       - run: npm test
       - run: npm run build
 

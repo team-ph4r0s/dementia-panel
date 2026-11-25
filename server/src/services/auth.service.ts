@@ -6,6 +6,9 @@ import { EventService } from './event.service.js';
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** Гостевая сессия короче: гостю выдают доступ «посмотреть», а не постоянный вход */
 const GUEST_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+/** Как часто обновлять last_activity сессии в SQLite (чтобы частые GET не создавали write-нагрузку) */
+const SESSION_TOUCH_INTERVAL_MS = 60 * 1000;
+const MAX_TOUCH_CACHE = 10_000;
 /** Сколько помнится IP, с которого администратор входил (исключение из блокировки по логину) */
 const KNOWN_IP_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const MIN_PASSWORD_LENGTH = 8;
@@ -134,6 +137,7 @@ export class AuthService {
       db.exec('DELETE FROM sessions');
       db.exec('DELETE FROM trusted_login_ips');
     });
+    this.lastTouch.clear();
   }
 
   /**
@@ -160,8 +164,25 @@ export class AuthService {
     return token;
   }
 
-  static touchSession(token: string): void {
-    db.prepare('UPDATE sessions SET last_activity = ? WHERE token = ?').run(new Date().toISOString(), hashToken(token));
+  private static lastTouch = new Map<string, number>();
+
+  static touchSession(token: string, now = Date.now()): void {
+    const hashed = hashToken(token);
+    const prev = this.lastTouch.get(hashed);
+    if (prev !== undefined && now - prev < SESSION_TOUCH_INTERVAL_MS) return;
+
+    if (prev === undefined && this.lastTouch.size >= MAX_TOUCH_CACHE) {
+      for (const [key, ts] of this.lastTouch) {
+        if (now - ts >= SESSION_TOUCH_INTERVAL_MS) this.lastTouch.delete(key);
+      }
+      if (this.lastTouch.size >= MAX_TOUCH_CACHE) {
+        const oldest = this.lastTouch.keys().next().value;
+        if (oldest !== undefined) this.lastTouch.delete(oldest);
+      }
+    }
+
+    this.lastTouch.set(hashed, now);
+    db.prepare('UPDATE sessions SET last_activity = ? WHERE token = ?').run(new Date(now).toISOString(), hashed);
   }
 
   /**
@@ -209,12 +230,17 @@ export class AuthService {
    * Destroy session
    */
   static logout(token: string): void {
-    db.prepare('DELETE FROM sessions WHERE token = ?').run(hashToken(token));
+    const hashed = hashToken(token);
+    this.lastTouch.delete(hashed);
+    db.prepare('DELETE FROM sessions WHERE token = ?').run(hashed);
   }
 
-  static cleanupExpiredSessions(): void {
-    db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(new Date().toISOString());
-    db.prepare('DELETE FROM trusted_login_ips WHERE last_login_at <= ?').run(new Date(Date.now() - KNOWN_IP_TTL_MS).toISOString());
+  static cleanupExpiredSessions(now = Date.now()): void {
+    db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(new Date(now).toISOString());
+    db.prepare('DELETE FROM trusted_login_ips WHERE last_login_at <= ?').run(new Date(now - KNOWN_IP_TTL_MS).toISOString());
+    for (const [key, ts] of this.lastTouch) {
+      if (now - ts >= SESSION_TOUCH_INTERVAL_MS) this.lastTouch.delete(key);
+    }
   }
 
   /**

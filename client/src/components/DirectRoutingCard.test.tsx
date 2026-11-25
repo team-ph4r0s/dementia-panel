@@ -7,13 +7,17 @@ import type { DirectDraft } from './directDraft';
 let last: DirectDraft;
 function Harness({ initial }: { initial: DirectDraft }) {
   const [draft, setDraft] = useState(initial);
-  last = draft;
-  return <DirectRoutingCard draft={draft} status={[{ country: 'ru', networks: 1200, updated_at: null }]} onChange={setDraft} onRefresh={vi.fn()} />;
+  const handleChange = (next: DirectDraft) => {
+    last = next;
+    setDraft(next);
+  };
+  return <DirectRoutingCard draft={draft} status={[{ country: 'ru', networks: 1200, updated_at: null }]} onChange={handleChange} onRefresh={vi.fn()} />;
 }
 const empty: DirectDraft = { enabled: false, awg: false, countries: [], domains: '', cidrs: '' };
 
 describe('«Напрямую, мимо VPN»', () => {
   it('добавляет страну из списка и по коду, убирает и не дублирует', () => {
+    last = empty;
     render(<Harness initial={empty} />);
     fireEvent.change(screen.getByLabelText('Добавить страну'), { target: { value: 'ru' } });
     expect(last.countries).toEqual(['ru']);

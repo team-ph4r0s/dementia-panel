@@ -58,6 +58,47 @@ export class FailureLimiter {
   }
 }
 
+/**
+ * Счётчик запросов в скользящем окне (на ключ — IP), с ограничением числа ключей в памяти.
+ */
+export class RequestLimiter {
+  private buckets = new Map<string, { count: number; resetAt: number }>();
+
+  constructor(private maxRequests: number, private windowMs: number, private maxKeys = 50_000) {}
+
+  /** Возвращает 0 если запрос разрешён, иначе — миллисекунды до сброса окна */
+  consume(key: string): number {
+    const now = Date.now();
+    const bucket = this.buckets.get(key);
+    if (!bucket || bucket.resetAt <= now) {
+      if (!bucket && this.buckets.size >= this.maxKeys) {
+        this.cleanup();
+        for (const oldest of this.buckets.keys()) {
+          if (this.buckets.size < this.maxKeys) break;
+          this.buckets.delete(oldest);
+        }
+      }
+      this.buckets.delete(key);
+      this.buckets.set(key, { count: 1, resetAt: now + this.windowMs });
+      return 0;
+    }
+    if (bucket.count >= this.maxRequests) return bucket.resetAt - now;
+    bucket.count++;
+    return 0;
+  }
+
+  reset(key: string): void {
+    this.buckets.delete(key);
+  }
+
+  cleanup(): void {
+    const now = Date.now();
+    for (const [key, bucket] of this.buckets) {
+      if (bucket.resetAt <= now) this.buckets.delete(key);
+    }
+  }
+}
+
 // 5 неудачных попыток за 15 минут с одного IP, 10 — на один логин
 export const loginIpLimiter = new FailureLimiter(5, 15 * 60 * 1000);
 export const loginUserLimiter = new FailureLimiter(10, 15 * 60 * 1000);
@@ -66,3 +107,5 @@ export const loginUserLimiter = new FailureLimiter(10, 15 * 60 * 1000);
 export const reauthLimiter = new FailureLimiter(5, 15 * 60 * 1000);
 // Неверный код переноса панели: 10 попыток за 15 минут с одного IP
 export const migrationCodeLimiter = new FailureLimiter(10, 15 * 60 * 1000);
+// Мягкое ограничение частоты на публичный эндпоинт подписок: 120 запросов в минуту с IP
+export const subscriptionIpLimiter = new RequestLimiter(120, 60 * 1000);
