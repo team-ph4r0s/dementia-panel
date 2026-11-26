@@ -18,7 +18,7 @@ export interface SubscriptionSettings {
   web_page_url: string;
   sort_order: '' | 'ping' | 'name' | 'none';
   hide_url: boolean;
-  /** mihomo: группа «Авто» (fallback) — приложение само переходит на следующую работающую ноду */
+  /** mihomo: группа «Авто» (url-test) — приложение проверяет ноды параллельно и идёт через самую быструю работающую */
   clash_auto: boolean;
 }
 

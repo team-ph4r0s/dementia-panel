@@ -82,7 +82,10 @@ export function detectFormat(query: unknown, userAgent: string | undefined): For
 export const CLASH_AUTO_GROUP = 'Авто';
 const CLASH_GROUP = 'Dementia';
 const CLASH_HEALTH_URL = 'https://www.gstatic.com/generate_204';
-const CLASH_HEALTH_INTERVAL = 300;
+const CLASH_HEALTH_INTERVAL = 30;
+const CLASH_HEALTH_TIMEOUT = 3000;
+const CLASH_HEALTH_TOLERANCE = 50;
+const CLASH_MAX_FAILED_TIMES = 1;
 
 /** Запись подписки: нода — проекция строки servers (у моста подменены host/awg_port), клиент — проекция строки clients */
 export interface ClashEntry {
@@ -111,9 +114,11 @@ type SubscriptionPeer = ClientRow & Pick<ServerRow,
 /**
  * Конфигурация mihomo в виде JSON (валидный YAML 1.2): прокси, группа выбора и правило по умолчанию.
  *
- * `auto` добавляет группу «Авто» типа fallback и ставит её первой в группе выбора: приложение идёт через первую
- * работающую ноду в порядке подписки (мост → прямой адрес → следующая нода) и само переходит дальше, когда она
- * перестаёт отвечать. Сервер видит доступность только из дата-центров, а приложение — из сети пользователя.
+ * `auto` добавляет группу «Авто» типа url-test и ставит её первой в группе выбора: приложение параллельно проверяет
+ * все ноды через саму ноду и идёт через самую быструю работающую (с запасом `tolerance`, чтобы не прыгать между
+ * близкими по скорости нодами). Проверки частые (`interval` 30 с, `lazy` выключен — не ждём смены узла), а после
+ * первого же сбоя соединения (`max-failed-times` 1) нода сразу проверяется заново и при отказе заменяется. Сервер
+ * видит доступность только из дата-центров, а приложение — из сети пользователя.
  * Выбранная пользователем вручную нода остаётся выбранной. С одной нодой переключаться не на что — группа не нужна.
  */
 export function buildClashConfig(entries: ClashEntry[], dns: string[], mtu: number, auto = false): string {
@@ -150,7 +155,7 @@ export function buildClashConfig(entries: ClashEntry[], dns: string[], mtu: numb
   const groups: Record<string, unknown>[] = auto && names.length > 1
     ? [
       { name: group, type: 'select', proxies: [CLASH_AUTO_GROUP, ...names] },
-      { name: CLASH_AUTO_GROUP, type: 'fallback', proxies: names, url: CLASH_HEALTH_URL, interval: CLASH_HEALTH_INTERVAL, lazy: true },
+      { name: CLASH_AUTO_GROUP, type: 'url-test', proxies: names, url: CLASH_HEALTH_URL, interval: CLASH_HEALTH_INTERVAL, timeout: CLASH_HEALTH_TIMEOUT, tolerance: CLASH_HEALTH_TOLERANCE, 'max-failed-times': CLASH_MAX_FAILED_TIMES, lazy: false },
     ]
     : [{ name: group, type: 'select', proxies: names.length ? names : ['DIRECT'] }];
   // FlClash #2966: гонка protect при запуске TUN может зациклить пакеты AWG.

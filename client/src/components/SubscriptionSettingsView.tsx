@@ -225,8 +225,8 @@ export const SubscriptionSettingsView: React.FC<{ subscribers: Subscriber[]; pub
               <label className="flex items-start gap-2 text-xs text-muted cursor-pointer sm:col-span-2">
                 <input type="checkbox" className="mt-0.5" checked={settings.clash_auto} onChange={(e) => update('clash_auto', e.target.checked)} />
                 <span>
-                  Автопереключение в приложениях mihomo (FlClash, Clash Verge): группа «Авто» ведёт через первую работающую ноду по
-                  порядку подписки и сама переходит на следующую, если нода или мост перестали отвечать
+                  Автопереключение в приложениях mihomo (FlClash, Clash Verge): группа «Авто» параллельно проверяет все ноды,
+                  выбирает самую быструю рабочую и быстро переключается на другую при обрыве связи
                 </span>
               </label>
             </div>
